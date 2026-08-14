@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { ProgressFactEngine } from '@orcana/governor-core'
+import { ProgressFactEngine } from '@leooday/governor-core'
 import { toEngineEvent, translateSessionEvents } from '../src/index.ts'
 import type { ReplayEvent } from '../src/index.ts'
 

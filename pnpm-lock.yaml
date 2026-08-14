@@ -14,10 +14,10 @@ importers:
 
   packages/dsh-bundle:
     dependencies:
-      '@orcana/dsh-governor':
+      '@leooday/dsh-governor':
         specifier: workspace:^
         version: link:../dsh-governor
-      '@orcana/governor-core':
+      '@leooday/governor-core':
         specifier: workspace:^
         version: link:../governor-core
 
@@ -26,7 +26,7 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.1
         version: 3.18.1
-      '@orcana/governor-core':
+      '@leooday/governor-core':
         specifier: workspace:^
         version: link:../governor-core
     devDependencies:
@@ -94,7 +94,7 @@ importers:
 
   packages/dsh-orcana-linux-bundle:
     dependencies:
-      '@orcana/dsh-orcana-linux':
+      '@leooday/dsh-orcana-linux':
         specifier: workspace:^
         version: link:../dsh-orcana-linux
 

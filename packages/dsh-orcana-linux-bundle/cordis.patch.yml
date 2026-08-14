@@ -4,5 +4,5 @@
 # `resourceLimits`) or via a later --patch overlay keyed by row id.
 - insert:
     - id: dsh-orcana-linux
-      name: '@orcana/dsh-orcana-linux'
+      name: '@leooday/dsh-orcana-linux'
       config: {}

@@ -1,5 +1,5 @@
 {
-  "name": "@orcana/dsh-governor",
+  "name": "@leooday/dsh-governor",
   "version": "0.1.0-rc.1",
   "description": "DSH adapter plugin for the Orcana runtime pack: progress governor, evidence freshness, completion guard, capability router",
   "license": "MIT",
@@ -29,7 +29,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@orcana/governor-core": "workspace:^",
+    "@leooday/governor-core": "workspace:^",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependencies": {

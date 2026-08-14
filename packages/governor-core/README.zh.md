@@ -1,4 +1,4 @@
-# @orcana/governor-core
+# @leooday/governor-core
 
 [English](README.md) | 中文
 

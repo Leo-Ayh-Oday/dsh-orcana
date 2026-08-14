@@ -1,10 +1,10 @@
 /**
- * @orcana/governor-core — framework-agnostic progress-fact engine.
+ * @leooday/governor-core — framework-agnostic progress-fact engine.
  *
  * The pure core of the Orcana runtime pack. It classifies tool observations
  * into progress signals and tracks workspace generation and verification
  * receipts. It imports no Cordis and no DSH service; the adapter plugin
- * (@orcana/dsh-governor) feeds it through {@link EngineEvent} and consumes
+ * (@leooday/dsh-governor) feeds it through {@link EngineEvent} and consumes
  * its signals. Keeping the core framework-free lets it serve Orcana, DSH, or
  * other harnesses later.
  *
@@ -12,7 +12,7 @@
  * the single state-transition path used by BOTH the live adapter and the
  * session-log replay ({@link ProgressFactEngine.rebuild}), so live state and
  * resumed state cannot drift by construction.
- * @module @orcana/governor-core
+ * @module @leooday/governor-core
  */
 
 import { createHash } from 'node:crypto'

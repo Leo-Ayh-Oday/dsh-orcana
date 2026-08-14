@@ -29,14 +29,14 @@
 
 ## 安装
 
-发布后，官方 DSH 组合包安装（`@orcana/*` 包发布后可用）：
+发布后，官方 DSH 组合包安装（`@leooday/*` 包发布后可用）：
 
 ```sh
 # 一个 profile 一条命令装全部（governor + Linux 加固）：
-dsh plugin --profile orcana add @orcana/dsh-bundle @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
 # 或分开两个 profile：
-dsh plugin --profile orcana add @orcana/dsh-bundle
-dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle
+dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 dsh --profile orcana "<task>"
 ```
 

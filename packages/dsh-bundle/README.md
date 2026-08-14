@@ -1,8 +1,8 @@
-# @orcana/dsh-bundle
+# @leooday/dsh-bundle
 
 [English](README.md) | [中文](README.zh.md)
 
-Profile bundle for `dsh --profile orcana`: installs `@orcana/dsh-governor`
+Profile bundle for `dsh --profile orcana`: installs `@leooday/dsh-governor`
 and coordinates it with `repeat-tool-reminder`.
 
 Contract: the package manifest declares `"dsh": { "bundle": { "patch":
@@ -12,11 +12,11 @@ Contract: the package manifest declares `"dsh": { "bundle": { "patch":
 ## Install (official command, once published)
 
 ```sh
-dsh plugin --profile orcana add @orcana/dsh-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle
 ```
 
 `dsh plugin add` installs the bundle and auto-activates it as a profile layer
-(`@orcana/dsh-governor` and `@orcana/governor-core` resolve as its
+(`@leooday/dsh-governor` and `@leooday/governor-core` resolve as its
 dependencies). Before publishing, use
 [`scripts/dev-install.sh`](../../scripts/dev-install.sh) or profile
 `pnpm-workspace.yaml` overrides against the local tarballs.

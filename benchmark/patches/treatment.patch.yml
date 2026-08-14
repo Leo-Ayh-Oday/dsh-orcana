@@ -6,7 +6,7 @@
 # Ablation knobs read the environment so one build serves every arm.
 - insert:
     - id: orcana
-      name: '@orcana/dsh-governor'
+      name: '@leooday/dsh-governor'
       config:
         governor:
           enabled: !!js process.env.ORCANA_GOVERNOR !== 'off'

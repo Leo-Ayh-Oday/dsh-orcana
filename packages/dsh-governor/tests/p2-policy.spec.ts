@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest'
 import {
   GENTLE_TURN_REMINDER,
   REEVALUATE_TURN_REMINDER,
-} from '@orcana/governor-core'
-import type { TurnVerdict } from '@orcana/governor-core'
+} from '@leooday/governor-core'
+import type { TurnVerdict } from '@leooday/governor-core'
 import { decideSteer } from '../src/index.ts'
 
 const CONFIG = {

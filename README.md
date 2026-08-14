@@ -29,14 +29,14 @@ frozen benchmark invariants, [docs/architecture.md](docs/architecture.md) and
 
 ## Install
 
-Official DSH bundle install (once the `@orcana/*` packages are published):
+Official DSH bundle install (once the `@leooday/*` packages are published):
 
 ```sh
 # Everything in one profile, one command (governor + Linux hardening):
-dsh plugin --profile orcana add @orcana/dsh-bundle @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
 # or separate profiles:
-dsh plugin --profile orcana add @orcana/dsh-bundle
-dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle
+dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 dsh --profile orcana "<task>"
 ```
 

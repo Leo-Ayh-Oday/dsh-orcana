@@ -28,12 +28,12 @@
 ```
 orcana-dsh/                          # 独立 repo,DSH 侧零 diff
 ├── packages/
-│   ├── governor-core/               # @orcana/governor-core —— 框架无关核心
+│   ├── governor-core/               # @leooday/governor-core —— 框架无关核心
 │   │   └── src/                     #   ProgressFactEngine、fingerprint、generation、receipt 纯逻辑
 │   │                               #   零 Cordis 依赖,可服务 Orcana / DSH / 其他 harness
-│   ├── dsh-governor/                # @orcana/dsh-governor —— DSH adapter(函数插件)
+│   ├── dsh-governor/                # @leooday/dsh-governor —— DSH adapter(函数插件)
 │   │   └── src/                     #   name/inject/Config/apply,挂 DSH 扩展点,调 governor-core
-│   └── dsh-bundle/                  # @orcana/dsh-bundle —— profile bundle
+│   └── dsh-bundle/                  # @leooday/dsh-bundle —— profile bundle
 │       ├── package.json             #   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 │       └── cordis.patch.yml
 ├── benchmark/
@@ -174,7 +174,7 @@ Verification state:
 # benchmark/patches/treatment.patch.yml(激活 Orcana,唯一差异行)
 - insert:
     - id: orcana
-      name: '@orcana/dsh-governor'
+      name: '@leooday/dsh-governor'
       config:
         governor:  { enabled: true, mode: warn-steer, zeroProgressThresholds: [2, 3, 4] }
         evidence:  { enabled: true, freshness: generation, verifyCommandPatterns: [test, typecheck, build, check, lint] }

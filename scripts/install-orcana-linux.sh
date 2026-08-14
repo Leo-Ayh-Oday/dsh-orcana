@@ -15,7 +15,7 @@ if [ ! -f "$PROF/package.json" ]; then
   "name": "dsh-profile-orcana-linux",
   "private": true,
   "dependencies": {
-    "@orcana/dsh-orcana-linux": "file:$REPO_ROOT/packages/dsh-orcana-linux"
+    "@leooday/dsh-orcana-linux": "file:$REPO_ROOT/packages/dsh-orcana-linux"
   },
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base"] } }
 }
@@ -33,11 +33,11 @@ nodeLinker: hoisted
 autoInstallPeers: false
 
 overrides:
-  '@orcana/dsh-orcana-linux': file:$REPO_ROOT/packages/dsh-orcana-linux
+  '@leooday/dsh-orcana-linux': file:$REPO_ROOT/packages/dsh-orcana-linux
 YAML
 fi
 
-(cd "$REPO_ROOT" && pnpm --filter @orcana/dsh-orcana-linux build)
+(cd "$REPO_ROOT" && pnpm --filter @leooday/dsh-orcana-linux build)
 (cd "$PROF" && pnpm install)
 echo "installed into $PROF — run: DSH_HOME=$DSH_HOME dsh --profile orcana-linux \"<task>\""
 
