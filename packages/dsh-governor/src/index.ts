@@ -4,8 +4,10 @@
  * Function plugin mounting the framework-agnostic ProgressFactEngine on DSH
  * extension points: observes `tools/post-execute` through
  * {@link toEngineEvent}, resets on user interjection at `agent/pre-step`,
- * and intercepts `agent/turn-stopping` (completion guard, P4). Model-visible
- * output (steers/reminders) is added in P2 as plugin-source user messages,
+ * and intercepts `agent/turn-stopping` to settle each round and escalate the
+ * zero-progress ladder (bounded by maxForcedContinuations; the evidence-bound
+ * completion guard lands in P4). Model-visible output (steers/reminders) is
+ * plugin-source user messages riding additionalContexts or agent.steer(),
  * satisfying the model-visible ⟺ logged invariant. No fork, no agent-loop
  * patch — pure Cordis extensions.
  *
@@ -20,11 +22,61 @@ import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { PostToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { ProgressFactEngine, canonicalizeArgs, sha256 } from '@orcana/governor-core'
-import type { EngineEvent } from '@orcana/governor-core'
+import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { UserMessage } from '@deepseek-ai/dsh-session'
+import {
+  ProgressFactEngine,
+  canonicalizeArgs,
+  sha256,
+  steerText,
+} from '@orcana/governor-core'
+import type { EngineEvent, TurnVerdict } from '@orcana/governor-core'
 
 export const name = 'orcana-governor'
+
+/** Governor steer decision: escalate the ladder or pass. */
+export interface SteerDecision {
+  readonly action: 'steer' | 'pass'
+  /** The tiered reminder text, when steering. */
+  readonly text: string | undefined
+  readonly chainLength: number
+}
+
+/**
+ * Pure steering policy: steer when the round was zero-progress, the chain
+ * length hits a configured threshold, the mode is not 'observe', and the
+ * forced-continuation budget is not exhausted. Extracted for tests; the
+ * turn-stopping listener is a thin wrapper.
+ * @param verdict - the settled round.
+ * @param config - governor steering knobs.
+ * @param forcedCount - governor-issued continuations so far this session.
+ * @returns the decision.
+ */
+export function decideSteer(
+  verdict: TurnVerdict,
+  config: {
+    enabled: boolean
+    mode: 'observe' | 'warn-steer' | 'enforce'
+    thresholds: readonly number[]
+    maxForced: number
+  },
+  forcedCount: number,
+): SteerDecision {
+  if (!config.enabled || !verdict.zeroProgress || config.mode === 'observe') {
+    return { action: 'pass', text: undefined, chainLength: verdict.chainLength }
+  }
+  if (!config.thresholds.includes(verdict.chainLength)) {
+    return { action: 'pass', text: undefined, chainLength: verdict.chainLength }
+  }
+  if (forcedCount >= config.maxForced) {
+    return { action: 'pass', text: undefined, chainLength: verdict.chainLength }
+  }
+  return {
+    action: 'steer',
+    text: steerText(verdict.chainLength, verdict.repeatedPattern, config.thresholds),
+    chainLength: verdict.chainLength,
+  }
+}
 
 /** Plugin config — every deployment-varying choice is a validated field. */
 export interface Config {
@@ -34,6 +86,8 @@ export interface Config {
     zeroProgressThresholds: number[]
     /** Recent-observation window for repeated-call detection. */
     fingerprintWindow: number
+    /** Tool-name wildcard patterns that get in-round repeat reminders (align with the coordinated repeat-tool-reminder exclude). */
+    inlineRepeatTools: string[]
   }
   evidence: {
     enabled: boolean
@@ -56,6 +110,7 @@ export const Config: z<Config> = z.object({
     mode: z.union(['observe', 'warn-steer', 'enforce'] as const).default('warn-steer'),
     zeroProgressThresholds: z.array(z.number()).default([2, 3, 4]),
     fingerprintWindow: z.number().step(1).min(1).default(8),
+    inlineRepeatTools: z.array(z.string()).default(['read', 'bash', '*search*']),
   }),
   evidence: z.object({
     enabled: z.boolean().default(true),
@@ -198,6 +253,8 @@ export function translateSessionEvents(events: readonly ReplayEvent[]): EngineEv
 export function apply(ctx: Context, config: Config): void {
   ctx.logger?.info('[orcana-governor] activated mode=%s', config.governor.mode)
   const engines = new WeakMap<Agent, ProgressFactEngine>()
+  /** Governor-issued forced continuations per agent (reset on user interjection). */
+  const forced = new WeakMap<Agent, number>()
 
   function engineFor(agent: Agent | undefined): ProgressFactEngine | undefined {
     if (!agent) return undefined
@@ -206,6 +263,7 @@ export function apply(ctx: Context, config: Config): void {
       engine = new ProgressFactEngine({
         fingerprintWindow: config.governor.fingerprintWindow,
         verifyPatterns: config.evidence.verifyCommandPatterns,
+        inlineRepeatTools: config.governor.inlineRepeatTools,
       })
       engines.set(agent, engine)
     }
@@ -214,34 +272,68 @@ export function apply(ctx: Context, config: Config): void {
 
   // Observe-and-enrich, never veto: advance state first, DELEGATE so a later
   // listener can still block or replace, then fold our contexts onto the
-  // downstream decision (reminders arrive in P2).
+  // downstream decision. In-round repeat reminders ride additionalContexts,
+  // which the agent loop logs as plugin-source user/message events at the
+  // next step boundary (agent.ts:283/395) — model-visible ⟺ logged holds.
   ctx.on('tools/post-execute', async (exec, result, next): Promise<PostToolDecision> => {
     const engine = engineFor(exec.agent)
+    let reminder: string | undefined
     if (engine !== undefined) {
       const signal = engine.applyEvent(toEngineEvent(exec, result))
+      reminder = engine.consumeInlineReminder()
       if (config.governor.enabled) {
         ctx.logger?.debug('[orcana-governor] %s → %s @gen%d', exec.name, signal.kind, engine.currentGeneration())
-        // TODO(P2): zero-progress escalation → steer via additionalContexts
       }
     }
-    return next()
+    const downstream = await next()
+    if (reminder === undefined) return downstream
+    const message = createUserMessage({
+      content: [{ type: 'text', text: reminder }],
+      source: { kind: 'plugin', plugin: 'orcana-governor', form: 'notice', summary: 'repeated call' },
+    })
+    const contexts: UserMessage[] = [message, ...(downstream.additionalContexts ?? [])]
+    if (downstream.kind === 'block') {
+      return { kind: 'block', feedback: downstream.feedback, additionalContexts: contexts }
+    }
+    return { ...downstream, additionalContexts: contexts }
   })
 
   // A user interjection changes the context; repetition across it is not a
-  // loop. Pure reset hook: always delegates.
+  // loop. Reset the zero-progress chain and the forced-continuation budget;
+  // governor steers (plugin source) never reset. Pure reset hook: delegates.
   ctx.on('agent/pre-step', async ({ agent, messages }, next): Promise<PreStepDecision> => {
     if (messages.some(message => message.source.kind === 'user')) {
-      // TODO(P2): reset per-agent zero-progress chains
-      void agent
+      engines.get(agent)?.resetChains()
+      forced.delete(agent)
     }
     return next()
   })
 
-  // The model is about to stop: completion-guard rules and the
-  // forced-continuation cap live here (P4). Parallel listener, no next().
+  // The model is about to stop: settle the round, then escalate the
+  // zero-progress ladder (bounded by maxForcedContinuations). Parallel
+  // listener, no next(). P4 adds the evidence-bound completion checks here.
   ctx.on('agent/turn-stopping', async ({ agent }) => {
-    // TODO(P4): evidence-bound completion checks (stale receipts, failed-then-no-pass, claim-without-evidence)
-    void agent
+    const engine = engines.get(agent)
+    if (engine === undefined) return
+    const verdict = engine.endTurn()
+    const decision = decideSteer(verdict, {
+      enabled: config.governor.enabled,
+      mode: config.governor.mode,
+      thresholds: config.governor.zeroProgressThresholds,
+      maxForced: config.completion.maxForcedContinuations,
+    }, forced.get(agent) ?? 0)
+    if (decision.action !== 'steer' || decision.text === undefined) return
+    forced.set(agent, (forced.get(agent) ?? 0) + 1)
+    agent.steer(createUserMessage({
+      content: [{ type: 'text', text: decision.text }],
+      source: {
+        kind: 'plugin',
+        plugin: 'orcana-governor',
+        form: 'notice',
+        summary: `zero-progress round ${verdict.chainLength}`,
+      },
+    }))
+    ctx.logger?.debug('[orcana-governor] steered after %d zero-progress rounds', verdict.chainLength)
   })
 
   // Cleanup runs at context disposal (cordis 'dispose' is not a typed event).

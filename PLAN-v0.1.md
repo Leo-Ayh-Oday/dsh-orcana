@@ -345,7 +345,7 @@ gates:
 |---|---|---|---|
 | P0 | repo 三层骨架 + bundle + 隔离 home 模板 + 安装冒烟 | `dsh --profile bench` 可 boot;**packed 与 local-file 两条安装路径都 mount/dispose 正确** | smoke-install.sh |
 | P1 | governor-core:观察层(fingerprint + generation + receipts,含 resume 重放) | 纯逻辑引擎 | 单测:从 log 重建状态一致 | ✅ 28/28,11.4 |
-| P2 | dsh-governor:Governor steer(escalation + 上限) | post-execute 提醒 + turn-stopping 续轮 | 单测 + 提醒文本快照 |
+| P2 | dsh-governor:Governor steer(escalation + 上限) | post-execute 提醒 + turn-stopping 续轮 | 单测 + 提醒文本快照 | ✅ 50/50,11.5 |
 | P3 | Evidence 呈现 + stale 判定 | 验证状态 context | 单测 |
 | P4 | Completion guard 三规则 | turn-stopping 拦截 | 单测 + 快照 |
 | P5 | Capability Router | restrict 应用 + 画像 | 单测:schema 变化断言 |
@@ -450,6 +450,15 @@ gates:
 6. **工具链**:vitest 4.x(root devDep);两包 tsconfig.test.json 使 typecheck 覆盖测试代码;`pnpm test` 28 通过
 7. **已知局限(§3.2 已记录)**:compaction 裁剪后重放以当前日志为权威;下游替换 content 的罕见场景实时观察原始结果
 
-## 下一步(P2)
+### 11.5 P2 结论(Governor steer 完成,50/50 测试全绿)
+1. **轮级聚合**:`endTurn()` 结算一轮(零进展 ⟺ 有观察 ∧ 无 mutation ∧ 无显著新证据[非验证的 first/progress/new-evidence] ∧ 无首次验证命令 ∧ 无 pass receipt);空轮不动链;`beginTurn` 幂等(adapter 只在 turn-stopping 调 endTurn,轮状态惰性创建)
+2. **验证重复特例生效**:同一验证命令历史已见后重复运行(无 pass)→ 零进展,即使哈希因时间戳变化;首次验证 = 活动(非零);轮内 mutation 或 pass → 非零
+3. **阶梯 + steer**:`decideSteer` 纯函数(阈值命中 ∧ mode≠observe ∧ 未超上限);三档文本稳定常量(GENTLE/REEVALUATE/strong 含重复模式),快照测试锁定
+4. **上限**:per-agent forced 计数,turn-stopping 里超 `maxForcedContinuations` 即放行;pre-step 检测 user 消息时链与预算一起重置(governor 的 plugin-source steer 不触发重置——§3.5 已确认)
+5. **轮内 inline 提醒**:同指纹连续 ≥2(默认)且工具 ∈ inlineRepeatTools(默认 read/bash/*search*,与协调 exclude 对齐)→ additionalContexts 折叠到 downstream(block 也带),每轮最多一次(fired 标志);agent-loop 自动落 user/message 日志
+6. **链不进 snapshot**:链是运行期行为派生状态,resume 后从零开始(保守方向:恢复后 governor 重新观察);快照一致性测试保持 gen/ring/receipts
+7. **实测修正**:streak 基于**指纹连续出现**而非 repeated 信号(首次调用必须计入配对);first-observation 算显著证据(新信息=活动,纯重复才算零进展)
+
+## 下一步(P3)
 
 governor-core 观察层深化:ring-buffer fingerprint(不只 last-1)、session-log 重放重建(resume 一致性)、verification-command 识别 + receipt 记录;dsh-governor 接线 `tools/post-execute` 全量观察。

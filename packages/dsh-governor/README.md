@@ -9,9 +9,9 @@ DSH adapter plugin for the Orcana runtime pack: mounts the framework-agnostic
 | Concern | Hook |
 |---|---|
 | Observe every tool call | `tools/post-execute` (waterfall, always `next()`) |
-| Attach next-request context (P2) | `PostToolDecision.additionalContexts` (auto-logged as `user/message`) |
-| Completion boundary (P4) | `agent/turn-stopping` + `agent.steer()` |
-| User interjection reset (P2) | `agent/pre-step` |
+| In-round repeat reminders | `PostToolDecision.additionalContexts` (auto-logged as `user/message`, once per round) |
+| Zero-progress escalation + forced continuation | `agent/turn-stopping` + `agent.steer()`, bounded by maxForcedContinuations |
+| User interjection reset | `agent/pre-step` (user-source messages reset chains and the budget) |
 
 ## Translation contract
 
@@ -24,7 +24,9 @@ live engine state — covered by tests.
 ## Config
 
 governor.enabled / mode (observe | warn-steer | enforce) / zeroProgressThresholds /
-fingerprintWindow; evidence.enabled / freshness / verifyCommandPatterns;
+fingerprintWindow / inlineRepeatTools (default read/bash/*search*, aligned with
+the coordinated repeat-tool-reminder exclude); evidence.enabled / freshness /
+verifyCommandPatterns;
 completion.mode / maxForcedContinuations; tools.disclosure / defaultProfile.
 Every field validated by schemastery with defaults; the benchmark treatment
 patch overrides them via `!!js process.env.ORCANA_*` ablation knobs.

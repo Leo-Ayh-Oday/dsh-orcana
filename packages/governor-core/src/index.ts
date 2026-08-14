@@ -91,6 +91,10 @@ export interface ProgressFactEngineOptions {
   readonly fingerprintWindow?: number
   /** Verification-command first-verb patterns (default the JS-ecosystem set). */
   readonly verifyPatterns?: readonly string[]
+  /** Tool-name wildcard patterns that get in-round repeat reminders (default read/bash/search — the tools the coordinated repeat-tool-reminder exclude leaves to the governor). */
+  readonly inlineRepeatTools?: readonly string[]
+  /** Consecutive same-fingerprint repeats in one round that trigger the in-round reminder (default 2). */
+  readonly inlineRepeatThreshold?: number
 }
 
 /** Default verification first-verb patterns (JS-ecosystem focus of the v0.1 benchmark). */
@@ -98,6 +102,12 @@ export const DEFAULT_VERIFY_PATTERNS: readonly string[] = ['test', 'typecheck', 
 
 /** Default recent-observation window. */
 export const DEFAULT_FINGERPRINT_WINDOW = 8
+
+/** Default in-round repeat-reminder tool patterns (aligned with the coordinated repeat-tool-reminder exclude). */
+export const DEFAULT_INLINE_REPEAT_TOOLS: readonly string[] = ['read', 'bash', '*search*']
+
+/** Default consecutive repeats in one round that trigger the in-round reminder. */
+export const DEFAULT_INLINE_REPEAT_THRESHOLD = 2
 
 /** SHA-256 hex digest of a string. */
 export function sha256(text: string): string {
@@ -213,18 +223,27 @@ export function receiptStatus(
 export class ProgressFactEngine {
   private readonly window: number
   private readonly patterns: readonly string[]
+  private readonly inlineTools: readonly string[]
+  private readonly inlineThreshold: number
   private generation = 0
   private readonly ring: RingEntry[] = []
   private readonly receipts = new Map<string, VerificationReceipt>()
+  private chain = 0
+  private turn: TurnState | undefined
 
   constructor(options: ProgressFactEngineOptions = {}) {
     this.window = options.fingerprintWindow ?? DEFAULT_FINGERPRINT_WINDOW
     this.patterns = options.verifyPatterns ?? DEFAULT_VERIFY_PATTERNS
+    this.inlineTools = options.inlineRepeatTools ?? DEFAULT_INLINE_REPEAT_TOOLS
+    this.inlineThreshold = options.inlineRepeatThreshold ?? DEFAULT_INLINE_REPEAT_THRESHOLD
     if (this.window < 1) {
       throw new Error('fingerprintWindow must be a positive integer')
     }
     if (this.patterns.length === 0) {
       throw new Error('verifyPatterns must not be empty')
+    }
+    if (this.inlineThreshold < 2) {
+      throw new Error('inlineRepeatThreshold must be >= 2')
     }
   }
 
@@ -255,7 +274,11 @@ export class ProgressFactEngine {
     this.ring.push({ ...observation, generation: this.generation })
     if (this.ring.length > this.window) this.ring.shift()
     if (event.mutation) this.generation += 1
-    if (event.command !== undefined && isVerificationCommand(event.tool, event.command, this.patterns)) {
+
+    const verification = event.command !== undefined
+      && isVerificationCommand(event.tool, event.command, this.patterns)
+    if (verification) {
+      const firstSeen = !this.receipts.has(event.command)
       this.recordReceipt({
         command: event.command,
         resultHash: event.resultHash,
@@ -263,8 +286,109 @@ export class ProgressFactEngine {
         status: receiptStatus(event),
         callId: event.callId,
       })
+      this.observeTurn(signal, observation, verification, {
+        firstSeen,
+        pass: receiptStatus(event) === 'pass',
+      })
+    } else {
+      this.observeTurn(signal, observation, verification, { firstSeen: false, pass: false })
     }
     return signal
+  }
+
+  /**
+   * Fold one observation into the current round's summary. Round state is
+   * lazily created on the first observation and cleared by endTurn.
+   */
+  private observeTurn(
+    signal: ProgressSignal,
+    observation: ToolObservation,
+    verification: boolean,
+    receipt: { firstSeen: boolean; pass: boolean },
+  ): void {
+    const turn = this.turn ??= newTurnState()
+    turn.observations += 1
+    if (signal.kind === 'repeated-observation') {
+      turn.repeatedPattern = {
+        tool: observation.tool,
+        canonicalArgs: observation.canonicalArgs,
+      }
+    }
+    // The verification-repeat special case: verification observations never
+    // count as significant evidence (their output hash is unstable); only a
+    // first-ever verification or a pass receipt marks activity.
+    if (verification) {
+      if (receipt.firstSeen) turn.verifyNew = true
+      if (receipt.pass) turn.verifyPass = true
+      return
+    }
+    if (signal.kind !== 'repeated-observation') {
+      turn.significant = true
+    }
+    // In-round repeat streak: consecutive same-fingerprint observations of an
+    // inline tool, independent of the classification signal (the first call of
+    // a pair must count, and a changed result hash naturally breaks the streak).
+    if (!this.inlineTools.some(pattern => matchWildcard(observation.tool, pattern))) {
+      turn.inlineStreak = 0
+      turn.inlineFingerprint = undefined
+      return
+    }
+    const key = observation.tool + '|' + observation.canonicalArgs + '|' + observation.resultHash
+    turn.inlineStreak = turn.inlineFingerprint === key ? turn.inlineStreak + 1 : 1
+    turn.inlineFingerprint = key
+    if (turn.inlineStreak >= this.inlineThreshold && !turn.inlineReminderFired) {
+      turn.inlineReminder = INLINE_REPEAT_REMINDER
+      turn.inlineReminderFired = true
+    }
+  }
+
+  /** Reset the round summary (idempotent; called by the adapter at round boundaries). */
+  beginTurn(): void {
+    this.turn = undefined
+  }
+
+  /**
+   * Settle the current round: aggregate its observations into a verdict and
+   * advance or reset the zero-progress chain. Rounds with zero observations
+   * leave the chain untouched. Clears the round state for the next round.
+   * @returns the verdict for this round.
+   */
+  endTurn(): TurnVerdict {
+    const turn = this.turn
+    this.turn = undefined
+    if (turn === undefined || turn.observations === 0) {
+      return { zeroProgress: false, chainLength: this.chain, repeatedPattern: undefined }
+    }
+    const zeroProgress = !turn.mutation && !turn.significant && !turn.verifyNew && !turn.verifyPass
+    if (zeroProgress) this.chain += 1
+    else this.chain = 0
+    return {
+      zeroProgress,
+      chainLength: this.chain,
+      repeatedPattern: turn.repeatedPattern,
+    }
+  }
+
+  /** Clear the zero-progress chain and round state (user interjection). */
+  resetChains(): void {
+    this.chain = 0
+    this.turn = undefined
+  }
+
+  /** Current consecutive zero-progress round count. */
+  zeroProgressChain(): number {
+    return this.chain
+  }
+
+  /**
+   * The in-round repeat reminder for this round, if one was produced and not
+   * yet consumed. The reminder is armed at most once per round; endTurn clears
+   * the round state so the next round can arm again.
+   */
+  consumeInlineReminder(): string | undefined {
+    const reminder = this.turn?.inlineReminder
+    if (this.turn !== undefined) this.turn.inlineReminder = undefined
+    return reminder
   }
 
   /** Store the latest receipt for its command (keyed by canonical command). */
@@ -305,5 +429,121 @@ export class ProgressFactEngine {
     const engine = new ProgressFactEngine(options)
     for (const event of events) engine.applyEvent(event)
     return engine
+  }
+}
+
+/**
+ * P2 — turn-level aggregation and zero-progress chain.
+ *
+ * classify() is per-observation; the escalation ladder counts zero-progress
+ * ROUNDS. One round is the interval between the engine's round boundaries
+ * (the adapter calls beginTurn/endTurn around a model stop). A round is
+ * zero-progress iff it observed at least one tool call AND saw no mutation,
+ * no significant new evidence (non-verification progress/new-evidence or
+ * first-observation), no first-ever verification command, and no pass
+ * receipt. The verification-repeat special case: re-running an already-seen
+ * verification command without a pass receipt counts as zero-progress even
+ * when its output hash changed (timestamps make test output unstable), which
+ * is exactly the repeated-failing-test pattern the governor must catch.
+ * Rounds with zero observations neither advance nor reset the chain.
+ */
+
+/** One round's aggregation result. */
+export interface TurnVerdict {
+  /** Whether the round just ended was zero-progress. */
+  readonly zeroProgress: boolean
+  /** Consecutive zero-progress rounds after this round (0 when this round had progress). */
+  readonly chainLength: number
+  /** The round's last repeated observation (tool + canonical args) for the strong steer, if any. */
+  readonly repeatedPattern: { readonly tool: string; readonly canonicalArgs: string } | undefined
+}
+
+/** Model-visible reminder texts — stable strings, snapshot-covered (PLAN 7). */
+export const INLINE_REPEAT_REMINDER =
+  'You are repeating the exact same call with unchanged results. Take a different action or finish the task.'
+
+/** The gentle first-tier turn reminder. */
+export const GENTLE_TURN_REMINDER =
+  'You have spent 2 consecutive rounds without progress. Stop repeating investigation and take the next concrete action.'
+
+/** The second-tier turn reminder. */
+export const REEVALUATE_TURN_REMINDER =
+  'You have spent 3 consecutive rounds without progress. Re-evaluate the current approach before continuing.'
+
+/**
+ * The strong steer naming the repeated pattern and the round count.
+ * @param chainLength - consecutive zero-progress rounds.
+ * @param pattern - the round's repeated observation, when one was seen.
+ * @returns the stable strong-steer text (chain length and pattern interpolated).
+ */
+export function strongTurnReminder(
+  chainLength: number,
+  pattern: { readonly tool: string; readonly canonicalArgs: string } | undefined,
+): string {
+  const repeated = pattern === undefined
+    ? ''
+    : ` Repeated pattern: ${pattern.tool} ${pattern.canonicalArgs}`
+  return `You have spent ${chainLength} consecutive rounds without progress.${repeated} Change approach or finish the task.`
+}
+
+/**
+ * Tiered steer text for a chain length that hit a threshold: the first
+ * threshold gets the gentle reminder, the second the re-evaluate reminder,
+ * everything from the third threshold on the strong steer.
+ * @param chainLength - consecutive zero-progress rounds (must hit `thresholds`).
+ * @param pattern - repeated observation for the strong steer.
+ * @param thresholds - configured ladder (ascending; at least one entry).
+ * @returns the exact reminder text for this tier.
+ */
+export function steerText(
+  chainLength: number,
+  pattern: { readonly tool: string; readonly canonicalArgs: string } | undefined,
+  thresholds: readonly number[],
+): string {
+  const index = thresholds.indexOf(chainLength)
+  if (index === 0) return GENTLE_TURN_REMINDER
+  if (index === 1) return REEVALUATE_TURN_REMINDER
+  return strongTurnReminder(chainLength, pattern)
+}
+
+/**
+ * `*`-wildcard tool-name match (same semantics as repeat-tool-reminder's
+ * include/exclude): every other regex metacharacter matches literally.
+ */
+export function matchWildcard(name: string, pattern: string): boolean {
+  const escaped = pattern.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
+  return new RegExp(`^${escaped.replaceAll('*', '.*')}$`).test(name)
+}
+
+/** One round's in-engine state (transient; never snapshotted). */
+interface TurnState {
+  observations: number
+  mutation: boolean
+  significant: boolean
+  /** A verification command never seen before this round (new verification activity). */
+  verifyNew: boolean
+  /** A pass receipt landed this round. */
+  verifyPass: boolean
+  /** Consecutive same-fingerprint repeated-observation streak (inline-reminder input). */
+  inlineStreak: number
+  inlineFingerprint: string | undefined
+  inlineReminder: string | undefined
+  /** One reminder per round (PLAN 3.1: one notice per pattern). */
+  inlineReminderFired: boolean
+  repeatedPattern: { tool: string; canonicalArgs: string } | undefined
+}
+
+function newTurnState(): TurnState {
+  return {
+    observations: 0,
+    mutation: false,
+    significant: false,
+    verifyNew: false,
+    verifyPass: false,
+    inlineStreak: 0,
+    inlineFingerprint: undefined,
+    inlineReminder: undefined,
+    inlineReminderFired: false,
+    repeatedPattern: undefined,
   }
 }
