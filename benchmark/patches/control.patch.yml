@@ -1,0 +1,4 @@
+# Control arm: Orcana package installed but NOT activated.
+# Both arms share the same profile/node_modules/lockfile; this empty patch
+# list is the only difference from treatment.patch.yml.
+[]

@@ -1,0 +1,24 @@
+# Treatment arm: activate the Orcana runtime pack.
+# Ablation knobs read the environment so one build serves every arm.
+- insert:
+    - id: orcana
+      name: '@orcana/dsh-governor'
+      config:
+        governor:
+          enabled: !!js process.env.ORCANA_GOVERNOR !== 'off'
+          mode: !!js process.env.ORCANA_MODE ?? 'warn-steer'
+          zeroProgressThresholds: !!js (process.env.ORCANA_THRESHOLDS ?? '2,3,4').split(',').map(Number)
+        evidence:
+          enabled: !!js process.env.ORCANA_EVIDENCE !== 'off'
+          freshness: generation
+          verifyCommandPatterns: !!js (process.env.ORCANA_VERIFY_PATTERNS ?? 'test,typecheck,build,check,lint').split(',')
+        completion:
+          mode: !!js (process.env.ORCANA_COMPLETION === 'off' && 'off') || 'evidence-bound'
+          maxForcedContinuations: !!js Number(process.env.ORCANA_MAX_CONT ?? 3)
+        tools:
+          disclosure: !!js (process.env.ORCANA_ROUTER === 'off' && 'off') || 'task-profile'
+          defaultProfile: !!js process.env.ORCANA_PROFILE ?? 'coding'
+
+- id: repeat-tool-reminder
+  config:
+    exclude: [read, bash, '*search*']

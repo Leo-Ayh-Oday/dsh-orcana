@@ -1,0 +1,26 @@
+# Orcana runtime pack bundle patch. Inserts the governor row; later layers
+# (profile cordis.patch.yml, --patch overlays) override its config by row id.
+- insert:
+    - id: orcana
+      name: '@orcana/dsh-governor'
+      config:
+        governor:
+          enabled: true
+          mode: warn-steer
+          zeroProgressThresholds: [2, 3, 4]
+        evidence:
+          enabled: true
+          freshness: generation
+          verifyCommandPatterns: [test, typecheck, build, check, lint]
+        completion:
+          mode: evidence-bound
+          maxForcedContinuations: 3
+        tools:
+          disclosure: task-profile
+          defaultProfile: coding
+
+# Hand repeated-call detection to the governor so one pattern gets one
+# reminder (repeat-tool-reminder stays available for non-orcana profiles).
+- id: repeat-tool-reminder
+  config:
+    exclude: [read, bash, '*search*']
