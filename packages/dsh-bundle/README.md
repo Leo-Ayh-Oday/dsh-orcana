@@ -7,6 +7,18 @@ Contract: the package manifest declares `"dsh": { "bundle": { "patch":
 "./cordis.patch.yml" } }`, making it an installable patch layer
 ([bundle contract](../../deepseek-harness/packages/bundle/README.md)).
 
+## Install (official command, once published)
+
+```sh
+dsh plugin --profile orcana add @orcana/dsh-bundle
+```
+
+`dsh plugin add` installs the bundle and auto-activates it as a profile layer
+(`@orcana/dsh-governor` and `@orcana/governor-core` resolve as its
+dependencies). Before publishing, use
+[`scripts/dev-install.sh`](../../scripts/dev-install.sh) or profile
+`pnpm-workspace.yaml` overrides against the local tarballs.
+
 ## Known Limitations
 
 - The `exclude` override of `repeat-tool-reminder` targets the row id from

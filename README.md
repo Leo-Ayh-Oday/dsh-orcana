@@ -30,9 +30,10 @@ frozen benchmark invariants, [docs/architecture.md](docs/architecture.md) and
 Official DSH bundle install (once the `@orcana/*` packages are published):
 
 ```sh
-# Orcana runtime pack (governor)
+# Everything in one profile, one command (governor + Linux hardening):
+dsh plugin --profile orcana add @orcana/dsh-bundle @orcana/dsh-orcana-linux-bundle
+# or separate profiles:
 dsh plugin --profile orcana add @orcana/dsh-bundle
-# Orcana Linux edition hardening (neutral defaults; enforce via the bundle row's config)
 dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
 dsh --profile orcana "<task>"
 ```
