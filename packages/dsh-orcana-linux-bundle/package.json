@@ -1,0 +1,17 @@
+{
+  "name": "@orcana/dsh-orcana-linux-bundle",
+  "version": "0.1.0",
+  "description": "dsh-orcana Linux edition profile bundle for DeepSeek Harness (dsh.bundle.patch contract)",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@orcana/dsh-orcana-linux": "workspace:^"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
+

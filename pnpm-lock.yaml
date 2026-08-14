@@ -52,7 +52,7 @@ importers:
         specifier: ^5.7.0
         version: 5.7.2
 
-  packages/dsh-hardening:
+  packages/dsh-orcana-linux:
     dependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -73,6 +73,12 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.7.2
+
+  packages/dsh-orcana-linux-bundle:
+    dependencies:
+      '@orcana/dsh-orcana-linux':
+        specifier: workspace:^
+        version: link:../dsh-orcana-linux
 
   packages/governor-core:
     devDependencies:

@@ -21,6 +21,7 @@ frozen benchmark invariants, [docs/architecture.md](docs/architecture.md) and
 | `packages/dsh-governor` | DSH adapter plugin (function plugin, mounts DSH extension points) |
 | `packages/dsh-bundle` | Profile bundle (`dsh.bundle.patch` contract) |
 | `packages/dsh-orcana-linux` | dsh-orcana Linux edition: native hardening layers over the official sandbox contract |
+| `packages/dsh-orcana-linux-bundle` | Profile bundle for the Linux edition (`dsh.bundle.patch` contract) |
 | `benchmark/` | A/B harness: task manifests, patches, runner, reports |
 | `scripts/` | dev-install / smoke / bench-run |
 

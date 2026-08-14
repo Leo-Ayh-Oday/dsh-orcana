@@ -1,8 +1,27 @@
 {
   "name": "@orcana/dsh-orcana-linux",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "dsh-orcana Linux edition — native hardening layers (resource limits, egress policy, execution evidence) as a DSH plugin over the official sandbox contract",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Leo-Ayh-Oday/dsh-orcana.git"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "sandbox",
+    "hardening",
+    "resource-limits",
+    "egress",
+    "prlimit",
+    "bwrap",
+    "seccomp",
+    "linux"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

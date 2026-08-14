@@ -1,5 +1,5 @@
 /**
- * @orcana/dsh-hardening — native hardening layers as a DSH plugin.
+ * @orcana/dsh-orcana-linux — native hardening layers as a DSH plugin.
  *
  * Mounts on the OFFICIAL DSH sandbox contract (no fork required). cordis
  * 4.0.1 refuses service replacement across fibers (provide refuses a second
@@ -11,15 +11,18 @@
  *   argv prefix on Linux (`--as` RLIMIT_AS memory approximation, `--nproc`
  *   PER-UID task cap). cpuQuotaUs has no rlimit equivalent and degrades
  *   visibly. No prlimit binary — honest degradation record, never silent.
- * - `network: 'none'` — inject `--unshare-net` into a bwrap inner argv (a
- *   fresh network namespace has no routes). Runners that cannot express it
- *   are recorded degraded.
+ * - `network: 'none'` — deny egress: `--unshare-net` injected into a bwrap
+ *   argv (fresh network namespace, no routes), `(deny network*)` appended
+ *   to a Seatbelt profile. Runners that cannot express it are recorded
+ *   degraded.
  *
- * Limits come from the plugin config (deployment-level hardening) and apply
- * to every confined execution. Each confinement is recorded in an audit
- * ledger exposed as `ctx.hardening` (layers applied, degradations,
- * mechanism) so operators can see what every execution actually got.
- * @module @orcana/dsh-hardening
+ * Limits come from the plugin config (deployment-level defaults) and can be
+ * overridden PER CALL: a caller may attach `resourceLimits` / `network` to
+ * the sandbox policy object it passes to `confine` (e.g. a bash spec's
+ * `sandboxPolicy` override) — the runtime object rides the official policy
+ * untouched. Every confinement is recorded in an audit ledger exposed as
+ * `ctx.hardening` (layers applied, degradations, mechanism).
+ * @module @orcana/dsh-orcana-linux
  */
 
 import { spawnSync } from 'node:child_process'
@@ -51,6 +54,16 @@ export const Config: z<HardeningConfig> = z.object({
   }),
   network: z.union(['inherit', 'none'] as const),
 })
+
+/**
+ * The per-call hardening carrier: callers may attach these fields to the
+ * sandbox policy object passed to `confine` (they ride the official
+ * SandboxPolicy untouched — official types simply do not declare them).
+ */
+export interface HardeningCarrier {
+  resourceLimits?: ResourceLimits
+  network?: 'inherit' | 'none'
+}
 
 /** One confined execution's hardening facts, for the audit ledger. */
 export interface HardeningRecord {
@@ -93,6 +106,22 @@ export interface HardenedArgv {
   degraded: readonly string[]
 }
 
+/**
+ * The effective hardening for one confinement: the policy-carried per-call
+ * values win, the plugin config is the deployment-level fallback.
+ */
+export function effectiveConfig(config: HardeningConfig, policy: SandboxPolicy): HardeningConfig {
+  const carrier = policy as unknown as HardeningCarrier
+  return {
+    ...(carrier.resourceLimits !== undefined || config.resourceLimits !== undefined
+      ? { resourceLimits: carrier.resourceLimits ?? config.resourceLimits }
+      : {}),
+    ...(carrier.network !== undefined || config.network !== undefined
+      ? { network: carrier.network ?? config.network }
+      : {}),
+  }
+}
+
 /** Apply the hardening layers to a confined argv; never throws. */
 export function applyHardening(base: ConfinedArgv, config: HardeningConfig): HardenedArgv {
   const layers: string[] = []
@@ -116,6 +145,9 @@ export function applyHardening(base: ConfinedArgv, config: HardeningConfig): Har
     if (runner === 'bwrap') {
       argv = insertBeforeBwrapDash(argv, '--unshare-net')
       layers.push('network-none')
+    } else if (runner === 'sandbox-exec') {
+      argv = appendSeatbeltDeny(argv, '(deny network*)')
+      layers.push('network-none')
     } else {
       degraded.push('network-none (runner cannot express egress denial)')
     }
@@ -124,7 +156,7 @@ export function applyHardening(base: ConfinedArgv, config: HardeningConfig): Har
 }
 
 /** The prlimit argv prefix for the enforce-able limits, or null when unusable. */
-function prlimitPrefix(limits: ResourceLimits): string[] | null {
+export function prlimitPrefix(limits: ResourceLimits): string[] | null {
   if (limits.memoryBytes === undefined && limits.pidsMax === undefined) return null
   const probe = spawnSync('prlimit', ['--version'], { timeout: 2_000, stdio: 'ignore' })
   if (probe.status !== 0) return null
@@ -135,20 +167,31 @@ function prlimitPrefix(limits: ResourceLimits): string[] | null {
 }
 
 /** Insert an extra bwrap flag before the `--` separator (append when absent). */
-function insertBeforeBwrapDash(argv: string[], flag: string): string[] {
+export function insertBeforeBwrapDash(argv: string[], flag: string): string[] {
   const dash = argv.indexOf('--')
   if (dash === -1) return [...argv, flag]
   return [...argv.slice(0, dash), flag, ...argv.slice(dash)]
 }
 
+/** Append a denial form to a Seatbelt profile string (`-p <profile>`). */
+export function appendSeatbeltDeny(argv: string[], deny: string): string[] {
+  const p = argv.indexOf('-p')
+  if (p === -1 || p + 1 >= argv.length) return argv
+  const profile = argv[p + 1]
+  if (typeof profile !== 'string' || profile.length === 0) return argv
+  const next = [...argv]
+  next[p + 1] = profile + ' ' + deny
+  return next
+}
+
 /** Idempotence guard placed on a patched provider instance. */
-const PATCHED = Symbol('orcana.dsh-hardening.patched')
+const PATCHED = Symbol('orcana.dsh-orcana-linux.patched')
 
 /** Function plugin: patch the resolved sandbox provider with hardening layers. */
 export function apply(ctx: Context, config: HardeningConfig = {}) {
   const inner = ctx.sandbox as SandboxProvider & { [PATCHED]?: boolean }
   if (inner === undefined) {
-    throw new Error('dsh-hardening: ctx.sandbox is not registered yet — load this plugin after the sandbox provider')
+    throw new Error('dsh-orcana-linux: ctx.sandbox is not registered yet — load this plugin after the sandbox provider')
   }
   if (inner[PATCHED]) return
   const ledger = new HardeningService(ctx)
@@ -156,7 +199,7 @@ export function apply(ctx: Context, config: HardeningConfig = {}) {
   Object.defineProperty(inner, PATCHED, { value: true, enumerable: false })
   inner.confine = (argv: string[], policy: SandboxPolicy): ConfinedArgv => {
     const base = original(argv, policy)
-    const hardened = applyHardening(base, config)
+    const hardened = applyHardening(base, effectiveConfig(config, policy))
     ledger.record({ layers: hardened.layers, degraded: hardened.degraded, argv0: hardened.argv[0] ?? '', at: Date.now() })
     return { ...base, argv: hardened.argv }
   }

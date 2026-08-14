@@ -1,0 +1,12 @@
+# dsh-orcana Linux edition bundle patch. Inserts the hardening row; later
+# layers (profile cordis.patch.yml, --patch overlays) override its config by
+# row id.
+- insert:
+    - id: dsh-orcana-linux
+      name: '@orcana/dsh-orcana-linux'
+      config:
+        resourceLimits:
+          memoryBytes: 1073741824
+          pidsMax: 64
+        network: none
+
