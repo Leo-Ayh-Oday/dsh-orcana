@@ -30,3 +30,4 @@ DSH_HOME=<run-home> dsh --profile bench --patch patches/treatment.patch.yml "<ta
 3. Timeout verdict belongs to the supervisor, never to DSH's exit code.
 4. Durability = semantic-checkpoint durability; the last in-flight streaming batch may be lost; unfinished external side effects are unknown-outcome.
 5. Gates A/B/C verified separately and pinned: existing suite green, reproducer red, official fix green.
+6. Environment pin: permission mode danger-full-access (approval never), telemetry off, web_search disabled in both arms, run-time network denied; recorded per run.

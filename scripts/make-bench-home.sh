@@ -37,11 +37,16 @@ YAML
 # Shared coordination for BOTH arms: the governor owns repeat detection for
 # read/bash/search in treatment, so the base reminder excludes them here —
 # control and treatment patches then differ ONLY in orcana activation.
+# Pollution lockdown: dsh-base mounts web_search; the benchmark denies it in
+# both arms (network DENY is enforced here at the tool level, plus OS-level
+# isolation by the runner — see PLAN 5.6).
 cat > "$PROF/cordis.patch.yml" <<YAML
 # Shared bench profile coordination (both arms).
 - id: repeat-tool-reminder
   config:
     exclude: [read, bash, '*search*']
+- id: tool-web
+  disabled: true
 YAML
 
 (cd "$REPO_ROOT" && pnpm -r build)

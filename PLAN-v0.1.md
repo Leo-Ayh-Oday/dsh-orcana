@@ -100,6 +100,8 @@ fingerprint = hash(toolName, canonicalArgs, resultHash, workspaceGeneration)
 - 4 轮 → strong steer(点名重复模式:重复 read / 重复命令 + 轮次序号)
 - **硬上限**:turn-stopping 强制续轮数(默认 3,可配),超过放行 — v0.1 绝不 kill(代码库 hooks-claude-code/src/index.ts:269 已挂 `TODO(stop-loop-guard)`)
 - **零进展链重置点(P2 实现约定)**:mutation 成功(gen 前进)、非 repeated 信号、用户打断(claimed 含 user message)都重置链;gen 前进的同一观察即使被判 repeated(如重复写相同内容)也不算零进展
+- **按轮聚合(P2 实现约定,整体审计定稿)**:阶梯按"零进展**轮**"计数,而 classify 是逐工具观察——每个 turn 结束时聚合:该 turn 零进展 ⟺ 期间无 gen 前进 ∧ 无 new-evidence/progress 信号 ∧ 无新 receipt。连续 N 个零进展 turn 触发对应阶梯档位。turn 边界 = `turn/end`(经 `agent/turn-stopping` 同步计数)
+- **验证命令重复特例(P2 实现约定,整体审计定稿)**:验证类命令(npm test 等)输出含时间戳/耗时,resultHash 天然不稳 → 每次重跑都会判 new-evidence,循环跑测试的零进展对纯哈希检测不可见。特例:同一验证命令(经 §3.2 匹配)在无新 pass receipt、无 gen 前进时重复出现,无论哈希如何变化都计入零进展轮(修 bug 前的重跑正是要抓的模式;修好后 gen 前进自然重置)
 
 **与 repeat-tool-reminder 协调(必须处理):** base 默认启用(thresholds [3,5,8]);orcana profile 中 governor 接管重复观察(补 resultHash + generation 两层),patch 里 `exclude` 指向 governor 跟踪的工具集,同一模式只收一条提醒。
 
@@ -120,7 +122,8 @@ interface VerificationReceipt {
 }
 ```
 
-- 验证命令识别:test|typecheck|build|check|lint 模式(Config 可配)
+- 验证命令识别(整体审计定稿):匹配 canonical command 的**首动词**(npm test / pnpm test / vitest / jest / cargo test / go test / pytest / npm run build|typecheck|check|lint 等),**不是任意子串**——`grep -r test src` 不得误判为验证;Config 的 verifyCommandPatterns 是首动词模式列表
+- **compaction 交互(已记录)**:compaction 会改写 `tool/result` 内容(tool-result-pruner),resume 重放基于**当前日志**重建引擎态;重放态是权威,允许与实时态分歧(实时态决定运行期行为,重放态决定恢复后行为)
 - **stale 判定**:`receipt.generation !== 当前 generation` → STALE
 
 **模型可见验证状态(简洁 context):**
@@ -134,11 +137,11 @@ Verification state:
 
 ### 3.3 Completion Claim Guard
 
-**拦截点**:`agent/turn-stopping`。三条硬规则(任一命中 → steer 续一轮,计入 §3.1 上限):
+**拦截点**:`agent/turn-stopping`。三条硬规则(任一命中 → steer 续一轮,计入 §3.1 上限),**作用域 = 验证命令 identity(整体审计定稿)**,receipt map 按 canonical command 键控天然支持:
 
-1. 本任务有 mutation 且验证 receipt 全部 STALE → steer
-2. 存在 fail 状态 receipt 且之后无更新的 pass receipt → steer
-3. (可选开关)assistant 最后文本含完成声明("tests pass"/"全部通过")但无当前 pass receipt → steer —— 文本只触发检查,不参与判定
+1. 本任务有 mutation(gen>0)且**没有任何** fresh(当前 gen)pass receipt → steer
+2. 任一验证命令的最新 receipt 是 fail(之后无该命令的 pass 覆盖——map 只留最新,天然成立)→ steer;跨命令不互抵(npm test 失败不因 typecheck 通过而消解)
+3. (可选开关)assistant 最后文本含完成声明("tests pass"/"全部通过")但该声明指向的验证类命令无当前 gen 的 pass receipt → steer —— 文本只触发检查,不参与判定
 
 **明确不做**:判断"任务是否真正完成"。
 
@@ -151,7 +154,7 @@ Verification state:
 ### 3.5 不变量合规(DSH 硬约定)
 
 1. 不建第二套 log:全部状态是 plugin-owned derived state,resume 从 session log 重放重建
-2. model-visible ⟺ logged:每条 steer/提醒 = `createUserMessage({source:{kind:'plugin', plugin:'orcana-*'}})`,随 `user/message` 落盘
+2. model-visible ⟺ logged:每条 steer/提醒 = `createUserMessage({source:{kind:'plugin', plugin:'orcana-*'}})`,随 `user/message` 落盘。已对源码确认:post-execute 的 `additionalContexts` 由 agent-loop 暂存进 next-step inbox,下一 step 边界 claim 后 `append('user/message')`(agent-loop/src/agent.ts:283,395)—— 自动落盘,无需插件自写事件。**source.kind 必须是 'plugin'**:kind:'user' 会同时触发我们自己和 repeat-tool-reminder 的 pre-step 重置(两处都判 `source.kind === 'user'`),自毁阶梯
 3. 提醒文本是稳定模型可见字符串 → 快照覆盖
 4. 插件导出遵循函数插件约定(name/inject/Config/apply,无 default export)
 
@@ -228,6 +231,7 @@ Verification state:
 - 建 `bench-home-template/`(profiles/bench + package.json + pnpm-lock.yaml + pnpm-workspace.yaml + node_modules,**无任何全局 patch**)
 - 每 run:`template → copy/reflink → run-home-NNN`,设 `DSH_HOME=<run-home-NNN>`
 - 用户日常的 TUI、plugins、settings、`$DSH_HOME/cordis.patch.yml` 全部隔离在 benchmark 之外
+- **运行环境 pin(整体审计补充)**:`DSH_PERMISSION_MODE=danger-full-access`(approval never,确定性放行/拒绝,无 answerer 依赖——headless 下 `ask` 无 answerer 会 fail-closed 拒绝,基准任务可能被静默挡死);`DSH_TELEMETRY_MODE` 不设置(默认 DISABLED);`DSH_TOOLS_MODE` 不设置;cwd = 任务 workspace(sandbox workspaceRoot 随 cwd);两臂同值,全部写进 runner 环境清单
 
 ### 5.3 预算与权威判定(supervisor 说了算)
 
@@ -288,6 +292,7 @@ network:
 ```
 
 - 依赖在 task preparation 阶段预装(install + build cache + baseline verify 都在考试前完成)
+- **执行机制(整体审计补充,双层)**:①工具层——共享 bench profile patch 已 `disabled` dsh-base 的 `tool-web`(web_search/fetch 双臂一致关闭);②OS 层——runner 以无外联网络命名空间运行 DSH 进程(unshare -n 或容器,无默认路由),依赖已预装,运行期零出网;registry allowlist 仅作用于 prep 期安装。GitHub/search/任意 web 在运行期从网络层面不可达,不依赖 agent 自觉
 - repo 预处理:`git remote remove origin`;生成只含 base 所需历史的 benchmark clone,**保证 future fix commit 不在本地 object/history 里**
 - 任务文本内容寻址(§5.7),剔除泄露 fix 思路的后续评论
 
@@ -378,7 +383,7 @@ gates:
 
 ### 9.2 安装/加载(源码确认后的修正)
 - `--patch` 文件位置 ≠ 插件解析位置;解析锚点 = 安装 closure → profile node_modules
-- Dev:profile 内 `pnpm add file:`;Benchmark:同构 bench profile + 双 patch;Release:`npm publish` + `dsh plugin --profile orcana add`
+- Dev:profile 内 `pnpm add file:`;Benchmark:同构 bench profile + 双 patch;Release:`npm publish`(governor-core + dsh-governor)+ `dsh plugin --profile orcana add`;`dsh-bundle` 保持 `private:true` 不发布——GitHub release 附带其 tarball 与安装说明(整体审计注记)
 - peer 不变量:依赖 DSH 已提供的 service-definition peers 允许;不在安装 closure 的 peer 自己负责
 
 ### 9.3 预算与超时
@@ -425,6 +430,15 @@ gates:
 3. **pruner 时序勘误(§3.1 已修)**:`tool-result-pruner` 是 compaction 阶段的服务(compaction-basic 调用),post-execute 观察的是原始 content,不存在"已先裁剪"
 4. **分类语义定稿**:`new-evidence`(同调用新结果)是与 `repeated-observation` 对立的非零进展信号;mutation 成功即使观察判 repeated 也因 gen 前进重置零进展链
 5. **mutation 工具名勘误(已修)**:DSH 注册名是 `str_replace_editor`(tool-str-replace-editor/src/index.ts:423),原 `'str_replace'` 永不匹配 → editor 编辑不推进 generation,核心机制静默失效;已改并加注释,P1 测试必须对 DSH 注册名断言该集合
+
+### 11.3 整体审计(第三轮:跨层交互,已记录)
+1. **additionalContexts 自动落盘(已源码确认)**:post-execute 上下文暂存 next-step inbox,下一 step 边界 `append('user/message')`(agent.ts:283,395)——P2 提醒无需自写事件;source.kind 必须 'plugin'(kind:'user' 会触发自身与 repeat-tool-reminder 的 pre-step 重置)
+2. **benchmark 权限模式未 pin(已补 §5.2)**:headless 下 `ask` 无 answerer fail-closed(`'unavailable'` → 拒绝),默认 workspace-write+ask 可能静默挡死任务写操作 → 环境 pin `DSH_PERMISSION_MODE=danger-full-access`(approval never)
+3. **污染封锁机制未定(已补 §5.6)**:dsh-base 的 web_search 在 bench profile 里是活的(可搜到 fix!)→ 共享 patch 禁用 `tool-web` + runner OS 层网络隔离(unshare -n),双层封锁
+4. **零进展计数按轮聚合(已补 §3.1)**:classify 是逐观察、阶梯是按轮——每 turn 聚合(无 gen 前进 ∧ 无非 repeated 信号 ∧ 无新 receipt);验证命令重复特例(哈希不稳不挡零进展检测)
+5. **验证命令匹配(已补 §3.2)**:首动词匹配,非任意子串(grep -r test 不误判)
+6. **completion 规则作用域(已补 §3.3)**:按验证命令 identity,receipt map 键控天然支持;跨命令不互抵
+7. **compaction 重放(已记录)**:重放基于当前(可能已裁剪的)日志,重放态为权威,允许与实时态分歧
 
 ## 下一步(P1)
 

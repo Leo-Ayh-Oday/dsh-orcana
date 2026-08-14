@@ -29,3 +29,8 @@ Frozen benchmark invariants (from the v2 review; see PLAN-v0.1.md §5 and §10).
 10. **Judging** — an independent script (not the agent, not an LLM) applies the
     manifest's acceptance command to the resulting workspace; false completion
     = agent claimed done but acceptance failed.
+11. **Environment pin** — DSH_PERMISSION_MODE=danger-full-access (approval
+    never; headless 'ask' fails closed with no answerer), telemetry off, tools
+    mode unset, cwd = task workspace; web_search disabled in BOTH arms
+    (shared profile patch); run-time outbound network denied (deps
+    preinstalled); all values identical across arms and recorded per run.
