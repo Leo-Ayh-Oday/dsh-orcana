@@ -27,6 +27,7 @@ import type { UserMessage } from '@deepseek-ai/dsh-session'
 import {
   ProgressFactEngine,
   canonicalizeArgs,
+  renderVerificationState,
   sha256,
   steerText,
 } from '@orcana/governor-core'
@@ -268,6 +269,30 @@ export function apply(ctx: Context, config: Config): void {
       engines.set(agent, engine)
     }
     return engine
+  }
+
+  // Evidence presentation: a per-request verification-state snapshot as
+  // dynamic system-prompt context (dsh-system-prompt "context", materialized
+  // as a durable user-role snapshot — model-visible ⟺ logged holds without
+  // extra events). Registered only when evidence is enabled; empty text
+  // contributes nothing.
+  if (config.evidence.enabled) {
+    ctx.inject(['systemPrompt'], (scope) => {
+      scope.systemPrompt.context({
+        name: 'orcana:verification-state',
+        order: 250,
+        text: (context) => {
+          const agent = context.agent
+          const engine = agent === undefined ? undefined : engines.get(agent)
+          if (engine === undefined) return ''
+          return renderVerificationState(
+            engine.snapshot().receipts,
+            engine.currentGeneration(),
+            config.evidence.freshness === 'generation',
+          ) ?? ''
+        },
+      })
+    })
   }
 
   // Observe-and-enrich, never veto: advance state first, DELEGATE so a later

@@ -547,3 +547,30 @@ function newTurnState(): TurnState {
     repeatedPattern: undefined,
   }
 }
+
+/**
+ * Render the model-visible verification-state snapshot. Fixed format,
+ * snapshot-covered (PLAN 7): one line per command in ascending command order;
+ * receipts recorded against an earlier generation are flagged STALE when
+ * freshness is on. Undefined when nothing was verified yet — the caller
+ * contributes no context then.
+ * @param receipts - latest receipt per command (engine snapshot).
+ * @param currentGeneration - engine's current workspace generation.
+ * @param freshness - whether the `generation` freshness mode is active.
+ * @returns the stable snapshot text, or undefined without receipts.
+ */
+export function renderVerificationState(
+  receipts: readonly VerificationReceipt[],
+  currentGeneration: number,
+  freshness: boolean,
+): string | undefined {
+  if (receipts.length === 0) return undefined
+  const lines = [...receipts]
+    .sort((left, right) => left.command.localeCompare(right.command))
+    .map((receipt) => {
+      const status = receipt.status === 'pass' ? 'PASS' : receipt.status === 'fail' ? 'FAIL' : 'UNKNOWN'
+      const stale = freshness && receipt.generation !== currentGeneration
+      return `- ${receipt.command}: ${status} @gen${receipt.generation}${stale ? ' STALE' : ''}`
+    })
+  return `Verification state:\n${lines.join('\n')}`
+}

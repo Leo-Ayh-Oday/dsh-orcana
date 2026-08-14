@@ -12,6 +12,7 @@ DSH adapter plugin for the Orcana runtime pack: mounts the framework-agnostic
 | In-round repeat reminders | `PostToolDecision.additionalContexts` (auto-logged as `user/message`, once per round) |
 | Zero-progress escalation + forced continuation | `agent/turn-stopping` + `agent.steer()`, bounded by maxForcedContinuations |
 | User interjection reset | `agent/pre-step` (user-source messages reset chains and the budget) |
+| Verification-state snapshot | `systemPrompt.context` (durable user-role snapshot, `orcana:verification-state`, order 250) |
 
 ## Translation contract
 
@@ -39,4 +40,6 @@ patch overrides them via `!!js process.env.ORCANA_*` ablation knobs.
   excluded from verification.
 - Mutations inside shell commands are invisible to the generation counter
   (v0.2: git-probe receipts).
+- The verification snapshot renders only commands that produced receipts
+  (matched by verifyCommandPatterns); NONE placeholders are future work.
 - Compaction-pruned logs replay to the pruned state (authoritative).

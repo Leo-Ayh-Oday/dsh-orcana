@@ -346,7 +346,7 @@ gates:
 | P0 | repo 三层骨架 + bundle + 隔离 home 模板 + 安装冒烟 | `dsh --profile bench` 可 boot;**packed 与 local-file 两条安装路径都 mount/dispose 正确** | smoke-install.sh |
 | P1 | governor-core:观察层(fingerprint + generation + receipts,含 resume 重放) | 纯逻辑引擎 | 单测:从 log 重建状态一致 | ✅ 28/28,11.4 |
 | P2 | dsh-governor:Governor steer(escalation + 上限) | post-execute 提醒 + turn-stopping 续轮 | 单测 + 提醒文本快照 | ✅ 50/50,11.5 |
-| P3 | Evidence 呈现 + stale 判定 | 验证状态 context | 单测 |
+| P3 | Evidence 呈现 + stale 判定 | 验证状态 context | 单测 | ✅ 70/70,11.6 |
 | P4 | Completion guard 三规则 | turn-stopping 拦截 | 单测 + 快照 |
 | P5 | Capability Router | restrict 应用 + 画像 | 单测:schema 变化断言 |
 | P6 | 任务选取 + 三 Gate dry-run + runner(supervisor/配对/隔离) | 冻结 manifests + A/B 可运行 | 基线任务跑通 |
@@ -459,6 +459,13 @@ gates:
 6. **链不进 snapshot**:链是运行期行为派生状态,resume 后从零开始(保守方向:恢复后 governor 重新观察);快照一致性测试保持 gen/ring/receipts
 7. **实测修正**:streak 基于**指纹连续出现**而非 repeated 信号(首次调用必须计入配对);first-observation 算显著证据(新信息=活动,纯重复才算零进展)
 
-## 下一步(P3)
+### 11.6 P3 结论(Evidence 呈现完成,70/70 测试全绿)
+1. **呈现机制**:`systemPrompt.context`(dsh-system-prompt 动态 context,物化为 durable user-role 快照——model-visible ⟺ logged 无需额外事件;approval 插件的同款机制,源码确认 `AssembleContext.agent` 由 dsh-agent runtime-types 扩展)
+2. **渲染格式**(固定文本,快照测试锁定):`Verification state:\n- <command>: <PASS|FAIL|UNKNOWN> @gen<N>[ STALE]`,按命令名升序;空状态不贡献 context(省 token)
+3. **stale 判定**:`receipt.generation !== 当前 gen` 且 `freshness: generation` 生效时标 STALE;freshness off 时不标
+4. **接线**:`ctx.inject(['systemPrompt'], …)` 注册 `orcana:verification-state`(order 250),按 assembly 的 agent 查引擎快照;仅 `evidence.enabled` 时注册
+5. **已知局限**:验证状态只反映 receipt 化命令(匹配 verifyCommandPatterns 的);NONE 占位行(v0.1 不显示未出现过的命令)留待 manifest 驱动
+
+## 下一步(P4)
 
 governor-core 观察层深化:ring-buffer fingerprint(不只 last-1)、session-log 重放重建(resume 一致性)、verification-command 识别 + receipt 记录;dsh-governor 接线 `tools/post-execute` 全量观察。
