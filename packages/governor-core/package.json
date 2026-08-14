@@ -4,6 +4,9 @@
   "description": "Framework-agnostic progress-fact engine: fingerprints, workspace generation, verification receipts",
   "license": "MIT",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {

@@ -4,7 +4,16 @@
   "description": "Orcana runtime pack profile bundle for DeepSeek Harness (dsh.bundle.patch contract)",
   "license": "MIT",
   "type": "module",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml"
+  ],
   "dependencies": {
     "@orcana/dsh-governor": "workspace:^",
     "@orcana/governor-core": "workspace:^"
