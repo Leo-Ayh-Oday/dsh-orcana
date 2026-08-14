@@ -38,3 +38,8 @@ dsh --profile orcana "<task>"
   generation counter (v0.2: git-probe receipts).
 - v0.1 never kills or cancels an agent; the strongest action is a steer
   reminder, bounded by `maxForcedContinuations`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — PRs carry exactly one kind/* and at
+least one area/* label, matching the upstream contribution convention.
