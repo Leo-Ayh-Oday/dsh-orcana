@@ -1,6 +1,6 @@
 {
   "name": "@orcana/dsh-bundle",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "Orcana runtime pack profile bundle for DeepSeek Harness (dsh.bundle.patch contract)",
   "license": "MIT",
   "type": "module",
