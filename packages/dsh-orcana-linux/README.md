@@ -1,4 +1,4 @@
-# @orcana/dsh-hardening
+# @orcana/dsh-orcana-linux
 
 Native hardening layers as a DSH plugin — no fork required.
 

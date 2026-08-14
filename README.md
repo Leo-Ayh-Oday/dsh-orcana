@@ -20,7 +20,7 @@ frozen benchmark invariants, [docs/architecture.md](docs/architecture.md) and
 | `packages/governor-core` | Framework-agnostic progress-fact engine (zero Cordis) |
 | `packages/dsh-governor` | DSH adapter plugin (function plugin, mounts DSH extension points) |
 | `packages/dsh-bundle` | Profile bundle (`dsh.bundle.patch` contract) |
-| `packages/dsh-hardening` | DSH adapter plugin: native hardening layers over the official sandbox contract |
+| `packages/dsh-orcana-linux` | dsh-orcana Linux edition: native hardening layers over the official sandbox contract |
 | `benchmark/` | A/B harness: task manifests, patches, runner, reports |
 | `scripts/` | dev-install / smoke / bench-run |
 
