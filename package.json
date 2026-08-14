@@ -10,6 +10,10 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "smoke": "bash scripts/smoke-install.sh"
+    "smoke": "bash scripts/smoke-install.sh",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
   }
 }

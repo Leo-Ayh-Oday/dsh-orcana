@@ -113,16 +113,17 @@ fingerprint = hash(toolName, canonicalArgs, resultHash, workspaceGeneration)
 
 ```ts
 interface VerificationReceipt {
-  tool: string;            // 验证命令工具(默认 bash)
-  command: string;         // canonical args
+  command: string;         // 规范化 shell command(验证 identity,不含 description)
   resultHash: string;
-  generation: number;      // 验证发生时的 workspace generation
+  generation: number;      // 记录时的 workspace generation
   status: 'pass' | 'fail' | 'unknown';
-  turn: number; step: number; callId: string;
+  callId: string;          // turn/step 可由 session log 关联
 }
 ```
 
-- 验证命令识别(整体审计定稿):匹配 canonical command 的**首动词**(npm test / pnpm test / vitest / jest / cargo test / go test / pytest / npm run build|typecheck|check|lint 等),**不是任意子串**——`grep -r test src` 不得误判为验证;Config 的 verifyCommandPatterns 是首动词模式列表
+**status 判定(已实现)**:interrupted(超时/信号)→ unknown;exit marker → pass/fail;isError → fail;无标记非错误 → pass(clean exit 0)。**实测确认**:bash 的 non-zero exit **不是** isError(渲染文本里的 `[exit code: N]` 标记,行尾锚定契约由 `@deepseek-ai/dsh-shell` 拥有);background ack 无终态退出码,不进验证
+
+- 验证命令识别(整体审计定稿):匹配 canonical command 的**首动词**(npm test → `test`、pnpm run build → `build`、npm run build:all → `build:all`),**不是任意子串**——`grep -r test src` 不得误判为验证;Config 的 verifyCommandPatterns 是首动词模式列表。**裸测试器注记**:vitest/jest/cargo 等非包管理器命令的 token 是工具名本身,默认模式(test/typecheck/build/check/lint)不含——需显式加入 verifyCommandPatterns
 - **compaction 交互(已记录)**:compaction 会改写 `tool/result` 内容(tool-result-pruner),resume 重放基于**当前日志**重建引擎态;重放态是权威,允许与实时态分歧(实时态决定运行期行为,重放态决定恢复后行为)
 - **stale 判定**:`receipt.generation !== 当前 generation` → STALE
 
@@ -343,7 +344,7 @@ gates:
 | # | 内容 | 产出 | 验证方式 |
 |---|---|---|---|
 | P0 | repo 三层骨架 + bundle + 隔离 home 模板 + 安装冒烟 | `dsh --profile bench` 可 boot;**packed 与 local-file 两条安装路径都 mount/dispose 正确** | smoke-install.sh |
-| P1 | governor-core:观察层(fingerprint + generation + receipts,含 resume 重放) | 纯逻辑引擎 | 单测:从 log 重建状态一致 |
+| P1 | governor-core:观察层(fingerprint + generation + receipts,含 resume 重放) | 纯逻辑引擎 | 单测:从 log 重建状态一致 | ✅ 28/28,11.4 |
 | P2 | dsh-governor:Governor steer(escalation + 上限) | post-execute 提醒 + turn-stopping 续轮 | 单测 + 提醒文本快照 |
 | P3 | Evidence 呈现 + stale 判定 | 验证状态 context | 单测 |
 | P4 | Completion guard 三规则 | turn-stopping 拦截 | 单测 + 快照 |
@@ -440,6 +441,15 @@ gates:
 6. **completion 规则作用域(已补 §3.3)**:按验证命令 identity,receipt map 键控天然支持;跨命令不互抵
 7. **compaction 重放(已记录)**:重放基于当前(可能已裁剪的)日志,重放态为权威,允许与实时态分歧
 
-## 下一步(P1)
+### 11.4 P1 结论(观察层完成,28/28 测试全绿)
+1. **单轨状态机**:`applyEvent(EngineEvent)` 是唯一状态迁移路径,实时 post-execute 与 session-log 重放(`ProgressFactEngine.rebuild`)共用同一翻译(`toEngineEvent`)/同一迁移 —— 两路径按构造不可漂移;一致性有专项测试(同一逻辑运行以实时与重放两条路各跑一遍,snapshot 深比较)
+2. **ring-buffer 指纹**:默认窗口 8(Config: governor.fingerprintWindow);同 (tool,args,hash) 在窗口内任意位置命中即 repeated(A-B-A 交替重复可检,不只 last-1);gen 前进作废旧指纹,新 gen 首观察 = first-observation(永不判 repeated)
+3. **验证识别与 receipt**:首动词 token(npm/pnpm/yarn/npx 解析子命令;`grep -r test` 不误判);receipt 以规范化 command 为键(description 不参与 identity);status = interrupted>exit-marker>isError>clean-pass;bash background ack 不进验证
+4. **实测发现(源码确认)**:bash non-zero exit 不是 isError —— 退出码在渲染文本 `[exit code: N]`(dsh-shell 共享标记契约,行尾锚定,无标记=exit 0);若契约变动,receipt 保守退化为 clean-pass 读数
+5. **快照/恢复**:`snapshot()`/`restore()` 携带 gen+ring+receipts,rebuild 一致性测试覆盖
+6. **工具链**:vitest 4.x(root devDep);两包 tsconfig.test.json 使 typecheck 覆盖测试代码;`pnpm test` 28 通过
+7. **已知局限(§3.2 已记录)**:compaction 裁剪后重放以当前日志为权威;下游替换 content 的罕见场景实时观察原始结果
+
+## 下一步(P2)
 
 governor-core 观察层深化:ring-buffer fingerprint(不只 last-1)、session-log 重放重建(resume 一致性)、verification-command 识别 + receipt 记录;dsh-governor 接线 `tools/post-execute` 全量观察。
