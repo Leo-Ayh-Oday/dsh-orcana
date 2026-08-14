@@ -391,6 +391,21 @@ gates:
 5. **三 Gate 分离**:原有套件 green(Gate A)、任务 reproducer red(Gate B)、official fix green(Gate C),三个测试分别验证、全部写死。
 6. **唯一变量**:同模型、同 DSH SHA、同任务、同预算、同 workspace 类别;唯一 independent variable = Orcana runtime behavior。
 
-## 11. 残留验证点(P0 冒烟)
+## 11. P0 验证结论(已实测,SMOKE OK)
 
-旧"overlay resolution uncertainty"已由源码解除。P0 要实测的是**实际 package 在 packed 与 local-file 两条安装路径下都能正确 mount/dispose**,以及 bench profile 在隔离 home 下可 boot —— 不是 DSH 如何解析。
+旧"overlay resolution uncertainty"已解除;P0 冒烟全部通过:
+
+1. **解析语义成立**:`--patch` overlay 正确插入 orcana 行(control 无行、treatment 有行,由 `--dump-config` 组合树证明);boot exit 0(Loader 对无法激活的 entry fail loud,exit 0 ⇒ 行已激活)
+2. **local-file 安装路径**:profile 内 `pnpm add file:` 可用;overrides 方案生效
+3. **packed 安装路径**:`pnpm pack` tarball 安装 boot 通过(发布路径预演)
+4. **dev-install**:临时 home 下 orcana profile 包安装 + 组合树含 governor 行
+5. **两个实测坑(已修复,记录在案)**:
+   - pnpm 11 对未发布的 workspace 包不做 range 链接(直接打 registry 404)→ 仓库内用 `workspace:^`,profile 侧用 pnpm-workspace.yaml 的 `overrides` 映射到 `file:`(pnpm 11 已不读 package.json 的 `pnpm` 字段)
+   - YAML plain scalar 中 `? ... : ...` 三元表达式含 `: ` 会被解析成 mapping → 用 `(cond && a) || b` 形式替代
+6. **断言策略**:headless 组合无 console logger(info 不可见)→ smoke 用 dump-config + exit code 断言,不 grep 日志
+
+**P0 遗留(不算阻塞)**:`dsh plugin` 命令本体(launcher 侧,pnpm 转发)未实测;release 的 `npm publish` 未执行(需 npm 账号,P9)。
+
+## 下一步(P1)
+
+governor-core 观察层深化:ring-buffer fingerprint(不只 last-1)、session-log 重放重建(resume 一致性)、verification-command 识别 + receipt 记录;dsh-governor 接线 `tools/post-execute` 全量观察。
