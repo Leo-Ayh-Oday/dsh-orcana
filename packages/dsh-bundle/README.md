@@ -1,5 +1,7 @@
 # @orcana/dsh-bundle
 
+[English](README.md) | [中文](README.zh.md)
+
 Profile bundle for `dsh --profile orcana`: installs `@orcana/dsh-governor`
 and coordinates it with `repeat-tool-reminder`.
 

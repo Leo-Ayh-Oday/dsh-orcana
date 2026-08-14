@@ -1,5 +1,7 @@
 # @orcana/dsh-orcana-linux-bundle
 
+[English](README.md) | [中文](README.zh.md)
+
 Profile bundle for [@orcana/dsh-orcana-linux](../dsh-orcana-linux): activates
 the hardening plugin with **neutral defaults** via the `dsh.bundle.patch`
 contract. Installing this profile does not change DSH's execution semantics —

@@ -1,5 +1,7 @@
 # @orcana/dsh-orcana-linux
 
+[English](README.md) | [中文](README.zh.md)
+
 **Orcana confined-execution hardening for DeepSeek Harness (DSH).**
 
 Native hardening layers as a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)

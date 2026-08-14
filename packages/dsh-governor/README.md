@@ -1,5 +1,7 @@
 # @orcana/dsh-governor
 
+[English](README.md) | [中文](README.zh.md)
+
 DSH adapter plugin for the Orcana runtime pack: mounts the framework-agnostic
 `ProgressFactEngine` on DSH extension points. Function plugin
 (name / Config / apply, no default export).

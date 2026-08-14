@@ -1,5 +1,7 @@
 # Orcana for DeepSeek Harness
 
+[English](README.md) | [中文](README.zh.md)
+
 Runtime governance for stronger coding-agent execution.
 
 **Same model. Same DSH. One runtime intervention.**

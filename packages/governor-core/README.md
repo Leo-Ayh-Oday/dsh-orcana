@@ -1,5 +1,7 @@
 # @orcana/governor-core
 
+[English](README.md) | [中文](README.zh.md)
+
 Framework-agnostic progress-fact engine (zero Cordis, zero DSH). The pure core
 of the Orcana runtime pack: classifies tool observations into progress signals,
 tracks the workspace generation, and records verification receipts.
