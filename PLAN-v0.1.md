@@ -86,7 +86,7 @@ fingerprint = hash(toolName, canonicalArgs, resultHash, workspaceGeneration)
 
 | 信号 | 判定 |
 |---|---|
-| mutation 类工具(write/edit/str-replace-editor)成功 | ✓ progress |
+| mutation 类工具(write/edit/str_replace_editor,以 DSH 注册名为准)成功 | ✓ progress |
 | 同 (tool,args) 但 resultHash 变化(新结果) | new-evidence(对 escalation 视为非零进展,区别于 repeated) |
 | generation 变化(workspace 被改动) | ✓ progress |
 | 新验证发生(新 receipt) | ✓ progress |
@@ -424,6 +424,7 @@ gates:
 2. **A/B 补丁不对称(已修)**:treatment 原同时改写 `repeat-tool-reminder.exclude`(第二处行为差异,违反 §10.1)→ 排除项移入共享 bench profile patch(make-bench-home.sh 生成),两臂补丁唯一差异 = orcana 行
 3. **pruner 时序勘误(§3.1 已修)**:`tool-result-pruner` 是 compaction 阶段的服务(compaction-basic 调用),post-execute 观察的是原始 content,不存在"已先裁剪"
 4. **分类语义定稿**:`new-evidence`(同调用新结果)是与 `repeated-observation` 对立的非零进展信号;mutation 成功即使观察判 repeated 也因 gen 前进重置零进展链
+5. **mutation 工具名勘误(已修)**:DSH 注册名是 `str_replace_editor`(tool-str-replace-editor/src/index.ts:423),原 `'str_replace'` 永不匹配 → editor 编辑不推进 generation,核心机制静默失效;已改并加注释,P1 测试必须对 DSH 注册名断言该集合
 
 ## 下一步(P1)
 

@@ -61,8 +61,13 @@ export const Config: z<Config> = z.object({
   }),
 })
 
-/** Mutation-typed tools whose successful return advances the workspace generation. */
-const MUTATION_TOOLS: ReadonlySet<string> = new Set(['write', 'edit', 'str_replace'])
+/**
+ * Mutation-typed tools whose successful return advances the workspace
+ * generation. Names are the DSH registry names (audit fix: the str-replace
+ * editor registers as 'str_replace_editor', not 'str_replace'); P1 tests must
+ * assert this set against DSH's registered tool names.
+ */
+const MUTATION_TOOLS: ReadonlySet<string> = new Set(['write', 'edit', 'str_replace_editor'])
 
 /**
  * Install the governor's listeners.

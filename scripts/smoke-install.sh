@@ -71,6 +71,17 @@ else
   echo "FAIL: bogus row did not fail the load (exit $BOGUS_CODE)"; tail -10 "$TMP/bogus.log" >&2; exit 1
 fi
 
+echo "== ablation knob negative control: env must reach schemastery validation =="
+set +e
+(cd "$DSH_REPO" && DSH_HOME="$TMP/home" DEEPSEEK_API_KEY= ORCANA_MODE=bogus pnpm dsh --profile bench --patch "$REPO_ROOT/benchmark/patches/treatment.patch.yml" "run the tests") > "$TMP/ablate.log" 2>&1
+ABLATE_CODE=$?
+set -e
+if [ "$ABLATE_CODE" -ne 0 ] && grep -q 'expected "observe" | "warn-steer" | "enforce"' "$TMP/ablate.log"; then
+  echo "PASS: ORCANA_MODE=bogus fails config validation (ablation knobs are live)"
+else
+  echo "FAIL: ablation knob not enforced (exit $ABLATE_CODE)"; tail -10 "$TMP/ablate.log" >&2; exit 1
+fi
+
 echo "== packed (tarball) install path =="
 PACKED="$TMP/packed"
 mkdir -p "$PACKED/home/profiles/bench"
