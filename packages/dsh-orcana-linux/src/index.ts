@@ -163,14 +163,19 @@ export const DUPLICATE_HARDENING_INSTANCE = 'DUPLICATE_HARDENING_INSTANCE'
 /**
  * Thrown (fail-closed) when a REQUIRED hardening layer cannot be enforced on
  * this host. Distinct from the DSH `SandboxUnavailableError` (file-effect
- * confinement missing): this error is about the hardening layers.
+ * confinement missing): this error is about the hardening layers. Carries the
+ * FULL set of violating degradations so consumers and the audit ledger can
+ * act on every un-enforceable layer, not just the first.
  */
 export class HardeningUnavailableError extends Error {
   code: typeof HARDENING_UNAVAILABLE = HARDENING_UNAVAILABLE
   constructor(
+    /** The first violating layer (primary blame). */
     readonly layer: HardeningDegradation['layer'],
     readonly mechanism: string | undefined,
     reason: string,
+    /** EVERY required-but-unenforceable degradation, in violation order. */
+    readonly degradations: readonly HardeningDegradation[],
   ) {
     super(`hardening unavailable: ${layer} (${mechanism ?? 'no mechanism'}) — ${reason}`)
     this.name = 'HardeningUnavailableError'
@@ -202,6 +207,40 @@ export const Config: z<HardeningConfig> = z.object({
   // HostCapabilities shape out of the schema's own platform string typing).
   capabilities: z.any(),
 })
+
+/**
+ * Validate a parsed hardening config strictly. schemastery's object schema is
+ * LENIENT (it strips invalid properties instead of throwing), so a typo like
+ * `network: 'None'` would silently drop the field and degrade to inherit —
+ * the exact fail-open a fail-closed hardening layer must not allow. Called
+ * from {@link apply} so misconfiguration fails loud at mount.
+ */
+export function validateConfig(config: HardeningConfig): void {
+  const { network, degradationPolicy, resourceLimits, ledgerMaxEntries } = config
+  if (network !== undefined && network !== 'inherit' && network !== 'none') {
+    throw new Error(`dsh-orcana-linux: invalid network value ${JSON.stringify(network)} — expected 'inherit' | 'none'`)
+  }
+  if (degradationPolicy !== undefined) {
+    const { resourceLimits: rm, network: nm } = degradationPolicy
+    if (rm !== undefined && rm !== 'required' && rm !== 'best-effort') {
+      throw new Error(`dsh-orcana-linux: invalid degradationPolicy.resourceLimits ${JSON.stringify(rm)} — expected 'required' | 'best-effort'`)
+    }
+    if (nm !== undefined && nm !== 'required' && nm !== 'best-effort') {
+      throw new Error(`dsh-orcana-linux: invalid degradationPolicy.network ${JSON.stringify(nm)} — expected 'required' | 'best-effort'`)
+    }
+  }
+  if (resourceLimits !== undefined) {
+    const { memoryBytes, pidsMax, cpuQuotaUs } = resourceLimits
+    for (const [name, value] of [['memoryBytes', memoryBytes], ['pidsMax', pidsMax], ['cpuQuotaUs', cpuQuotaUs]] as const) {
+      if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+        throw new Error(`dsh-orcana-linux: invalid resourceLimits.${name} ${JSON.stringify(value)} — expected a non-negative finite number`)
+      }
+    }
+  }
+  if (ledgerMaxEntries !== undefined && (!Number.isInteger(ledgerMaxEntries) || ledgerMaxEntries < 1)) {
+    throw new Error(`dsh-orcana-linux: invalid ledgerMaxEntries ${JSON.stringify(ledgerMaxEntries)} — expected a positive integer`)
+  }
+}
 
 export const DEFAULT_LEDGER_MAX_ENTRIES = 1024
 
@@ -337,7 +376,7 @@ export function enforceHardening(base: ConfinedArgv, config: HardeningConfig, ca
   const violations = hardened.degraded.filter((d) => degradationMode(config, d.layer) === 'required')
   if (violations.length > 0) {
     const detail = violations.map((v) => `${v.layer}: ${v.reason}`).join('; ')
-    throw new HardeningUnavailableError(violations[0]!.layer, violations[0]!.mechanism, detail)
+    throw new HardeningUnavailableError(violations[0]!.layer, violations[0]!.mechanism, detail, violations)
   }
   return hardened
 }
@@ -369,9 +408,9 @@ export class HardeningService extends Service {
     }
     this.records.push(entry)
   }
-  /** The newest `maxEntries` records. */
+  /** A snapshot of the newest `maxEntries` records (copy — callers cannot mutate the buffer). */
   get ledger(): readonly HardeningRecord[] {
-    return this.records
+    return [...this.records]
   }
   /** Records dropped from the window because the ledger is bounded. */
   get droppedCount(): number {
@@ -402,14 +441,17 @@ interface PatchState {
  * Stored as a symbol-keyed property on the provider TARGET (cordis resolves
  * `ctx.sandbox` to a traceable proxy; symbol reads/writes forward straight to
  * the underlying service instance, so ownership is visible across every
- * proxy view of the same provider).
+ * proxy view of the same provider). `Symbol.for` keeps duplicate package
+ * copies (failed dedupe) sharing one ownership registry instead of silently
+ * stacking.
  */
-const PATCHED_STATE = Symbol('orcana.dsh-orcana-linux.patchState')
-type Patchable = SandboxProvider & { [PATCHED_STATE]?: PatchState }
+const PATCHED_STATE = Symbol.for('orcana.dsh-orcana-linux.patchState')
+type Patchable = SandboxProvider & Record<symbol, unknown> & { confine: SandboxProvider['confine'] }
 
 /** Function plugin: patch the resolved sandbox provider with hardening layers. */
 export function apply(ctx: Context, config: HardeningConfig = {}) {
-  const inner = ctx.sandbox as Patchable
+  validateConfig(config)
+  const inner = ctx.sandbox as unknown as Patchable
   if (inner === undefined) {
     throw new Error('dsh-orcana-linux: ctx.sandbox is not registered yet — load this plugin after the sandbox provider')
   }
@@ -436,15 +478,15 @@ export function apply(ctx: Context, config: HardeningConfig = {}) {
       hardened = enforceHardening(base, effective, capabilities)
     } catch (error) {
       if (error instanceof HardeningUnavailableError) {
-        // Fail-closed attempts are still audited: what was requested and why
-        // it could not be enforced.
+        // Fail-closed attempts are still audited with their FULL structured
+        // degradation facts (not just the message string).
         ledger.record({
           at: Date.now(),
           policyMode: policy.mode,
           workspaceRoot: policy.workspaceRoot,
           requested: effective,
           applied: [],
-          degraded: [],
+          degraded: error.degradations,
           baseRunner: base.argv[0] ?? '',
           finalArgv0: base.argv[0] ?? '',
           enforcement: base.enforcement,
@@ -469,13 +511,20 @@ export function apply(ctx: Context, config: HardeningConfig = {}) {
   inner.confine = wrapped
   const state: PatchState = { owner: Symbol('dsh-orcana-linux'), original, wrapped }
   inner[PATCHED_STATE] = state
-  // cordis effect: the returned disposer runs at context disposal, LIFO after
-  // later effects, so a later wrapper is disposed before this one restores.
+  // cordis effect: the returned disposer runs when this fiber unloads.
+  // DisposableList clears in REVERSE registration order (and unload awaits
+  // them concurrently), so a wrapper registered later is disposed before
+  // this one restores — the restore guard below keeps that order safe.
   ctx.effect(() => () => {
     restorePatch(inner, state)
     ctx.logger?.info('[dsh-orcana-linux] hardening disposed')
   })
 }
+
+// Wire the validated schema so cordis validates plugin config at load time;
+// validateConfig() re-checks strictness because schemastery object schemas
+// are lenient (they strip invalid properties rather than throwing).
+apply.Config = Config
 
 /**
  * Restore the exact original confine, guarded so other patches are never

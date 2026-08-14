@@ -20,6 +20,7 @@ import {
   insertBeforeBwrapDash,
   policyKeyForLayer,
   probeHostCapabilities,
+  validateConfig,
   type HardeningCarrier,
   type HostCapabilities,
 } from '../src/index.ts'
@@ -224,6 +225,44 @@ describe('HardeningService ledger', () => {
   })
 })
 
+describe('validateConfig', () => {
+  it('accepts a valid config', () => {
+    expect(() => validateConfig({ network: 'none', degradationPolicy: { network: 'best-effort' } })).not.toThrow()
+    expect(() => validateConfig({})).not.toThrow()
+  })
+
+  it('rejects an invalid network value (would silently fail open otherwise)', () => {
+    expect(() => validateConfig({ network: 'None' as never })).toThrow(/invalid network value/)
+    expect(() => validateConfig({ network: 'disabled' as never })).toThrow(/invalid network value/)
+  })
+
+  it('rejects invalid degradation policy values', () => {
+    expect(() => validateConfig({ degradationPolicy: { network: 'always' as never } })).toThrow(/degradationPolicy\.network/)
+    expect(() => validateConfig({ degradationPolicy: { resourceLimits: 'maybe' as never } })).toThrow(/degradationPolicy\.resourceLimits/)
+  })
+
+  it('rejects negative / non-finite resource limits and non-positive ledger sizes', () => {
+    expect(() => validateConfig({ resourceLimits: { memoryBytes: -1 } })).toThrow(/resourceLimits\.memoryBytes/)
+    expect(() => validateConfig({ resourceLimits: { pidsMax: Number.NaN } })).toThrow(/resourceLimits\.pidsMax/)
+    expect(() => validateConfig({ ledgerMaxEntries: 0 })).toThrow(/ledgerMaxEntries/)
+  })
+
+  it('fails loud at mount on misconfiguration', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LocalSandboxProvider, {})
+    let error: unknown
+    try {
+      await ctx.plugin(hardening, { network: 'None' as never })
+    } catch (caught) {
+      error = caught
+    }
+    // cordis validates plugin config against apply.Config at load time.
+    expect(error).toBeInstanceOf(Error)
+    expect(String(error)).toMatch(/expected "inherit" \| "none"/)
+    await ctx.fiber.dispose()
+  })
+})
+
 describe.skipIf(!bwrapUsable)('lifecycle through the real provider', () => {
   it('mounts a wrapper, then dispose restores the EXACT original confine', async () => {
     const ctx = new Context()
@@ -245,8 +284,11 @@ describe.skipIf(!bwrapUsable)('lifecycle through the real provider', () => {
     const ctx = new Context()
     await ctx.plugin(LocalSandboxProvider, {})
     const raw = rawProvider(ctx.sandbox)
+    const original = raw.confine
     const fiberA = await ctx.plugin(hardening, { network: 'none' })
+    const wrappedA = raw.confine
     await fiberA.dispose()
+    expect(raw.confine).toBe(original)
     await ctx.plugin(hardening, { resourceLimits: { memoryBytes: 128 * 1024 * 1024 } })
     const confined = ctx.sandbox.confine(['true'], { ...RO })
     expect(confined.argv).not.toContain('--unshare-net')
@@ -254,8 +296,11 @@ describe.skipIf(!bwrapUsable)('lifecycle through the real provider', () => {
       expect(confined.argv[0]).toBe('prlimit')
       expect(confined.argv[1]).toBe('--as=134217728')
     }
-    // exactly one patch layer on the target after the A→B handoff
-    expect(raw.confine.toString().includes('unshare-net')).toBe(false)
+    // After the A→B handoff exactly one patch layer remains on the target:
+    // A's wrapper was restored (raw.confine === original), and B installed a
+    // NEW wrapper (different from A's) that is currently active.
+    expect(raw.confine).not.toBe(original)
+    expect(raw.confine).not.toBe(wrappedA)
     await ctx.fiber.dispose()
   })
 
@@ -376,10 +421,14 @@ describe.skipIf(!bwrapUsable)('integration through the real provider', () => {
       error = caught
     }
     expect(error).toBeInstanceOf(HardeningUnavailableError)
+    expect((error as HardeningUnavailableError).degradations.length).toBeGreaterThan(0)
+    expect((error as HardeningUnavailableError).degradations.some((d) => d.layer === 'network')).toBe(true)
     const record = ctx.hardening.ledger[0]!
     expect(record.failed).toContain('network')
     expect(record.requested.network).toBe('none')
     expect(record.applied).toEqual([])
+    // Fail-closed records keep the FULL structured degradation facts.
+    expect(record.degraded.some((d) => d.layer === 'network')).toBe(true)
     await ctx.fiber.dispose()
   })
 })

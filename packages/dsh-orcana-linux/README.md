@@ -109,6 +109,23 @@ spec.sandboxPolicy = {
 
 Degradation policy and ledger size stay deployment-level.
 
+> **Security note (degradation direction):** a per-call carrier can only
+> *narrow or widen* the deployment config, never tighten it silently. Any
+> caller that passes a `sandboxPolicy` with `network: 'inherit'` (or an empty
+> `resourceLimits: {}`) overrides the deployment-level `none` / limits for
+> that one call — audit trails every such call (`requested`), but there is no
+> loud signal. If your deployment treats egress isolation as mandatory, pin
+> `degradationPolicy.network: 'required'` and monitor the ledger rather than
+> relying on per-call discipline.
+
+> **`runnerCommand` note:** when the sandbox provider is configured with a
+> custom `runnerCommand` (an operator assertion), the runner is identified by
+> exact `argv[0]` string equality — `/usr/bin/bwrap` or a wrapper script does
+> NOT match `'bwrap'`, so `network: 'none'` degrades (and under the default
+> `required` policy fails closed). This is loud, never silent, but may
+> surprise operator assertions: use a runnerCommand whose argv[0] is exactly
+> `bwrap` (or set `degradationPolicy.network: 'best-effort'` deliberately).
+
 ## How it works
 
 cordis 4.0.1 refuses service replacement across fibers, so the plugin
