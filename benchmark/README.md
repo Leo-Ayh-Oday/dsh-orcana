@@ -11,8 +11,8 @@ frozen invariants.
 | `tasks/` | Candidate task pool + dry-run results (Gates A/B/C) |
 | `manifests/` | Frozen, content-addressed task manifests |
 | `patches/` | control.patch.yml (off) / treatment.patch.yml (on) |
-| `runner/` | Supervisor: budgets, pairing, isolated homes, authoritative status |
-| `reports/` | Per-run logs and paired reports |
+| `runner/` (P6) | Supervisor: budgets, pairing, isolated homes, authoritative status |
+| `reports/` (P6) | Per-run logs and paired reports |
 
 ## Arms
 

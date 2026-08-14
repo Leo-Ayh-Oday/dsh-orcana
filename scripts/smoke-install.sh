@@ -24,13 +24,17 @@ cp -R "$REPO_ROOT/benchmark/bench-home-template/." "$TMP/home/"
 run_arm() {
   local label="$1" patch="$2" expect_row="$3"
   local log="$TMP/$label.log" tree="$TMP/$label.tree.yml"
-  echo "== boot [$label] =="
+  echo "== real boot [$label] (keyless sentinel) =="
   set +e
-  (cd "$DSH_REPO" && DSH_HOME="$TMP/home" pnpm dsh --profile bench --patch "$patch" --help) > "$log" 2>&1
+  # A REAL task boot, not --help: --help exits before the tree activates, so
+  # it cannot prove the row mounts (a bogus row also exits 0 under --help).
+  # Keyless boot must get PAST tree load + mount and fail only at the missing
+  # key; the Loader fails hard on an unresolvable plugin row, so reaching
+  # MISSING_CREDENTIAL proves every composed row loaded and applied.
+  (cd "$DSH_REPO" && DSH_HOME="$TMP/home" DEEPSEEK_API_KEY= pnpm dsh --profile bench --patch "$patch" "run the tests") > "$log" 2>&1
   local code=$?
   set -e
-  # Row presence is proven by the boot-free config dump; activation by a
-  # clean boot (the Loader fails loud when any entry cannot activate).
+  # Row presence is proven by the boot-free config dump.
   (cd "$DSH_REPO" && DSH_HOME="$TMP/home" pnpm dsh --dump-config --profile bench --patch "$patch") > "$tree" 2>/dev/null
   local rows
   rows=$(grep -c "name: '@orcana/dsh-governor'" "$tree" || true)
@@ -41,15 +45,31 @@ run_arm() {
   else
     echo "FAIL: $label row count expected $expect_row got $rows"; exit 1
   fi
-  if [ "$code" -eq 0 ]; then
-    echo "PASS: $label boot clean (exit 0)"
+  if grep -q "MISSING_CREDENTIAL" "$log" && ! grep -q "failed to load" "$log"; then
+    echo "PASS: $label tree loads and mounts (reaches MISSING_CREDENTIAL)"
   else
-    echo "FAIL: $label boot exit $code"; tail -20 "$log" >&2; exit 1
+    echo "FAIL: $label boot did not reach the keyless sentinel (exit $code)"; tail -20 "$log" >&2; exit 1
   fi
 }
 
 run_arm control "$REPO_ROOT/benchmark/patches/control.patch.yml" absent
 run_arm treatment "$REPO_ROOT/benchmark/patches/treatment.patch.yml" present
+
+echo "== negative control: an unresolvable plugin row must fail the tree =="
+cat > "$TMP/bogus.yml" <<YAML
+- insert:
+    - id: bogus
+      name: '@totally/bogus-package-xyz'
+YAML
+set +e
+(cd "$DSH_REPO" && DSH_HOME="$TMP/home" DEEPSEEK_API_KEY= pnpm dsh --profile bench --patch "$TMP/bogus.yml" "run the tests") > "$TMP/bogus.log" 2>&1
+BOGUS_CODE=$?
+set -e
+if [ "$BOGUS_CODE" -ne 0 ] && grep -q "failed to load" "$TMP/bogus.log"; then
+  echo "PASS: bogus row fails the tree load (the probe has teeth)"
+else
+  echo "FAIL: bogus row did not fail the load (exit $BOGUS_CODE)"; tail -10 "$TMP/bogus.log" >&2; exit 1
+fi
 
 echo "== packed (tarball) install path =="
 PACKED="$TMP/packed"
@@ -80,13 +100,22 @@ overrides:
   '@orcana/governor-core': file:$CORE_TGZ
   '@orcana/dsh-governor': file:$GOV_TGZ
 YAML
-echo "[]" > "$PACKED/home/profiles/bench/cordis.patch.yml"
+cat > "$PACKED/home/profiles/bench/cordis.patch.yml" <<'YAML'
+# Same shared coordination as the local-file bench home (both arms).
+- id: repeat-tool-reminder
+  config:
+    exclude: [read, bash, '*search*']
+YAML
 (cd "$PACKED/home/profiles/bench" && pnpm install >/dev/null 2>&1)
 set +e
-(cd "$DSH_REPO" && DSH_HOME="$PACKED/home" pnpm dsh --profile bench --patch "$REPO_ROOT/benchmark/patches/treatment.patch.yml" --help) > "$TMP/packed.log" 2>&1
+(cd "$DSH_REPO" && DSH_HOME="$PACKED/home" DEEPSEEK_API_KEY= pnpm dsh --profile bench --patch "$REPO_ROOT/benchmark/patches/treatment.patch.yml" "run the tests") > "$TMP/packed.log" 2>&1
 PACKED_CODE=$?
 set -e
-if [ "$PACKED_CODE" -eq 0 ]; then echo "PASS: packed install boots treatment (exit 0)"; else echo "FAIL: packed boot exit $PACKED_CODE"; tail -20 "$TMP/packed.log" >&2; exit 1; fi
+if grep -q "MISSING_CREDENTIAL" "$TMP/packed.log" && ! grep -q "failed to load" "$TMP/packed.log"; then
+  echo "PASS: packed install loads and mounts treatment (MISSING_CREDENTIAL sentinel)"
+else
+  echo "FAIL: packed boot did not reach the keyless sentinel (exit $PACKED_CODE)"; tail -20 "$TMP/packed.log" >&2; exit 1
+fi
 
 echo "== dev-install.sh into a temp home =="
 TMPDEV="$(mktemp -d)"

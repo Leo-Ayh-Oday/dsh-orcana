@@ -21,9 +21,9 @@ if [ ! -f "$PROF/package.json" ]; then
 }
 JSON
 fi
-if [ ! -f "$PROF/cordis.patch.yml" ]; then
-  cp "$REPO_ROOT/packages/dsh-bundle/cordis.patch.yml" "$PROF/cordis.patch.yml"
-fi
+# Always refresh: the profile patch is generated from the bundle, and a
+# stale copy silently ships old coordination during development.
+cp "$REPO_ROOT/packages/dsh-bundle/cordis.patch.yml" "$PROF/cordis.patch.yml"
 if [ ! -f "$PROF/pnpm-workspace.yaml" ]; then
   cat > "$PROF/pnpm-workspace.yaml" <<YAML
 packages:

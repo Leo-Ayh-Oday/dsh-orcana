@@ -1,4 +1,8 @@
 # Treatment arm: activate the Orcana runtime pack.
+# The ONLY difference from control.patch.yml is this row. The
+# repeat-tool-reminder coordination (exclude) lives in the SHARED bench
+# profile patch (scripts/make-bench-home.sh), so both arms share identical
+# base-plugin configuration and the arms differ solely in activation.
 # Ablation knobs read the environment so one build serves every arm.
 - insert:
     - id: orcana
@@ -18,7 +22,3 @@
         tools:
           disclosure: !!js (process.env.ORCANA_ROUTER === 'off' && 'off') || 'task-profile'
           defaultProfile: !!js process.env.ORCANA_PROFILE ?? 'coding'
-
-- id: repeat-tool-reminder
-  config:
-    exclude: [read, bash, '*search*']

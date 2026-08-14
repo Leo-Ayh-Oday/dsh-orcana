@@ -34,7 +34,15 @@ overrides:
   '@orcana/dsh-governor': file:../../../../packages/dsh-governor
 YAML
 
-echo "[]" > "$PROF/cordis.patch.yml"
+# Shared coordination for BOTH arms: the governor owns repeat detection for
+# read/bash/search in treatment, so the base reminder excludes them here —
+# control and treatment patches then differ ONLY in orcana activation.
+cat > "$PROF/cordis.patch.yml" <<YAML
+# Shared bench profile coordination (both arms).
+- id: repeat-tool-reminder
+  config:
+    exclude: [read, bash, '*search*']
+YAML
 
 (cd "$REPO_ROOT" && pnpm -r build)
 (cd "$PROF" && pnpm install)

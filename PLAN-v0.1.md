@@ -80,14 +80,14 @@ fingerprint = hash(toolName, canonicalArgs, resultHash, workspaceGeneration)
 ```
 
 - `canonicalArgs`:deep key-sort 后 JSON.stringify(成熟实现已在 DSH:repeat-tool-reminder)
-- `resultHash`:`ToolExecutionResult.content` 稳定摘要 hash(tool-result-pruner 已先裁剪,基于裁剪后 content)
+- `resultHash`:`ToolExecutionResult.content` 的 SHA-256(实测勘误:post-execute 观察到的就是**原始** content;`tool-result-pruner` 是独立服务,在 compaction 阶段(compaction-basic 触发)才改写日志 —— 指纹稳定性靠内容自身确定性,不做二次裁剪)
 
 **进度分类(保守,只做客观信号):**
 
 | 信号 | 判定 |
 |---|---|
 | mutation 类工具(write/edit/str-replace-editor)成功 | ✓ progress |
-| 同 (tool,args) 但 resultHash 变化(新结果) | ✓ progress |
+| 同 (tool,args) 但 resultHash 变化(新结果) | new-evidence(对 escalation 视为非零进展,区别于 repeated) |
 | generation 变化(workspace 被改动) | ✓ progress |
 | 新验证发生(新 receipt) | ✓ progress |
 | 同 (tool,args,resultHash) 且 generation 未变 | ✗ 重复观察 |
@@ -99,12 +99,13 @@ fingerprint = hash(toolName, canonicalArgs, resultHash, workspaceGeneration)
 - 3 轮 → `"Re-evaluate the current approach before continuing."`
 - 4 轮 → strong steer(点名重复模式:重复 read / 重复命令 + 轮次序号)
 - **硬上限**:turn-stopping 强制续轮数(默认 3,可配),超过放行 — v0.1 绝不 kill(代码库 hooks-claude-code/src/index.ts:269 已挂 `TODO(stop-loop-guard)`)
+- **零进展链重置点(P2 实现约定)**:mutation 成功(gen 前进)、非 repeated 信号、用户打断(claimed 含 user message)都重置链;gen 前进的同一观察即使被判 repeated(如重复写相同内容)也不算零进展
 
 **与 repeat-tool-reminder 协调(必须处理):** base 默认启用(thresholds [3,5,8]);orcana profile 中 governor 接管重复观察(补 resultHash + generation 两层),patch 里 `exclude` 指向 governor 跟踪的工具集,同一模式只收一条提醒。
 
 ### 3.2 Evidence Freshness
 
-**workspace generation:** plugin-owned derived state,逐 agent;gen++ = mutation 类工具成功返回。**已知局限**:bash 内 mutation(`sed -i`)不可见 → Known Limitations;v0.2 升级 git 探针(`git status --porcelain` + `git diff` hash)。
+**workspace generation:** plugin-owned derived state,逐 agent;gen++ = mutation 类工具成功返回。**已知局限**:bash 内 mutation(`sed -i`)不可见 → Known Limitations;v0.2 升级 git 探针(`git status --porcelain` + `git diff` hash)。**与 evidence 开关的耦合(已记录)**:gen 跟踪挂在 `evidence.enabled` 下(gen 是 Evidence Freshness 域的状态);evidence 关掉时 generation 不再前进,classify 的 gen 类信号与 receipt staleness 一起失效 —— 消融时按此预期解读,不视为 bug。
 
 **VerificationReceipt:**
 
@@ -156,23 +157,30 @@ Verification state:
 
 ## 4. Profile / bundle 设计
 
-**控制面与处理面分离:同一 profile,双 patch:**
+**控制面与处理面分离:同一 profile,双 patch。协调排除项在共享层,两臂补丁唯一差异 = orcana 行**(§10.1 硬不变量,审计修正):
 
 ```yaml
-# benchmark/patches/treatment.patch.yml(激活 Orcana)
-- id: orcana
-  name: '@orcana/dsh-governor'
+# profiles/bench/cordis.patch.yml(两臂共享,make-bench-home.sh 生成)
+# 与 repeat-tool-reminder 协调:governor 接管 read/bash/search 的重复观察,
+# base 提醒在双臂一致地排除它们 —— 双臂 base 配置完全相同
+- id: repeat-tool-reminder
   config:
-    governor:  { enabled: true, mode: warn-steer, zeroProgressThresholds: [2, 3, 4] }
-    evidence:  { enabled: true, freshness: generation, verifyCommandPatterns: [test, typecheck, build, check, lint] }
-    completion:{ mode: evidence-bound, maxForcedContinuations: 3 }
-    tools:     { disclosure: task-profile, defaultProfile: coding }
+    exclude: [read, bash, '*search*']
+
+# benchmark/patches/treatment.patch.yml(激活 Orcana,唯一差异行)
+- insert:
+    - id: orcana
+      name: '@orcana/dsh-governor'
+      config:
+        governor:  { enabled: true, mode: warn-steer, zeroProgressThresholds: [2, 3, 4] }
+        evidence:  { enabled: true, freshness: generation, verifyCommandPatterns: [test, typecheck, build, check, lint] }
+        completion:{ mode: evidence-bound, maxForcedContinuations: 3 }
+        tools:     { disclosure: task-profile, defaultProfile: coding }
 
 # benchmark/patches/control.patch.yml(不激活 Orcana)
-# 空列表(两臂 node_modules/profile 完全一致,唯一差异 = activation)
+# 空列表(两臂 node_modules/profile/base 配置完全一致,唯一差异 = activation)
 ```
 
-- **与 repeat-tool-reminder 协调**:treatment patch 同时改写其 `exclude`
 - patch 配置支持 `!!js process.env.ORCANA_*`,消融变量环境变量切换,无需重建
 
 ## 5. Benchmark(评审修正版)
@@ -382,6 +390,11 @@ gates:
 ### 9.5 模型
 主 A/B 用 base 默认 deepseek-v4-flash;敏感度第二模型;pin 全清单;紧配对 + 随机序 + 时间戳抵消漂移。
 
+### 9.6 P0 packaging / activation smoke verification
+- 两条安装路径都要 mount/dispose 正确:local-file(profile 内 `file:` + overrides)与 packed(`pnpm pack` tarball,发布路径预演)
+- 断言策略(审计后定稿):`--dump-config` 证明行存在(组合树);**real-boot 哨兵**证明树加载 + 全部行激活 —— keyless 下 boot 必须越过加载、只败在 `MISSING_CREDENTIAL`;负例控制(无法解析的插件行必须 `failed to load`)保证探测有牙齿
+- 陷阱(实测):`--help` 在树激活前退出,对坏行也 exit 0 —— 不能作为激活证据
+
 ## 10. 硬不变量(评审冻结,进入 P0 前生效)
 
 1. **A/B 同构**:两臂使用完全相同的 profile、依赖树、已安装的 Orcana package,只改变 activation。
@@ -405,6 +418,12 @@ gates:
 6. **断言策略**:headless 组合无 console logger(info 不可见)→ smoke 用 dump-config + exit code 断言,不 grep 日志
 
 **P0 遗留(不算阻塞)**:`dsh plugin` 命令本体(launcher 侧,pnpm 转发)未实测;release 的 `npm publish` 未执行(需 npm 账号,P9)。
+
+### 11.2 骨架审计(第二轮,已修)
+1. **smoke 探测空转(已修)**:`--help` 在树激活前退出(headless-startup 直接解析并 appExit),bogus 插件行 + `--help` 也 exit 0 → 原"boot exit 0 ⇒ 行已激活"不成立。改为 real-boot + keyless 哨兵(`MISSING_CREDENTIAL` = 越过树加载与全部行激活),并加负例控制(bogus 行必须 `failed to load`)。实测确认:真实 boot 下 Loader 对无法解析的插件行 hard fail(`plugin tree failed to load`);缺失 row id 的 patch 无害(与 bundle README 一致)
+2. **A/B 补丁不对称(已修)**:treatment 原同时改写 `repeat-tool-reminder.exclude`(第二处行为差异,违反 §10.1)→ 排除项移入共享 bench profile patch(make-bench-home.sh 生成),两臂补丁唯一差异 = orcana 行
+3. **pruner 时序勘误(§3.1 已修)**:`tool-result-pruner` 是 compaction 阶段的服务(compaction-basic 调用),post-execute 观察的是原始 content,不存在"已先裁剪"
+4. **分类语义定稿**:`new-evidence`(同调用新结果)是与 `repeated-observation` 对立的非零进展信号;mutation 成功即使观察判 repeated 也因 gen 前进重置零进展链
 
 ## 下一步(P1)
 
