@@ -57,13 +57,23 @@ DSH 的 `danger-full-access` 模式完全绕过受限 sandbox 接缝（官方 ba
 
 ## 安装
 
+发布后，官方 DSH 组合包安装：
+
 ```sh
-npm i @orcana/dsh-orcana-linux
-# 或通过 DSH profile 组合包：@orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
 ```
 
-在 harness 注册 sandbox provider 之后加载插件（`apply.inject = ['sandbox']`
-声明强制了顺序）：
+`dsh plugin add` 安装组合包，并自动以**中立默认值**激活加固行为 profile 层；
+通过该行的 config 启用加固层（见
+[bundle README](../dsh-orcana-linux-bundle/README.zh.md)）。发布前，使用
+[`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh)
+指向本地 tarball。
+
+如需程序化嵌入（不走 profile 路径），直接安装包并在 harness 启动中加载插件：
+
+```sh
+npm i @orcana/dsh-orcana-linux
+```
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'

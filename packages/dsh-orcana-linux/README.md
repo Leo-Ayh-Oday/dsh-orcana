@@ -63,13 +63,24 @@ honestly: `{ confinedModes: true, dangerFullAccess: false }`. Hardening
 
 ## Install
 
+Official DSH bundle install (once the `@orcana/*` packages are published):
+
 ```sh
-npm i @orcana/dsh-orcana-linux
-# or via a DSH profile bundle: @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
 ```
 
-Load the plugin after the harness registered its sandbox provider (the
-`apply.inject = ['sandbox']` declaration enforces the ordering):
+`dsh plugin add` installs the bundle and auto-activates the hardening row as a
+profile layer with NEUTRAL defaults; enforce layers via the row's config (see
+the [bundle README](../dsh-orcana-linux-bundle/README.md)). Before publishing,
+use [`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh)
+against the local tarballs.
+
+For programmatic embedding (not the profile path), install the package
+directly and load the plugin in your harness bootstrap:
+
+```sh
+npm i @orcana/dsh-orcana-linux
+```
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
