@@ -15,8 +15,8 @@ cat > "$PROF/package.json" <<JSON
   "name": "dsh-profile-bench",
   "private": true,
   "dependencies": {
-    "@orcana/governor-core": "file:../../../../packages/governor-core",
-    "@orcana/dsh-governor": "file:../../../../packages/dsh-governor"
+    "@leooday/governor-core": "file:../../../../packages/governor-core",
+    "@leooday/dsh-governor": "file:../../../../packages/dsh-governor"
   },
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] } }
 }
@@ -30,8 +30,8 @@ nodeLinker: hoisted
 autoInstallPeers: false
 
 overrides:
-  '@orcana/governor-core': file:../../../../packages/governor-core
-  '@orcana/dsh-governor': file:../../../../packages/dsh-governor
+  '@leooday/governor-core': file:../../../../packages/governor-core
+  '@leooday/dsh-governor': file:../../../../packages/dsh-governor
 YAML
 
 # Shared coordination for BOTH arms: the governor owns repeat detection for
