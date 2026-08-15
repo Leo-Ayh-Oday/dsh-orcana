@@ -14,8 +14,8 @@ if [ ! -f "$PROF/package.json" ]; then
   "name": "dsh-profile-orcana",
   "private": true,
   "dependencies": {
-    "@orcana/governor-core": "file:$REPO_ROOT/packages/governor-core",
-    "@orcana/dsh-governor": "file:$REPO_ROOT/packages/dsh-governor"
+    "@leooday/governor-core": "file:$REPO_ROOT/packages/governor-core",
+    "@leooday/dsh-governor": "file:$REPO_ROOT/packages/dsh-governor"
   },
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base"] } }
 }
@@ -33,8 +33,8 @@ nodeLinker: hoisted
 autoInstallPeers: false
 
 overrides:
-  '@orcana/governor-core': file:$REPO_ROOT/packages/governor-core
-  '@orcana/dsh-governor': file:$REPO_ROOT/packages/dsh-governor
+  '@leooday/governor-core': file:$REPO_ROOT/packages/governor-core
+  '@leooday/dsh-governor': file:$REPO_ROOT/packages/dsh-governor
 YAML
 fi
 
