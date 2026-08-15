@@ -1,5 +1,5 @@
 {
-  "name": "@orcana/dsh-orcana-linux",
+  "name": "@leooday/dsh-orcana-linux",
   "version": "0.3.0",
   "description": "dsh-orcana Linux edition — native hardening layers (resource limits, egress policy, execution evidence) as a DSH plugin over the official sandbox contract",
   "license": "MIT",
