@@ -1,5 +1,5 @@
 /**
- * @orcana/dsh-governor — DSH adapter for the Orcana runtime pack.
+ * @leooday/dsh-governor — DSH adapter for the Orcana runtime pack.
  *
  * Function plugin mounting the framework-agnostic ProgressFactEngine on DSH
  * extension points: observes `tools/post-execute` through
@@ -15,7 +15,7 @@
  * translation ({@link toEngineEvent}) and one engine transition
  * (applyEvent), so resumed state cannot drift from live state by
  * construction.
- * @module @orcana/dsh-governor
+ * @module @leooday/dsh-governor
  */
 
 import { Context } from '@deepseek-ai/cordis'
@@ -30,8 +30,8 @@ import {
   renderVerificationState,
   sha256,
   steerText,
-} from '@orcana/governor-core'
-import type { EngineEvent, TurnVerdict } from '@orcana/governor-core'
+} from '@leooday/governor-core'
+import type { EngineEvent, TurnVerdict } from '@leooday/governor-core'
 
 export const name = 'orcana-governor'
 
