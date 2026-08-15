@@ -2,7 +2,7 @@
 # (profile cordis.patch.yml, --patch overlays) override its config by row id.
 - insert:
     - id: orcana
-      name: '@orcana/dsh-governor'
+      name: '@leooday/dsh-governor'
       config:
         governor:
           enabled: true
