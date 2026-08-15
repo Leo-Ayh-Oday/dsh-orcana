@@ -29,14 +29,14 @@
 
 ## 安装
 
-发布后，官方 DSH 组合包安装（`@orcana/*` 包发布后可用）：
+公开 npm 包已经统一发布在 `@leooday` scope 下。推荐直接使用 DSH 官方插件命令：
 
 ```sh
 # 一个 profile 一条命令装全部（governor + Linux 加固）：
-dsh plugin --profile orcana add @orcana/dsh-bundle @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
 # 或分开两个 profile：
-dsh plugin --profile orcana add @orcana/dsh-bundle
-dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle
+dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 dsh --profile orcana "<task>"
 ```
 
@@ -45,10 +45,9 @@ dsh --profile orcana "<task>"
 改变 DSH 的执行语义；启用加固需编辑 `~/.dsh/profiles/<name>/cordis.patch.yml`
 中该行的 config，或用 `--patch` overlay。
 
-在包发布之前，通过 profile 的 `pnpm-workspace.yaml` override 安装本地构建的
-tarball（见 [`scripts/install-orcana-linux.sh`](scripts/install-orcana-linux.sh)
-和 smoke 套件）—— 没有 registry 的 checkout 中，`dsh plugin add` 的
-`file:`/`link:` 方式无法解析组合包的 workspace 依赖。
+如果需要程序化嵌入，也可以直接使用同一 scope 下的实现包，包括
+`@leooday/dsh-governor`、`@leooday/governor-core` 和
+`@leooday/dsh-orcana-linux`。
 
 从 checkout 做交互式开发：
 
