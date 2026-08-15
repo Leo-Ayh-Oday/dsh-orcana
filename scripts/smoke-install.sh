@@ -37,7 +37,7 @@ run_arm() {
   # Row presence is proven by the boot-free config dump.
   (cd "$DSH_REPO" && DSH_HOME="$TMP/home" pnpm dsh --dump-config --profile bench --patch "$patch") > "$tree" 2>/dev/null
   local rows
-  rows=$(grep -c "name: '@orcana/dsh-governor'" "$tree" || true)
+  rows=$(grep -c "name: '@leooday/dsh-governor'" "$tree" || true)
   if [ "$expect_row" = present ] && [ "$rows" -ge 1 ]; then
     echo "PASS: $label row present in composed tree"
   elif [ "$expect_row" = absent ] && [ "$rows" -eq 0 ]; then
@@ -94,8 +94,8 @@ cat > "$PACKED/home/profiles/bench/package.json" <<JSON
   "name": "dsh-profile-bench",
   "private": true,
   "dependencies": {
-    "@orcana/governor-core": "file:$CORE_TGZ",
-    "@orcana/dsh-governor": "file:$GOV_TGZ"
+    "@leooday/governor-core": "file:$CORE_TGZ",
+    "@leooday/dsh-governor": "file:$GOV_TGZ"
   },
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] } }
 }
@@ -108,8 +108,8 @@ nodeLinker: hoisted
 autoInstallPeers: false
 
 overrides:
-  '@orcana/governor-core': file:$CORE_TGZ
-  '@orcana/dsh-governor': file:$GOV_TGZ
+  '@leooday/governor-core': file:$CORE_TGZ
+  '@leooday/dsh-governor': file:$GOV_TGZ
 YAML
 cat > "$PACKED/home/profiles/bench/cordis.patch.yml" <<'YAML'
 # Same shared coordination as the local-file bench home (both arms).
@@ -131,13 +131,13 @@ fi
 echo "== dev-install.sh into a temp home =="
 TMPDEV="$(mktemp -d)"
 DSH_HOME="$TMPDEV" bash "$REPO_ROOT/scripts/dev-install.sh" > "$TMP/dev-install.log" 2>&1
-if [ ! -d "$TMPDEV/profiles/orcana/node_modules/@orcana/dsh-governor" ]; then
+if [ ! -d "$TMPDEV/profiles/orcana/node_modules/@leooday/dsh-governor" ]; then
   echo "FAIL: orcana profile packages not installed"; tail -20 "$TMP/dev-install.log" >&2; exit 1
 fi
 echo "PASS: dev-install installed packages into orcana profile"
 # base-only profile has no runner/help exit path; verify composition instead of booting
 (cd "$DSH_REPO" && DSH_HOME="$TMPDEV" pnpm dsh --dump-config --profile orcana) > "$TMP/orcana.tree.yml" 2>/dev/null
-if grep -q "name: '@orcana/dsh-governor'" "$TMP/orcana.tree.yml"; then
+if grep -q "name: '@leooday/dsh-governor'" "$TMP/orcana.tree.yml"; then
   echo "PASS: orcana profile composes the governor row"
 else
   echo "FAIL: orcana profile tree lacks the governor row"; exit 1
