@@ -29,14 +29,15 @@ frozen benchmark invariants, [docs/architecture.md](docs/architecture.md) and
 
 ## Install
 
-Official DSH bundle install (once the `@orcana/*` packages are published):
+The public npm packages are published under the `@leooday` scope. The recommended
+installation path is the official DSH plugin command:
 
 ```sh
 # Everything in one profile, one command (governor + Linux hardening):
-dsh plugin --profile orcana add @orcana/dsh-bundle @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
 # or separate profiles:
-dsh plugin --profile orcana add @orcana/dsh-bundle
-dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle
+dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 dsh --profile orcana "<task>"
 ```
 
@@ -46,11 +47,9 @@ Bundle defaults are NEUTRAL — installing never changes DSH's execution
 semantics; enforce layers by editing the bundle row's config in
 `~/.dsh/profiles/<name>/cordis.patch.yml` or a `--patch` overlay.
 
-Before the packages are published, install the locally built tarballs through
-a profile `pnpm-workspace.yaml` override (see
-[`scripts/install-orcana-linux.sh`](scripts/install-orcana-linux.sh) and the
-smoke suite) — `dsh plugin add` with `file:`/`link:` specs cannot resolve the
-bundles' workspace dependencies from a registry-free checkout.
+For programmatic embedding, the implementation packages are also published
+under the same scope, including `@leooday/dsh-governor`,
+`@leooday/governor-core`, and `@leooday/dsh-orcana-linux`.
 
 For interactive development from a checkout:
 
