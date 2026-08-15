@@ -347,7 +347,7 @@ gates:
 | P1 | governor-core:观察层(fingerprint + generation + receipts,含 resume 重放) | 纯逻辑引擎 | 单测:从 log 重建状态一致 | ✅ 28/28,11.4 |
 | P2 | dsh-governor:Governor steer(escalation + 上限) | post-execute 提醒 + turn-stopping 续轮 | 单测 + 提醒文本快照 | ✅ 50/50,11.5 |
 | P3 | Evidence 呈现 + stale 判定 | 验证状态 context | 单测 | ✅ 70/70,11.6 |
-| P4 | Completion guard 三规则 | turn-stopping 拦截 | 单测 + 快照 |
+| P4 | Completion guard 三规则 | turn-stopping 拦截 | 单测 + 快照 | ✅ 121/121,11.7 |
 | P5 | Capability Router | restrict 应用 + 画像 | 单测:schema 变化断言 |
 | P6 | 任务选取 + 三 Gate dry-run + runner(supervisor/配对/隔离) | 冻结 manifests + A/B 可运行 | 基线任务跑通 |
 | P7 | A/B 实验 + paired 分析 | 报告 | 归因结论 |
@@ -466,6 +466,16 @@ gates:
 4. **接线**:`ctx.inject(['systemPrompt'], …)` 注册 `orcana:verification-state`(order 250),按 assembly 的 agent 查引擎快照;仅 `evidence.enabled` 时注册
 5. **已知局限**:验证状态只反映 receipt 化命令(匹配 verifyCommandPatterns 的);NONE 占位行(v0.1 不显示未出现过的命令)留待 manifest 驱动
 
-## 下一步(P4)
+### 11.7 P4 结论(Completion Claim Guard 完成,121/121 测试全绿)
+1. **三规则纯函数**:`completionViolations(state, lastAssistantText, options)` 独立判定,排序固定(rule 1 → rule 2 命令升序 → rule 3 token 升序),只消费 receipts + generation + 可选文本,不做"任务是否真正完成"判断(§3.3)
+2. **Rule 1(unverified mutation)**:gen>0 且无任何 fresh(当前 gen)pass receipt → 违反;stale pass 覆盖(后续 mutation 使旧验证失效)
+3. **Rule 2(failing verification)**:最新 receipt 为 fail 的每条命令各记一条;map 只留最新 → 同命令 pass 覆盖天然成立;跨命令不互抵;unknown/interrupted 不触发
+4. **Rule 3(unsupported claim,opt-in)**:`completion.claimCheck` 默认 false;claimPatterns 默认 `(all\s+)?tests?\s+pass(es|ed)?\b` / `全部通过` / `测试通过`;文本只触发检查——claimedTokens 宽松提取(如 `grep -r test` 散文会提取 test),但 rule 3 第一道闸是 claim 模式命中,单独出现不会误触
+5. **渲染**:`renderCompletionSteer` 固定格式(`Completion guard:` + `- ` 行),快照测试锁定;与 verification-state 风格一致
+6. **接线**:turn-stopping 内 decideSteer pass 后才运行 guard;与零进展阶梯**共享** per-agent forced 预算(任一路径消耗一单位);`lastAssistantText` 从 session log 倒序扫 `assistant/message`(resume 一致,空文本跳过)
+7. **实测修正**:claimedTokens 正则需 `i` flag(文本大小写不定);段式模式(`build:all`)需 `(?!\w|:)` 负前瞻,否则 `build` 分支在冒号前截断
+8. **Config 新增**:`completion.claimCheck`(bool,默认 false)、`completion.claimPatterns`(string[],默认 DEFAULT_CLAIM_PATTERNS)
 
-governor-core 观察层深化:ring-buffer fingerprint(不只 last-1)、session-log 重放重建(resume 一致性)、verification-command 识别 + receipt 记录;dsh-governor 接线 `tools/post-execute` 全量观察。
+## 下一步(P5)
+
+Capability Router(§3.4):稳定核心(read/write/edit/bash/todo_write 始终可用)+ 三画像(coding / research / minimal);首轮前 `agent.ctx.tools.restrict()`,v0.1 静态画像 + 手动 lift;单测断言 schema 变化。

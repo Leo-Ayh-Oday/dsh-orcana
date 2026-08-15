@@ -4,12 +4,13 @@
  * Function plugin mounting the framework-agnostic ProgressFactEngine on DSH
  * extension points: observes `tools/post-execute` through
  * {@link toEngineEvent}, resets on user interjection at `agent/pre-step`,
- * and intercepts `agent/turn-stopping` to settle each round and escalate the
- * zero-progress ladder (bounded by maxForcedContinuations; the evidence-bound
- * completion guard lands in P4). Model-visible output (steers/reminders) is
- * plugin-source user messages riding additionalContexts or agent.steer(),
- * satisfying the model-visible ⟺ logged invariant. No fork, no agent-loop
- * patch — pure Cordis extensions.
+ * and intercepts `agent/turn-stopping` to settle each round, escalate the
+ * zero-progress ladder (bounded by maxForcedContinuations), and run the
+ * evidence-bound completion guard (three objective rules, PLAN 3.3). Both
+ * steer paths share one forced-continuation budget per agent. Model-visible
+ * output (steers/reminders) is plugin-source user messages riding
+ * additionalContexts or agent.steer(), satisfying the model-visible ⟺
+ * logged invariant. No fork, no agent-loop patch — pure Cordis extensions.
  *
  * The live observation path and the session-log replay path share one
  * translation ({@link toEngineEvent}) and one engine transition
@@ -23,10 +24,13 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { PostToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import {
+  DEFAULT_CLAIM_PATTERNS,
   ProgressFactEngine,
   canonicalizeArgs,
+  completionViolations,
+  renderCompletionSteer,
   renderVerificationState,
   sha256,
   steerText,
@@ -98,6 +102,10 @@ export interface Config {
   completion: {
     mode: 'off' | 'evidence-bound'
     maxForcedContinuations: number
+    /** Rule 3 (opt-in): check the assistant's final text for completion claims whose named verifications lack a fresh pass receipt. */
+    claimCheck: boolean
+    /** Regex-source completion-claim patterns (PLAN 3.3 rule 3 trigger). */
+    claimPatterns: string[]
   }
   tools: {
     disclosure: 'off' | 'task-profile'
@@ -121,6 +129,8 @@ export const Config: z<Config> = z.object({
   completion: z.object({
     mode: z.union(['off', 'evidence-bound'] as const).default('evidence-bound'),
     maxForcedContinuations: z.number().default(3),
+    claimCheck: z.boolean().default(false),
+    claimPatterns: z.array(z.string()).default([...DEFAULT_CLAIM_PATTERNS]),
   }),
   tools: z.object({
     disclosure: z.union(['off', 'task-profile'] as const).default('task-profile'),
@@ -247,6 +257,28 @@ export function translateSessionEvents(events: readonly ReplayEvent[]): EngineEv
 }
 
 /**
+ * The assistant's most recent non-empty text, scanned backward through the
+ * session log's `assistant/message` events. Completion-claim checking (rule
+ * 3) triggers only on this text; without one the rule is inert. Reading the
+ * durable log keeps the guard consistent with what the model last said even
+ * after resume.
+ */
+export function lastAssistantText(session: Session | undefined): string | undefined {
+  if (session === undefined) return undefined
+  const events = session.events
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]
+    if (event.type !== 'assistant/message') continue
+    const text = event.data.message.content
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+    if (text.trim().length > 0) return text
+  }
+  return undefined
+}
+
+/**
  * Install the governor's listeners.
  * @param ctx - plugin context; listeners are scoped to it and disposed with it.
  * @param config - validated {@link Config}.
@@ -334,31 +366,63 @@ export function apply(ctx: Context, config: Config): void {
     return next()
   })
 
-  // The model is about to stop: settle the round, then escalate the
-  // zero-progress ladder (bounded by maxForcedContinuations). Parallel
-  // listener, no next(). P4 adds the evidence-bound completion checks here.
+  // The model is about to stop: settle the round, escalate the zero-progress
+  // ladder (bounded by maxForcedContinuations), then — when the ladder has
+  // nothing to say — run the evidence-bound completion guard (PLAN 3.3).
+  // Both paths share one forced-continuation budget per agent; a steer from
+  // either consumes a unit and is reported as a plugin-source user message.
   ctx.on('agent/turn-stopping', async ({ agent }) => {
     const engine = engines.get(agent)
     if (engine === undefined) return
     const verdict = engine.endTurn()
+    const forcedCount = forced.get(agent) ?? 0
     const decision = decideSteer(verdict, {
       enabled: config.governor.enabled,
       mode: config.governor.mode,
       thresholds: config.governor.zeroProgressThresholds,
       maxForced: config.completion.maxForcedContinuations,
-    }, forced.get(agent) ?? 0)
-    if (decision.action !== 'steer' || decision.text === undefined) return
-    forced.set(agent, (forced.get(agent) ?? 0) + 1)
+    }, forcedCount)
+    if (decision.action === 'steer' && decision.text !== undefined) {
+      forced.set(agent, forcedCount + 1)
+      agent.steer(createUserMessage({
+        content: [{ type: 'text', text: decision.text }],
+        source: {
+          kind: 'plugin',
+          plugin: 'orcana-governor',
+          form: 'notice',
+          summary: `zero-progress round ${verdict.chainLength}`,
+        },
+      }))
+      ctx.logger?.debug('[orcana-governor] steered after %d zero-progress rounds', verdict.chainLength)
+      return
+    }
+    if (config.completion.mode !== 'evidence-bound') return
+    if (forcedCount >= config.completion.maxForcedContinuations) return
+    const violations = completionViolations(
+      {
+        generation: engine.currentGeneration(),
+        receipts: engine.snapshot().receipts,
+      },
+      lastAssistantText(agent.session),
+      {
+        claimCheck: config.completion.claimCheck,
+        claimPatterns: config.completion.claimPatterns,
+        verifyPatterns: config.evidence.verifyCommandPatterns,
+      },
+    )
+    const text = renderCompletionSteer(violations)
+    if (text === undefined) return
+    forced.set(agent, forcedCount + 1)
     agent.steer(createUserMessage({
-      content: [{ type: 'text', text: decision.text }],
+      content: [{ type: 'text', text }],
       source: {
         kind: 'plugin',
         plugin: 'orcana-governor',
         form: 'notice',
-        summary: `zero-progress round ${verdict.chainLength}`,
+        summary: `completion evidence (${violations.length} violation${violations.length === 1 ? '' : 's'})`,
       },
     }))
-    ctx.logger?.debug('[orcana-governor] steered after %d zero-progress rounds', verdict.chainLength)
+    ctx.logger?.debug('[orcana-governor] completion guard steered (%d violations)', violations.length)
   })
 
   // Cleanup runs at context disposal (cordis 'dispose' is not a typed event).

@@ -574,3 +574,144 @@ export function renderVerificationState(
     })
   return `Verification state:\n${lines.join('\n')}`
 }
+
+/**
+ * P4 — completion claim guard.
+ *
+ * Intercepted at `agent/turn-stopping`: when the model is about to stop, three
+ * objective hard rules check whether the run's evidence supports stopping
+ * (PLAN 3.3). The guard never judges "is the task truly done" — it only flags
+ * evidence the completion cannot rely on:
+ *
+ * 1. The workspace changed (generation > 0) but no verification has a PASS
+ *    receipt on the CURRENT generation (any earlier pass went stale).
+ * 2. The latest receipt of any verification command is FAIL — the map keeps
+ *    only the latest receipt per command, so a later pass naturally overrides;
+ *    cross-command results never offset each other (a failing `npm test` is
+ *    not healed by a passing typecheck).
+ * 3. (opt-in) The assistant's final text contains a completion claim
+ *    ("tests pass" / "全部通过") naming a verification command, but that
+ *    command has no current-generation pass receipt. The text only triggers
+ *    the check — it never participates in the verdict.
+ *
+ * Violations are rendered into a stable steer text (snapshot-covered).
+ */
+
+/** One completion-guard violation (rule 1–3 of PLAN 3.3). */
+export type CompletionViolation =
+  | { readonly rule: 1; readonly kind: 'unverified-mutation' }
+  | { readonly rule: 2; readonly kind: 'failing-verification'; readonly command: string }
+  | { readonly rule: 3; readonly kind: 'unsupported-claim'; readonly token: string }
+
+/** The engine-derived facts the guard evaluates (PLAN 3.3 scope: verification identity). */
+export interface CompletionGuardState {
+  /** Current workspace generation (0 = pristine; > 0 means the task mutated). */
+  readonly generation: number
+  /** Latest receipt per command (engine map values). */
+  readonly receipts: readonly VerificationReceipt[]
+}
+
+/** Completion-guard knobs (PLAN 3.3). */
+export interface CompletionGuardOptions {
+  /** Rule 3 switch — completion-claim text checks are opt-in. */
+  readonly claimCheck: boolean
+  /** Regex-source completion-claim patterns; a hit only triggers rule 3's evidence check. */
+  readonly claimPatterns: readonly string[]
+  /** Verification first-verb patterns used to name commands inside the claim text. */
+  readonly verifyPatterns: readonly string[]
+}
+
+/** Default completion-claim patterns: "tests pass(ed)", "全部通过", "测试通过". */
+export const DEFAULT_CLAIM_PATTERNS: readonly string[] = [
+  '(all\\s+)?tests?\\s+pass(es|ed)?\\b',
+  '\\b全部通过\\b',
+  '\\b测试通过\\b',
+]
+
+/** Regex-escape a literal string for embedding in a RegExp source. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * The verification tokens the text names (claimed to have passed): each
+ * verify pattern matched as a whole word, with common inflection suffixes.
+ * Extraction is deliberately loose — a claim is only *checked* when a
+ * claim pattern also hit (rule 3 trigger), so `grep -r test` prose extracts
+ * `test` but never trips the guard by itself. A negative lookahead keeps
+ * segment-scoped patterns honest: `build:all` is the claimed token, not
+ * `build` (whose match would end at the colon).
+ * @param text - the assistant's final message text.
+ * @param verifyPatterns - verification first-verb patterns to look for.
+ * @returns the named patterns, in configured order, deduplicated.
+ */
+export function claimedTokens(text: string, verifyPatterns: readonly string[]): string[] {
+  const ordered = [...verifyPatterns].sort((left, right) => right.length - left.length)
+  if (ordered.length === 0) return []
+  const source = ordered.map(pattern => `(?:${escapeRegExp(pattern)})(?:s|ing|ed)?`).join('|')
+  const found = new Set<string>()
+  const re = new RegExp(`\\b(?:${source})(?!\\w|:)`, 'gi')
+  for (const match of text.matchAll(re)) {
+    const token = match[0]!
+    const lower = token.toLowerCase()
+    const pattern = ordered.find(candidate =>
+      lower === candidate || lower.startsWith(`${candidate}s`) || lower.startsWith(`${candidate}ing`) || lower.startsWith(`${candidate}ed`),
+    )
+    if (pattern !== undefined) found.add(pattern)
+  }
+  return [...found]
+}
+
+/**
+ * Evaluate the completion guard against engine state. Pure and objective:
+ * only receipts, generations, and (for rule 3) the opt-in claim text decide.
+ * Violations are ordered rule 1 → rule 2 (command ascending) → rule 3
+ * (token ascending), for a stable rendered steer.
+ */
+export function completionViolations(
+  state: CompletionGuardState,
+  lastAssistantText: string | undefined,
+  options: CompletionGuardOptions,
+): CompletionViolation[] {
+  const violations: CompletionViolation[] = []
+  const freshPass = (receipt: VerificationReceipt): boolean =>
+    receipt.status === 'pass' && receipt.generation === state.generation
+  if (state.generation > 0 && !state.receipts.some(freshPass)) {
+    violations.push({ rule: 1, kind: 'unverified-mutation' })
+  }
+  for (const receipt of [...state.receipts]
+    .filter(receipt => receipt.status === 'fail')
+    .sort((left, right) => left.command.localeCompare(right.command))) {
+    violations.push({ rule: 2, kind: 'failing-verification', command: receipt.command })
+  }
+  if (options.claimCheck && lastAssistantText !== undefined
+    && options.claimPatterns.some(pattern => new RegExp(pattern, 'i').test(lastAssistantText))) {
+    for (const token of claimedTokens(lastAssistantText, options.verifyPatterns)) {
+      const receiptPasses = state.receipts.some(receipt =>
+        freshPass(receipt) && matchesVerificationPattern(verificationToken('bash', receipt.command) ?? '', token))
+      if (!receiptPasses) {
+        violations.push({ rule: 3, kind: 'unsupported-claim', token })
+      }
+    }
+  }
+  return violations
+}
+
+/**
+ * Render guard violations into the stable model-visible steer text
+ * (snapshot-covered). Undefined without violations — the caller steers only
+ * when there is something to say.
+ */
+export function renderCompletionSteer(violations: readonly CompletionViolation[]): string | undefined {
+  if (violations.length === 0) return undefined
+  const lines = violations.map((violation) => {
+    if (violation.rule === 1) {
+      return '- the workspace changed but no verification passed on the current generation'
+    }
+    if (violation.rule === 2) {
+      return `- verification "${violation.command}" is failing`
+    }
+    return `- "${violation.token}" was claimed to pass without fresh evidence`
+  })
+  return `Completion guard:\n${lines.join('\n')}`
+}
