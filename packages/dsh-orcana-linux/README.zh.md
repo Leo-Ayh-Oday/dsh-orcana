@@ -1,4 +1,4 @@
-# @orcana/dsh-orcana-linux
+# @leooday/dsh-orcana-linux
 
 [English](README.md) | 中文
 
@@ -57,27 +57,26 @@ DSH 的 `danger-full-access` 模式完全绕过受限 sandbox 接缝（官方 ba
 
 ## 安装
 
-发布后，官方 DSH 组合包安装：
+npm 包已经发布在 `@leooday` scope 下，推荐使用官方 DSH 组合包安装：
 
 ```sh
-dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 ```
 
 `dsh plugin add` 安装组合包，并自动以**中立默认值**激活加固行为 profile 层；
 通过该行的 config 启用加固层（见
-[bundle README](../dsh-orcana-linux-bundle/README.zh.md)）。发布前，使用
-[`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh)
-指向本地 tarball。
+[bundle README](../dsh-orcana-linux-bundle/README.zh.md)）。从 checkout 开发时使用
+[`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh)。
 
 如需程序化嵌入（不走 profile 路径），直接安装包并在 harness 启动中加载插件：
 
 ```sh
-npm i @orcana/dsh-orcana-linux
+npm i @leooday/dsh-orcana-linux
 ```
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
-import { apply as hardening } from '@orcana/dsh-orcana-linux'
+import { apply as hardening } from '@leooday/dsh-orcana-linux'
 
 // 在 harness 启动中，ctx.plugin(LocalSandboxProvider, {...}) 之后：
 ctx.plugin(hardening, {
@@ -156,9 +155,9 @@ fail loud（`DUPLICATE_HARDENING_INSTANCE`），而不是静默忽略其配置�
 
 ```sh
 pnpm install
-pnpm --filter @orcana/dsh-orcana-linux typecheck
-pnpm --filter @orcana/dsh-orcana-linux test   # 37 tests: 纯单元 + 真实 provider 集成
-pnpm --filter @orcana/dsh-orcana-linux build
+pnpm --filter @leooday/dsh-orcana-linux typecheck
+pnpm --filter @leooday/dsh-orcana-linux test   # 37 tests: 纯单元 + 真实 provider 集成
+pnpm --filter @leooday/dsh-orcana-linux build
 ```
 
 主机无 bwrap / prlimit 时集成测试自动跳过。
