@@ -1,4 +1,4 @@
-# @orcana/dsh-orcana-linux
+# @leooday/dsh-orcana-linux
 
 [English](README.md) | [中文](README.zh.md)
 
@@ -63,28 +63,27 @@ honestly: `{ confinedModes: true, dangerFullAccess: false }`. Hardening
 
 ## Install
 
-Official DSH bundle install (once the `@orcana/*` packages are published):
+The package is published under the `@leooday` scope. Recommended DSH bundle install:
 
 ```sh
-dsh plugin --profile orcana-linux add @orcana/dsh-orcana-linux-bundle
+dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 ```
 
 `dsh plugin add` installs the bundle and auto-activates the hardening row as a
 profile layer with NEUTRAL defaults; enforce layers via the row's config (see
-the [bundle README](../dsh-orcana-linux-bundle/README.md)). Before publishing,
-use [`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh)
-against the local tarballs.
+the [bundle README](../dsh-orcana-linux-bundle/README.md)). For checkout-based
+development, use [`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh).
 
 For programmatic embedding (not the profile path), install the package
 directly and load the plugin in your harness bootstrap:
 
 ```sh
-npm i @orcana/dsh-orcana-linux
+npm i @leooday/dsh-orcana-linux
 ```
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
-import { apply as hardening } from '@orcana/dsh-orcana-linux'
+import { apply as hardening } from '@leooday/dsh-orcana-linux'
 
 // in your harness bootstrap, after ctx.plugin(LocalSandboxProvider, {...}):
 ctx.plugin(hardening, {
@@ -171,9 +170,9 @@ plugin mount, never per confinement.
 
 ```sh
 pnpm install
-pnpm --filter @orcana/dsh-orcana-linux typecheck
-pnpm --filter @orcana/dsh-orcana-linux test   # 32 tests: pure units + real-provider integration
-pnpm --filter @orcana/dsh-orcana-linux build
+pnpm --filter @leooday/dsh-orcana-linux typecheck
+pnpm --filter @leooday/dsh-orcana-linux test   # 32 tests: pure units + real-provider integration
+pnpm --filter @leooday/dsh-orcana-linux build
 ```
 
 Integration tests self-skip when bwrap / prlimit are unavailable on the host.
