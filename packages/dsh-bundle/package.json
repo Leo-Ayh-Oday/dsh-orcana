@@ -1,5 +1,5 @@
 {
-  "name": "@orcana/dsh-bundle",
+  "name": "@leooday/dsh-bundle",
   "version": "0.1.0-rc.1",
   "description": "Orcana runtime pack profile bundle for DeepSeek Harness (dsh.bundle.patch contract)",
   "license": "MIT",
@@ -15,8 +15,8 @@
     "cordis.patch.yml"
   ],
   "dependencies": {
-    "@orcana/dsh-governor": "workspace:^",
-    "@orcana/governor-core": "workspace:^"
+    "@leooday/dsh-governor": "workspace:^",
+    "@leooday/governor-core": "workspace:^"
   },
   "dsh": {
     "bundle": {
