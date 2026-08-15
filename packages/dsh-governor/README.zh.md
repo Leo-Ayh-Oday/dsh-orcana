@@ -1,4 +1,4 @@
-# @orcana/dsh-governor
+# @leooday/dsh-governor
 
 [English](README.md) | 中文
 
