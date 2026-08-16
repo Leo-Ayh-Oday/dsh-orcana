@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -36,6 +36,26 @@ describe('WSL workspace doctor argv', () => {
 })
 
 describe.skipIf(process.platform === 'win32' || !hasGit)('workspace doctor shell integration', () => {
+  it('rejects WSL1 when the official wslinfo probe reports it', () => {
+    withTempDir((dir) => {
+      const tools = join(dir, 'tools')
+      mkdirSync(tools)
+      const wslinfo = join(tools, 'wslinfo')
+      writeFileSync(wslinfo, '#!/bin/sh\nprintf "%s\\n" "wsl1"\n')
+      chmodSync(wslinfo, 0o755)
+
+      const result = spawnSync('/bin/sh', ['-c', WSL_WORKSPACE_DOCTOR_SCRIPT], {
+        cwd: dir,
+        env: { ...process.env, PATH: `${tools}:${process.env.PATH ?? ''}` },
+        encoding: 'utf8',
+      })
+
+      expect(result.status).toBe(71)
+      expect(result.stdout).toContain('wsl-networking: wsl1')
+      expect(result.stdout).toContain('wsl-runtime: UNSUPPORTED')
+    })
+  })
+
   it('recognizes a usable Git worktree without printing configured identity or remote URL', () => {
     withTempDir((dir) => {
       expect(spawnSync('git', ['init', '-q'], { cwd: dir }).status).toBe(0)
