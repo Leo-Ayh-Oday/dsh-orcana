@@ -91,9 +91,16 @@ describe('WSL plugin-install toolchain', () => {
     expect(INSTALL_RESOLVER_SCRIPT).toContain('npx --yes --package="$pnpm_package" --package="$dsh_package" -- dsh "$@"')
   })
 
-  it('adds the selected companion plus exact Orcana runtime packages before exact bundle specs', () => {
+  it('installs bundle-bearing packages in separate DSH transactions to pin layer order', () => {
     expect(INSTALL_RESOLVER_SCRIPT).toContain(
-      'set -- plugin --profile "$profile" add --save-exact "$companion_package" $orcana_packages "$@"',
+      'run_plugin plugin --profile "$profile" add --save-exact "$companion_package"',
+    )
+    expect(INSTALL_RESOLVER_SCRIPT).toContain(
+      'run_plugin plugin --profile "$profile" add --save-exact $orcana_packages',
+    )
+    expect(INSTALL_RESOLVER_SCRIPT).toContain('for bundle_spec in "$@"; do')
+    expect(INSTALL_RESOLVER_SCRIPT).toContain(
+      'run_plugin plugin --profile "$profile" add --save-exact "$bundle_spec"',
     )
     expect(INSTALL_RESOLVER_SCRIPT).toContain('dsh --profile "$profile" --dump-config >/dev/null')
   })
@@ -153,7 +160,7 @@ describe('WSL plugin-install toolchain', () => {
     })
   })
 
-  it.skipIf(process.platform === 'win32')('runs a boot-free composition smoke after a successful local install', () => {
+  it.skipIf(process.platform === 'win32')('runs deterministic headless phases before the composition smoke', () => {
     withFakeLocalToolchain((env, log) => {
       const result = spawnSync('/bin/sh', nativeInstallShellArgs(INSTALL_ARGS, DSH_PACKAGE, VERSION_CONTRACT), {
         env,
@@ -162,38 +169,39 @@ describe('WSL plugin-install toolchain', () => {
       expect(result.status).toBe(0)
       expect(result.stderr).toContain('composition smoke passed')
       const calls = readFileSync(log, 'utf8').trim().split('\n')
-      expect(calls).toContain([
-        'plugin --profile orcana add --save-exact',
-        HEADLESS_PACKAGE,
-        ...ORCANA_RUNTIME_PACKAGES,
-        '@leooday/dsh-bundle@0.1.0-rc.1',
-        '@leooday/dsh-orcana-linux-bundle@0.2.0',
-      ].join(' '))
-      expect(calls.at(-1)).toBe('--profile orcana --dump-config')
+      expect(calls.slice(-5)).toEqual([
+        `plugin --profile orcana add --save-exact ${HEADLESS_PACKAGE}`,
+        `plugin --profile orcana add --save-exact ${ORCANA_RUNTIME_PACKAGES.join(' ')}`,
+        'plugin --profile orcana add --save-exact @leooday/dsh-bundle@0.1.0-rc.1',
+        'plugin --profile orcana add --save-exact @leooday/dsh-orcana-linux-bundle@0.2.0',
+        '--profile orcana --dump-config',
+      ])
     })
   })
 
-  it.skipIf(process.platform === 'win32')('runs the same smoke contract for a Web companion profile', () => {
+  it.skipIf(process.platform === 'win32')('runs deterministic Web phases before the composition smoke', () => {
     withFakeLocalToolchain((env, log) => {
       const result = spawnSync('/bin/sh', nativeCompanionInstallShellArgs(
-        ['plugin', '--profile', 'orcana-web', 'add', '@leooday/dsh-bundle@0.1.0-rc.1'],
+        ['plugin', '--profile', 'orcana-web', 'add',
+          '@leooday/dsh-bundle@0.1.0-rc.1',
+          '@leooday/dsh-orcana-linux-bundle@0.2.0'],
         DSH_PACKAGE,
         DSH_WEB_APP_PACKAGE,
         VERSION_CONTRACT,
       ), { env, encoding: 'utf8' })
       expect(result.status).toBe(0)
       const calls = readFileSync(log, 'utf8').trim().split('\n')
-      expect(calls).toContain([
-        'plugin --profile orcana-web add --save-exact',
-        WEB_PACKAGE,
-        ...ORCANA_RUNTIME_PACKAGES,
-        '@leooday/dsh-bundle@0.1.0-rc.1',
-      ].join(' '))
-      expect(calls.at(-1)).toBe('--profile orcana-web --dump-config')
+      expect(calls.slice(-5)).toEqual([
+        `plugin --profile orcana-web add --save-exact ${WEB_PACKAGE}`,
+        `plugin --profile orcana-web add --save-exact ${ORCANA_RUNTIME_PACKAGES.join(' ')}`,
+        'plugin --profile orcana-web add --save-exact @leooday/dsh-bundle@0.1.0-rc.1',
+        'plugin --profile orcana-web add --save-exact @leooday/dsh-orcana-linux-bundle@0.2.0',
+        '--profile orcana-web --dump-config',
+      ])
     })
   })
 
-  it.skipIf(process.platform === 'win32')('preserves plugin-add failure and does not run the composition smoke', () => {
+  it.skipIf(process.platform === 'win32')('preserves the first failing install phase and does not run later phases/smoke', () => {
     withFakeLocalToolchain((env, log) => {
       env.DSH_FAKE_INSTALL_STATUS = '23'
       const result = spawnSync('/bin/sh', nativeInstallShellArgs(INSTALL_ARGS, DSH_PACKAGE, VERSION_CONTRACT), {
@@ -202,6 +210,7 @@ describe('WSL plugin-install toolchain', () => {
       })
       expect(result.status).toBe(23)
       const calls = readFileSync(log, 'utf8').trim().split('\n')
+      expect(calls.filter(call => call.startsWith('plugin '))).toHaveLength(1)
       expect(calls).not.toContain('--profile orcana --dump-config')
     })
   })
