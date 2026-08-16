@@ -76,13 +76,17 @@ DSH 原生 sandbox provider 自己选择实际机制，例如 cgroup v2 或其�
   process handle；
 - 前台任务在 `shell.run()` 真正完成后结算证据；
 - 后台任务等待原样返回的 `ShellProcess.done` 完成后再记录；
-- observer reload/HMR 后，已经启动的后台任务证据仍会归入同一持久 ledger；
+- observer reload/HMR 后，已经启动的后台任务证据仍会归入同一**进程内共享
+  ledger**；这个性质不代表跨 DSH 进程重启持久化；
 - 记录 DSH 真 receipt：实际 layers、degraded、limits mechanism、cgroup path、
   memory/CPU/PID peak、cleanup verification、live usage；
 - `danger-full-access` 只记录真实 sandbox facts，不伪造不存在的 native receipt；
 - 不保存原始 command，只保存 SHA-256 fingerprint 与 UTF-8 byte length，降低
   command 中 token/secret 落入治理台账的风险；
-- ledger 有界，暴露 total / dropped / pending-background。
+- ledger 有界，暴露 total / dropped / pending-background；
+- 记录在入账时递归冻结，调用方不能通过拿到 ledger 引用反向篡改审计事实；
+- DSH 原始 `ShellRunResult` / `SandboxReceipt` 保持调用方所有权，不会被 Orcana
+  freeze 或改写。
 
 服务入口：
 
@@ -100,6 +104,45 @@ ctx.orcanaLinuxEvidence
   dangerFullAccessObserved: true,
 }
 ```
+
+### 因果查询
+
+正常 DSH ToolRuntime 调用会通过 `tools/execute` 上下文关联到：
+
+```text
+sessionId
+callId
+rootCallId
+toolName
+```
+
+并发 tool chain 与嵌套 Code Mode dispatch 使用 AsyncLocalStorage 隔离；直接程序化
+调用 `ctx.shell` 时则诚实保留为无 correlation 的执行证据。
+
+治理层可以直接按当前有界窗口查询，不必自己反复扫并解释 identity：
+
+```ts
+const bySession = ctx.orcanaLinuxEvidence.find({ sessionId })
+const byRootCall = ctx.orcanaLinuxEvidence.find({ rootCallId })
+const exact = ctx.orcanaLinuxEvidence.latest({ sessionId, callId })
+```
+
+多个条件是 AND；空查询会拒绝，调用方如果明确需要整个当前窗口就读取
+`ctx.orcanaLinuxEvidence.ledger`。
+
+### 当前 durability 边界
+
+当前 native evidence 是**进程内证据**：它能跨 observer reload/HMR 和正在运行的
+后台任务结算，但 DSH 进程重启后不会自动恢复。
+
+我们没有直接把新的 `orcana/native-execution` 事件塞进 Session log。原因是当前
+DSH 虽然允许 `SessionEventMap` 被插件扩展，并定义了 `ignorable?: true` 兼容标记，
+但公开 `Session.append()` 还没有让插件 writer 设置这个 marker 的入口。现在直接
+追加一个未知、非 ignorable 的新事件，会让旧 runtime 按协议拒绝恢复这个 session。
+
+因此在 DSH 提供安全的 ignorable plugin-event append seam 之前，**不能把当前内存
+ledger 当成跨进程 durable proof**。未来 Completion Authority 如果要求跨重启证据，
+必须显式检查持久化等级，而不是默认把当前 ledger 当成 Session 持久事实。
 
 ## 安装
 
@@ -119,6 +162,28 @@ dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 
 组合包默认**不改变执行策略**。安装只建立观察/证据层，不会偷偷打开新的网络
 限制或资源上限。
+
+### 从旧加固配置升级
+
+Bundle `0.3.0` 保留 `dsh-orcana-linux` row id，但默认目标已经切换到
+`/native-evidence`。如果已有 profile 仍然给这个行提供旧字段：
+
+```text
+network
+resourceLimits
+degradationPolicy
+capabilities
+```
+
+新版会抛稳定错误：
+
+```text
+LEGACY_HARDENING_CONFIG_MOVED
+```
+
+而不是让 Schemastery 把字段静默剥掉、导致原来的限制升级后悄悄消失。
+`network/resourceLimits` 应迁到 DSH `sandbox-policy`；另外两个旧 Orcana knob 不做
+一一映射，真实 applied/degraded 状态以后由 DSH `SandboxReceipt` 提供。
 
 ### 原生资源/网络限制要配 DSH
 
@@ -222,11 +287,16 @@ pnpm@11.7.0
 - Git worktree 与 user identity；
 - HTTPS credential helper / 可见 credential manager；
 - SSH agent / 默认 key 能力，但不打印 key 文件名；
+- Windows 与 WSL `settings.yaml` / `.credentials.yaml` 的 managed-config parity：
+  只比较 present/absent/hash 状态，**不打印 hash、secret 或文件内容**；
+- WSL `.credentials.yaml` 出现 group/other 权限位时 fail loud（正常目标是 0600）；
 - TTY、UTF-8 locale、路径 roundtrip、文件系统/mount 语义、WSL interop；
 - Windows 挂载目录缺少 DrvFS metadata 时提示 chmod/chown/POSIX 权限差异。
 
-Parity warning 只解释“不像原生 Linux”的原因，不会偷偷修改 Git、WSL、mount 或
-凭据配置。
+Config parity 的 `host-only` / `different` 默认只是提示：Windows 与 WSL 故意保留
+独立 DSH home，launcher 不会把 managed credentials 偷偷转成环境变量或自动覆盖
+Linux 配置。Parity warning 也只解释“不像原生 Linux”的原因，不会偷偷修改 Git、
+WSL、mount 或凭据配置。
 
 Git/npm/build I/O 很重的项目仍建议放在 WSL Linux filesystem，这是性能与 Linux
 语义最接近原生的路径。
