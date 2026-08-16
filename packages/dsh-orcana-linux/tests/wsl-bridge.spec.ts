@@ -1,7 +1,9 @@
+import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_WSL_BUNDLES,
   DEFAULT_WSL_DSH_PACKAGE,
+  DSH_VERSION_CONTRACT_SCRIPT,
   buildWslDshArgs,
   dshArgsForBridge,
   environmentForWsl,
@@ -52,7 +54,7 @@ describe('WSL bridge argument contract', () => {
     ])
   })
 
-  it('pins the compatible DSH npm fallback and keeps task text out of the resolver script', () => {
+  it('guards an installed dsh by version before the pinned npm fallback', () => {
     const task = 'echo "$HOME" && rm -rf nope'
     const argv = buildWslDshArgs(
       '/mnt/c/work tree',
@@ -65,12 +67,31 @@ describe('WSL bridge argument contract', () => {
       '--exec', '/bin/sh', '-lc',
     ])
     const resolver = argv[7]
-    expect(resolver).toContain('command -v dsh')
+    expect(resolver).toContain('dsh --version')
+    expect(resolver).toContain('node -e "$dsh_contract"')
     expect(resolver).toContain('npx --yes "$package_spec"')
     expect(resolver).not.toContain(task)
     expect(argv[8]).toBe('dsh-orcana')
     expect(argv[9]).toBe(DEFAULT_WSL_DSH_PACKAGE)
+    expect(argv[10]).toBe(DSH_VERSION_CONTRACT_SCRIPT)
     expect(argv.slice(-3)).toEqual(['--profile', 'orcana', task])
+  })
+
+  it.each([
+    ['0.1.0-rc.4', false],
+    ['0.1.0-rc.5', true],
+    ['0.1.0-rc.6', true],
+    ['0.1.0', true],
+    ['0.1.1', true],
+    ['0.1.1+build.7', true],
+    ['0.0.9', false],
+    ['0.2.0', false],
+    ['garbage', false],
+  ] as const)('classifies installed DSH version %s as compatible=%s', (version, compatible) => {
+    const result = spawnSync(process.execPath, ['-e', DSH_VERSION_CONTRACT_SCRIPT, version], {
+      stdio: 'ignore',
+    })
+    expect(result.status === 0).toBe(compatible)
   })
 
   it('allows an explicit compatible DSH package fallback without shell interpolation', () => {
