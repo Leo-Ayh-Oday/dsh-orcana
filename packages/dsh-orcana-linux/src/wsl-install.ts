@@ -1,5 +1,29 @@
 export const DEFAULT_WSL_PNPM_PACKAGE = 'pnpm@11.7.0'
 
+const DSH_PACKAGE_PREFIX = '@deepseek-ai/dsh@'
+const DSH_HEADLESS_PACKAGE = '@deepseek-ai/dsh-headless'
+
+/**
+ * Derive an official DSH companion package at the same selector/version as the
+ * selected CLI. This keeps the one-shot task surface in lockstep with the DSH
+ * runtime instead of hard-coding a second independently drifting version.
+ */
+export function dshCompanionPackage(dshPackage: string, companionName: string): string {
+  if (dshPackage === '@deepseek-ai/dsh') return companionName
+  if (!dshPackage.startsWith(DSH_PACKAGE_PREFIX)) {
+    throw new Error(`cannot derive ${companionName} from DSH package spec ${JSON.stringify(dshPackage)}`)
+  }
+  const selector = dshPackage.slice(DSH_PACKAGE_PREFIX.length)
+  if (selector.length === 0) {
+    throw new Error(`cannot derive ${companionName} from an empty DSH package selector`)
+  }
+  return `${companionName}@${selector}`
+}
+
+export function dshHeadlessPackage(dshPackage: string): string {
+  return dshCompanionPackage(dshPackage, DSH_HEADLESS_PACKAGE)
+}
+
 /**
  * Run DSH plugin management with an exact local toolchain when available;
  * otherwise ask npx for both pinned packages in one ephemeral execution env.
@@ -7,22 +31,23 @@ export const DEFAULT_WSL_PNPM_PACKAGE = 'pnpm@11.7.0'
  * remains authoritative and no user shell startup file mutates execution.
  *
  * This resolver is intentionally dedicated to `--wsl-install`: it validates
- * the expected `dsh plugin --profile <name> add ...` shape and injects pnpm's
- * `--save-exact`, so both the immediate resolution AND the persisted DSH
- * profile manifest stay pinned to this Orcana release.
+ * the expected `dsh plugin --profile <name> add ...` shape, prepends the DSH
+ * one-shot headless bundle, and injects pnpm's `--save-exact`, so the profile
+ * is both runnable and pinned to this release family.
  */
 export const INSTALL_RESOLVER_SCRIPT = [
   'dsh_package=$1',
   'pnpm_package=$2',
   'version_contract=$3',
-  'shift 3',
+  'headless_package=$4',
+  'shift 4',
   'if [ "$1" != "plugin" ] || [ "$2" != "--profile" ] || [ -z "$3" ] || [ "$4" != "add" ]; then',
   '  printf "%s\\n" "dsh-orcana: internal install argv does not match plugin --profile <name> add" >&2',
   '  exit 64',
   'fi',
   'profile=$3',
   'shift 4',
-  'set -- plugin --profile "$profile" add --save-exact "$@"',
+  'set -- plugin --profile "$profile" add --save-exact "$headless_package" "$@"',
   'if command -v dsh >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then',
   '  dsh_version=$(dsh --version 2>/dev/null || true)',
   '  pnpm_version=$(pnpm --version 2>/dev/null || true)',
@@ -44,9 +69,10 @@ export function nativeInstallShellArgs(
   versionContract: string,
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
 ): string[] {
+  const headlessPackage = dshHeadlessPackage(dshPackage)
   return [
     '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
-    dshPackage, pnpmPackage, versionContract, ...dshArgs,
+    dshPackage, pnpmPackage, versionContract, headlessPackage, ...dshArgs,
   ]
 }
 
