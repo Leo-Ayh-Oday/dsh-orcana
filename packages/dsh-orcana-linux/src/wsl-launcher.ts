@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { augmentWslHostEnvironment } from './wsl-host-env.js'
 import { reportWslLoopbackProxyDoctor } from './wsl-proxy-doctor.js'
+import { runWslWorkspaceDoctor } from './wsl-workspace-doctor.js'
 import {
   launchWslBridge,
   parseWslBridgeArgs,
@@ -103,9 +104,9 @@ function canonicalBridgeArgs(options: WslBridgeOptions, dshArgs: readonly string
  *
  * Windows composition normalizes DSH bootstrap proxy/search/certificate
  * environment, local filesystem package specs passed to `dsh plugin`, and WSL
- * distro ownership before entering the core bridge. Doctor additionally probes
- * explicit loopback proxy endpoints from inside WSL; it never guesses or
- * rewrites a Windows loopback address into a NAT gateway.
+ * distro ownership before entering the core bridge. Doctor additionally checks
+ * explicit loopback proxy reachability plus the real WSL workspace/Git surface;
+ * it never guesses proxy gateways or copies Windows Git credentials/SSH keys.
  */
 export async function launchDshOrcana(
   rawArgs: readonly string[],
@@ -126,7 +127,11 @@ export async function launchDshOrcana(
   if (parsed.mode === 'doctor') {
     const bridgeStatus = await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
     if (bridgeStatus !== 0) return bridgeStatus
-    return reportWslLoopbackProxyDoctor(effectiveEnv, selectedDistro)
+
+    const proxyStatus = reportWslLoopbackProxyDoctor(effectiveEnv, selectedDistro)
+    const mapped = windowsPathToWsl(cwd, selectedDistro)
+    const workspaceStatus = runWslWorkspaceDoctor(mapped.linuxPath, effectiveEnv, selectedDistro)
+    return proxyStatus !== 0 ? proxyStatus : workspaceStatus
   }
 
   if (parsed.mode === 'install') {
