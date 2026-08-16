@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { translateDshPluginPathSpecsForWsl } from '../src/wsl-launcher.ts'
+import {
+  distroForWindowsWorkspace,
+  translateDshPluginPathSpecsForWsl,
+} from '../src/wsl-launcher.ts'
+
+describe('Windows WSL execution-world selection', () => {
+  it('uses a WSL UNC cwd as the execution distro when no selector was provided', () => {
+    expect(distroForWindowsWorkspace('\\\\wsl.localhost\\Ubuntu\\home\\leo\\repo')).toBe('Ubuntu')
+    expect(distroForWindowsWorkspace('\\\\wsl$\\Debian\\srv\\repo')).toBe('Debian')
+    expect(distroForWindowsWorkspace('C:\\repo')).toBeUndefined()
+  })
+
+  it('accepts the same explicit distro case-insensitively and rejects a different one', () => {
+    expect(distroForWindowsWorkspace(
+      '\\\\wsl.localhost\\Ubuntu\\home\\leo\\repo',
+      'ubuntu',
+    )).toBe('ubuntu')
+
+    expect(() => distroForWindowsWorkspace(
+      '\\\\wsl.localhost\\Ubuntu\\home\\leo\\repo',
+      'Debian',
+    )).toThrow(/cwd belongs to WSL distro/)
+  })
+})
 
 describe('Windows dsh plugin path-spec translation', () => {
   it('normalizes only relative filesystem specs while preserving pnpm semantics', () => {
@@ -58,6 +81,25 @@ describe('Windows dsh plugin path-spec translation', () => {
         command: 'wsl.exe',
         args: ['--distribution', 'Ubuntu', '--exec', 'wslpath', '-a', '-u', 'D:\\src\\plugin-b'],
       },
+    ])
+  })
+
+  it('can be locked to the WSL UNC cwd distro before translating drive paths', () => {
+    const calls: string[][] = []
+    const fake = ((_: string, args: readonly string[]) => {
+      calls.push([...args])
+      return { status: 0, stdout: '/mnt/c/repo/plugin\n', stderr: '', error: undefined }
+    }) as unknown as typeof import('node:child_process').spawnSync
+
+    const distro = distroForWindowsWorkspace('\\\\wsl.localhost\\Ubuntu\\home\\leo\\repo')
+    translateDshPluginPathSpecsForWsl(
+      ['plugin', '--profile', 'dev', 'add', 'C:\\repo\\plugin'],
+      distro,
+      fake,
+    )
+
+    expect(calls[0]).toEqual([
+      '--distribution', 'Ubuntu', '--exec', 'wslpath', '-a', '-u', 'C:\\repo\\plugin',
     ])
   })
 
