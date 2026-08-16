@@ -1,20 +1,9 @@
-import { dshHeadlessPackage, type ExactPackageSpec } from './wsl-install.js'
+import { dshHeadlessPackage, parseExactPackageSpec } from './wsl-install.js'
 
 export interface WslProfileExpectation {
   dependencies: Record<string, string>
   /** Required bundle subsequence; extra user bundles may exist between rows. */
   bundles: string[]
-}
-
-export function parseExactPackageSpec(spec: string): ExactPackageSpec {
-  const at = spec.lastIndexOf('@')
-  if (at <= 0) throw new Error(`package spec must include an exact version: ${JSON.stringify(spec)}`)
-  const name = spec.slice(0, at)
-  const version = spec.slice(at + 1)
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new Error(`package spec must use an exact semver version: ${JSON.stringify(spec)}`)
-  }
-  return { name, version }
 }
 
 export function buildWslProfileExpectation(
