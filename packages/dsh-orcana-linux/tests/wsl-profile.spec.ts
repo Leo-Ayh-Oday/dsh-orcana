@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_ORCANA_PROFILE_IMPORT_MODULES,
   PROFILE_VERIFY_NODE_SCRIPT,
   buildWslProfileExpectation,
   buildWslProfileVerifyArgs,
@@ -64,7 +65,12 @@ function runVerify(
 }
 
 describe('WSL profile expectation', () => {
-  it('pins exact dependencies, required bundle order and implementation import probes', () => {
+  it('pins exact dependencies, required bundle order and actual runtime import probes', () => {
+    expect(DEFAULT_ORCANA_PROFILE_IMPORT_MODULES).toEqual([
+      '@leooday/governor-core',
+      '@leooday/dsh-governor',
+      '@leooday/dsh-orcana-linux/native-evidence',
+    ])
     expect(expectation).toEqual({
       dependencies: {
         '@deepseek-ai/dsh-headless': '0.1.0-rc.5',
@@ -83,7 +89,7 @@ describe('WSL profile expectation', () => {
       importPackages: [
         '@leooday/governor-core',
         '@leooday/dsh-governor',
-        '@leooday/dsh-orcana-linux',
+        '@leooday/dsh-orcana-linux/native-evidence',
       ],
     })
   })
