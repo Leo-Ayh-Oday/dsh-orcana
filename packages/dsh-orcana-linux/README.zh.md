@@ -2,255 +2,279 @@
 
 [English](README.md) | 中文
 
-**Orcana 的 DSH Linux 执行加固层，并提供 Windows → WSL 无感执行桥。**
+**Orcana 的 DSH 原生执行证据层 + Windows → WSL 单一 Linux 执行世界桥。**
 
-本包继续作为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-官方 sandbox 契约之上的原生加固插件，不 fork DSH。自 v0.4 起，它同时提供
-`dsh-orcana` 统一入口：Linux / WSL 内直接运行 DSH；从 Windows 调用时，在任务
-开始前把**整个 DSH 进程**一次性送进 WSL。Windows 只负责启动，真正任务始终
-处于同一个原生 Linux 执行世界。
+这个包现在承担两个明确职责：
 
-这意味着进入 WSL 后，DSH 的 sandbox、subprocess、bash、PTY、PTC、LSP、
-后台进程以及 Orcana 加固全部继续使用 Linux 语义，而不是每个工具调用再跨一次
-Windows/WSL 边界。
-
-- **资源限制** — `memoryBytes` / `pidsMax` 在 Linux 上使用 `prlimit` argv
-  前缀；`RLIMIT_AS` 是地址空间近似，不是 cgroup 物理内存上限，
-  `RLIMIT_NPROC` 是 PER-UID 上限，不是 per-cell PID 权限。
-- **出网策略** — `network: 'none'` 在支持的 runner 上使用 bwrap
-  `--unshare-net` / Seatbelt `(deny network*)`。
-- **默认 fail-closed** — 请求的加固层无法表达时抛
-  `HARDENING_UNAVAILABLE`；只有明确配置 `best-effort` 才允许记录后继续。
-- **执行证据** — 每次受限执行记录进有界 `ctx.hardening` 台账，包含 requested、
-  applied、degraded、failure 和 dropped/total。
-- **Windows → WSL Bridge** — cwd 由目标发行版自己的 `wslpath` 转换；任务参数
-  保持 argv 边界；运行时环境通过单向 `WSLENV` 转发；Windows `DSH_HOME`
-  不与 Linux 共用。
-
-## 保证
+1. **Linux / WSL 治理证据** —— DSH 是唯一的 sandbox policy 与原生 enforcement
+   owner；Orcana 读取 DSH 真正产生的 shell result / `SandboxReceipt`，不再重复
+   套第二层资源限制或网络 namespace。
+2. **Windows → WSL 执行后端** —— `dsh-orcana` 把 Windows 只当启动面；任务开始
+   前，整个 DSH + Orcana runtime 已经进入同一个 WSL Linux execution world。
 
 ```text
-✓ 经 ctx.sandbox 的 read-only / workspace-write 执行可被加固
-✓ 支持 runner 上的 network-none
-✓ RLIMIT_AS / RLIMIT_NPROC fallback，并明确它们的真实语义
-✓ required | best-effort 逐层降级策略
-✓ 有界执行证据台账
-✓ dispose 精确恢复原始 confine
-✓ 重复插件实例 fail loud
-✓ Windows / Linux 使用同一个 dsh-orcana 命令
-✓ Windows 任务开始前整个 DSH runtime 已进入 WSL
-✓ Windows cwd 交给目标 WSL 自己映射，不硬编码 /mnt/c
-✓ DSH 的 -- 哨兵与任务 argv 穿过 Bridge 后保持原样
-✓ 优先使用已有 dsh；npm fallback 固定到明确兼容的 DSH 版本
-✓ API key、provider base URL、DSH_*、Orcana runtime 变量通过单向 WSLENV 传入
-✓ stdio、交互式 Ctrl+C、正常退出码继续走 WSL 原生路径
+Windows Terminal / PowerShell
+        │
+        ▼
+    dsh-orcana
+        │  cwd / argv / env bridge
+        ▼
+       WSL
+        │
+        ▼
+       DSH
+  sandbox-policy
+        │
+        ▼
+ sandbox-local          ← 唯一原生 enforcement owner
+ cgroup / prlimit
+ network isolation
+        │
+        ▼
+      ctx.shell
+        │
+        ▼
+ SandboxReceipt
+        │
+        ▼
+@leooday/dsh-orcana-linux/native-evidence
+        │
+        ▼
+ ctx.orcanaLinuxEvidence
 ```
 
-## 不保证
+## 权限边界
+
+### DSH 负责真正执行限制
+
+当前 DSH 的 `sandbox-policy` 已经正式拥有：
+
+- `mode`
+- `workspaceRoot`
+- `resourceLimits.memoryBytes`
+- `resourceLimits.cpuQuotaUs`
+- `resourceLimits.pidsMax`
+- `network: inherit | none`
+
+DSH 原生 sandbox provider 自己选择实际机制，例如 cgroup v2 或其明确记录语义
+差异的 `prlimit` fallback；它负责进程 attach/detach、cleanup，并最终生成真实的
+`SandboxReceipt`。
+
+**Orcana 不应再重复执行这一层。** 因此当前组合包加载的是：
 
 ```text
-✗ 插件本身加固 danger-full-access（该模式绕过 ctx.sandbox）
-✗ 当前版本拥有 cgroup v2 memory / pids / cpu 权限
-✗ per-cell PID 权限
-✗ cpuQuotaUs 的精确 CPU 配额
-✗ 把 Windows 的 DSH_HOME / node_modules 直接拿给 WSL 使用
-✗ 把 WSL 本身当成安全 sandbox —— WSL 在这里是 Linux 执行世界边界
-✗ 当前 Windows Bridge 已提供独立的 Orcana 程序化 timeout/cancel API
+@leooday/dsh-orcana-linux/native-evidence
 ```
 
-## `danger-full-access` 与 WSL 的区别
+而不是旧包根入口。
 
-当 DSH 已经运行在 Linux / WSL 中时，`danger-full-access` 会绕过
-`ctx.sandbox.confine`，因此不受本插件 sandbox hardening；
-`ctx.hardening.scope` 会诚实报告：
+### Orcana 负责证据与治理
+
+`native-evidence` 观察 DSH 公共 `ctx.shell` 结果边界：
+
+- 不修改 `ShellExecSpec`、sandbox policy、argv、lifecycle、result object 或
+  process handle；
+- 前台任务在 `shell.run()` 真正完成后结算证据；
+- 后台任务等待原样返回的 `ShellProcess.done` 完成后再记录；
+- observer reload/HMR 后，已经启动的后台任务证据仍会归入同一持久 ledger；
+- 记录 DSH 真 receipt：实际 layers、degraded、limits mechanism、cgroup path、
+  memory/CPU/PID peak、cleanup verification、live usage；
+- `danger-full-access` 只记录真实 sandbox facts，不伪造不存在的 native receipt；
+- 不保存原始 command，只保存 SHA-256 fingerprint 与 UTF-8 byte length，降低
+  command 中 token/secret 落入治理台账的风险；
+- ledger 有界，暴露 total / dropped / pending-background。
+
+服务入口：
 
 ```ts
-{ confinedModes: true, dangerFullAccess: false }
+ctx.orcanaLinuxEvidence
 ```
 
-但 Windows Bridge 属于更外层：它在任何工具执行前就把**整个 DSH runtime**
-送入 WSL。因此即使某个工具使用 `danger-full-access`，它仍然是 Linux 进程；
-只是没有被本插件 sandbox 加固，而不是退回 Windows 进程语义。
+并明确声明自己的 authority：
 
-## Linux / WSL 内安装插件
+```ts
+{
+  enforcementOwner: 'dsh',
+  observationSeam: 'shell',
+  mutatesExecution: false,
+  dangerFullAccessObserved: true,
+}
+```
 
-推荐加固组合包：
+## 安装
+
+推荐把 governor + Linux evidence 放在同一个 Orcana profile：
+
+```sh
+dsh plugin --profile orcana add \
+  @leooday/dsh-bundle \
+  @leooday/dsh-orcana-linux-bundle
+```
+
+只装 Linux evidence：
 
 ```sh
 dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 ```
 
-governor + Linux 加固放在同一个 profile：
+组合包默认**不改变执行策略**。安装只建立观察/证据层，不会偷偷打开新的网络
+限制或资源上限。
 
-```sh
-dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
+### 原生资源/网络限制要配 DSH
+
+通过后续 profile/user patch 修改 DSH 已有的 `sandbox-policy` 行。DSH patch 会替换
+该行整个 `config`，所以增加限制时要保留当前 mode 与 workspace root：
+
+```yaml
+- id: sandbox-policy
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.cwd()
+    network: none
+    resourceLimits:
+      memoryBytes: 536870912
+      pidsMax: 64
+      cpuQuotaUs: 50000
 ```
 
-组合包默认保持中立；安装本身不会偷偷开启更强的网络或资源限制。需要的策略
-继续由 profile config 或 `--patch` 显式配置。
+之后 Orcana 消费的是 DSH 真正执行后产生的 receipt，而不是第二份平行的
+“Orcana 估算加固结果”。
 
-程序化嵌入：
+### 程序化使用证据适配器
 
 ```sh
 npm i @leooday/dsh-orcana-linux
 ```
 
 ```ts
-import { apply as hardening } from '@leooday/dsh-orcana-linux'
+import nativeEvidence from '@leooday/dsh-orcana-linux/native-evidence'
 
-ctx.plugin(hardening, {
-  network: 'none',
-  resourceLimits: { memoryBytes: 512 * 1024 * 1024 },
+ctx.plugin(nativeEvidence, {
+  ledgerMaxEntries: 1024,
 })
 ```
 
-## Windows → WSL：同一个命令，一个 Linux 世界
+## Windows → WSL：同一条命令、同一个 Linux 世界
 
-v0.4 发布后，Windows 侧安装一次统一入口：
+Windows 安装一次 launcher：
 
 ```powershell
 npm install -g @leooday/dsh-orcana-linux@^0.4.0
 ```
 
-目标 WSL 需要 Node/npm，并满足当前 DSH 的 Node 契约：
-`^22.19.0 || >=24.0.0`。全局 `dsh` 不是硬前置。
-
-先检查执行世界：
+然后：
 
 ```powershell
 dsh-orcana --wsl-doctor
-```
-
-Doctor 会报告：
-
-- Linux kernel；
-- Node 版本以及是否满足运行契约；
-- 是否存在直接 `dsh`，或者是否可以走 npm fallback；
-- `bwrap` / `prlimit` 是否可见；
-- 当前 Windows cwd 是 WSL 原生文件系统，还是 Windows 文件系统挂载到 WSL。
-
-两种文件系统都能运行。但 Git/npm/build I/O 很重时，把项目放在 WSL Linux
-文件系统中才是性能快路径。
-
-多发行版时：
-
-```powershell
-dsh-orcana --wsl-distro Ubuntu-24.04 --wsl-doctor
-```
-
-从 Windows Terminal 直接把 Orcana profile 安装进 WSL：
-
-```powershell
 dsh-orcana --wsl-install
+dsh-orcana "修复失败的测试"
 ```
 
-之后 Windows / Linux 都使用同一个命令：
+Linux / WSL 里日常任务也是同一条：
 
 ```sh
 dsh-orcana "修复失败的测试"
 ```
 
-Bridge 默认 profile 是 `orcana`。第一个 `--` 之前显式给 DSH 的 `--profile`
-优先；也可以单独改变 Bridge 默认 profile：
+目标 WSL 的 Node 必须满足当前 pinned DSH 契约：
 
-```powershell
-dsh-orcana --wsl-profile orcana-linux "运行测试"
-dsh-orcana --profile bench "跑 benchmark"
+```text
+^22.19.0 || >=24.0.0
+```
+
+不强制全局安装 `dsh`。launcher 会先验证现有 `dsh` 是否与固定版本匹配；不匹配
+或不存在时才走 pinned npm fallback。v0.4 默认：
+
+```text
+@deepseek-ai/dsh@0.1.0-rc.5
+pnpm@11.7.0
 ```
 
 ### Bridge 不变量
 
-1. **只有一个执行世界。** Windows 不运行 DSH 后再把单个工具调用送进 Linux；
-   `wsl.exe` 会在任务开始前直接启动 WSL 内的 DSH。
-2. **cwd 转换而不是猜测。** `C:\repo` 由目标 distro 的 `wslpath` 转成真实
-   Linux 路径，不写死 `/mnt/c`；`\\wsl.localhost\Distro\...` 和
-   `\\wsl$\Distro\...` 可以直接识别。UNC 所属 distro 与 `--wsl-distro`
-   冲突时 fail loud。
-3. **argv 边界不破坏。** Bridge 只解析第一个 `--` 之前的 `--wsl-*`；`--`
-   本身和后面的所有内容原样交给 DSH。用户任务文本不会被插入固定 resolver
-   脚本，只通过位置参数进入。
-4. **DSH 解析可复现。** 设置 `ORCANA_WSL_DSH_COMMAND` 时使用指定 Linux
-   executable；否则先找已有 `dsh`。没有时，v0.4.0 固定回退到
-   `@deepseek-ai/dsh@0.1.0-rc.5`，而不是悄悄跟 npm `latest` 漂移。
-   要验证新 DSH 时显式设置 `ORCANA_WSL_DSH_PACKAGE`。
-5. **环境变量单向且有边界。** 常见模型 API key、provider base URL、代理、
-   `DSH_*` 与非 Bridge 的运行时 `ORCANA_*` 通过带 `/u` 的 `WSLENV` 单向
-   Win32 → WSL；`ORCANA_WSL_*` Bridge 控制变量留在主机侧。
-6. **不共享 Windows DSH_HOME。** `DSH_HOME`、`HOME` 和 Windows `PATH`
-   不隐式转发。WSL 使用自己的 DSH profile/package graph，避免 Windows 原生
-   `node_modules` / executable 混进 Linux。
-7. **终端行为保持 WSL 原生。** stdio 继承当前终端，`wsl.exe` 保持 Windows
-   console/cancellation authority。Bridge 不用 Windows `child.kill()` 冒充
-   POSIX 信号，也不在正常交互任务里人为插入新的 Linux session/process-group
-   supervisor；最终 DSH/WSL 退出码返回调用方。
+1. **只有一个执行世界。** Windows 不先跑 DSH 再把每个工具调用送进 WSL；整个
+   runtime 在任务开始前就进入 Linux。
+2. **cwd 由 WSL 自己映射。** 不硬编码 `/mnt/c`；直接识别
+   `\\wsl.localhost\Distro\...` 与 `\\wsl$\Distro\...`。
+3. **argv 保持位置参数语义。** 中文、emoji、单双引号、反斜杠、换行、shell
+   metacharacter 和 DSH 的 `--` 哨兵不会被重新当成用户可控 shell 字符串解析。
+4. **只翻译 DSH 自己拥有的路径字段。** launcher 的 `--patch` 与
+   `dsh plugin` 的本地 filesystem spec 会映射；task/app argv 保持 opaque。
+5. **环境变量单向、选择性传递。** 常见模型 key、base URL、代理、DSH
+   bootstrap-only 网络变量、证书路径通过 `WSLENV` 传入；值不会拼到任务 argv。
+6. **Windows runtime home 与 WSL 隔离。** 不复用 Windows `DSH_HOME`、`HOME`、
+   `PATH`、原生 `node_modules`，避免 ABI/可执行文件污染。
+7. **终端控制走 WSL 原生链。** stdio 和 Windows console cancellation 继续由
+   `wsl.exe` 承担，不用 Windows `child.kill()` 假装 POSIX signal。
+8. **版本漂移显式失败。** 安装链 pin DSH、pnpm、Orcana runtime packages 与
+   bundles，并在安装后做 profile composition + 真实 module/peer import probe。
 
-如果构建还需要额外环境变量，可以显式加入 allowlist：
+## `--wsl-doctor` 现在检查什么
 
-```powershell
-$env:ORCANA_WSL_FORWARD_ENV = "MY_CORP_PROXY,MY_BUILD_FLAG"
-dsh-orcana "构建项目"
+它已经不是简单的“WSL 在不在”：
+
+- WSL2 / kernel 与 Node runtime；
+- pinned DSH / pnpm toolchain；
+- Orcana headless + web profile manifest/module；
+- Windows ↔ WSL localhost Web relay；
+- loopback proxy 可达性，同时不打印凭据；
+- cwd 映射与 WSL-native / Windows-mounted storage；
+- Git worktree 与 user identity；
+- HTTPS credential helper / 可见 credential manager；
+- SSH agent / 默认 key 能力，但不打印 key 文件名；
+- TTY、UTF-8 locale、路径 roundtrip、文件系统/mount 语义、WSL interop；
+- Windows 挂载目录缺少 DrvFS metadata 时提示 chmod/chown/POSIX 权限差异。
+
+Parity warning 只解释“不像原生 Linux”的原因，不会偷偷修改 Git、WSL、mount 或
+凭据配置。
+
+Git/npm/build I/O 很重的项目仍建议放在 WSL Linux filesystem，这是性能与 Linux
+语义最接近原生的路径。
+
+## 当前证据覆盖范围
+
+Orcana 自己管理的 `orcana`（headless）和 `orcana-web` 产品 profile 使用 DSH
+普通 shell 执行链，因此前台/后台 shell 都能获得上面的 native evidence。
+
+自定义 DSH profile 还可能挂其他 execution capability。当前 DSH 的 persistent
+terminal/PTTY 实现会 confine argv，但没有通过 shell result seam 暴露同等级
+lifecycle receipt。因此 `native-evidence` **暂不宣称 custom terminal/PTTY receipt
+等价**，也不会为了“看起来全覆盖”去伪造证据。
+
+这不是当前 Orcana 默认 headless/web profile 的阻断项；默认产品 closure 并不挂
+persistent terminal-bash。
+
+## 旧兼容入口
+
+包根入口：
+
+```text
+@leooday/dsh-orcana-linux
 ```
 
-Bridge 控制项：
+暂时保留早期 argv-hardening plugin，避免直接打断已有程序化用户。这个 legacy
+入口会 patch `ctx.sandbox.confine`，**当前 bundle 已经不再加载它**。
 
-| 变量 / 参数 | 含义 |
-|---|---|
-| `ORCANA_WSL_DISTRO` / `--wsl-distro` | 指定 WSL 发行版 |
-| `ORCANA_WSL_PROFILE` / `--wsl-profile` | Bridge 默认 DSH profile，默认 `orcana` |
-| `ORCANA_WSL_DSH_COMMAND` | 显式指定 WSL 内 DSH executable |
-| `ORCANA_WSL_DSH_PACKAGE` | 显式指定 npm fallback 包/版本；默认由 Bridge release 固定 |
-| `ORCANA_WSL_FORWARD_ENV` | 额外允许转发的环境变量，逗号分隔 |
-| `--wsl-install` | 在 WSL profile 中安装 governor + Linux hardening bundles |
-| `--wsl-doctor` | 检查 Linux execution world 与当前工作区路径类型 |
+新的 DSH 集成应使用：
 
-`dsh-orcana-wsl` 是同一启动器的显式别名；正常使用推荐统一写
-`dsh-orcana`。
+```text
+@leooday/dsh-orcana-linux/native-evidence
+```
 
-## 加固配置
+资源/网络 policy 归 DSH `sandbox-policy` 所有。
 
-| 字段 | 类型 | 默认 | 含义 |
-|---|---|---|---|
-| `resourceLimits.memoryBytes` | number | — | `prlimit --as` 字节；地址空间近似 |
-| `resourceLimits.pidsMax` | number | — | `prlimit --nproc`；PER-UID live-task 上限 |
-| `resourceLimits.cpuQuotaUs` | number | — | 需要 cgroup v2；当前降级 / fail-closed |
-| `network` | `'inherit' \| 'none'` | — | `none` 时请求拒绝全部出网 |
-| `degradationPolicy.resourceLimits` | `'required' \| 'best-effort'` | `required` | 缺能力时失败或记录后继续 |
-| `degradationPolicy.network` | `'required' \| 'best-effort'` | `required` | 同上，针对网络层 |
-| `ledgerMaxEntries` | number | 1024 | 有界审计窗口 |
+## 已发布 subpath
 
-每次调用仍可通过 `sandboxPolicy` 携带 `resourceLimits` / `network` 覆盖部署默认值；
-降级策略和 ledger 大小保持部署级。
+```text
+@leooday/dsh-orcana-linux
+@leooday/dsh-orcana-linux/native-evidence
+@leooday/dsh-orcana-linux/wsl-bridge
+@leooday/dsh-orcana-linux/wsl-launcher
+```
 
-> **安全边界：** per-call carrier 可以放宽 deployment request。例如调用方显式
-> 给出 `network: 'inherit'` 会覆盖该次执行的 deployment `network: 'none'`。
-> 必须强制的 egress policy 应由真正拥有 sandbox policy 的层负责。
+`wsl-launcher` 是产品级推荐 API；`wsl-bridge` 是更底层的 transport primitive。
 
-> **`runnerCommand`：** 当前 runner 识别基于精确 `argv[0]`。wrapper 或绝对
-> `/usr/bin/bwrap` 不会被错误宣称为已加固；required 层会 fail loud。
-
-## 原生加固工作原理
-
-Cordis 4.0.1 不允许跨 fiber 直接替换服务，因此插件 patch 已解析出的
-`ctx.sandbox.confine`：
-
-1. 原 provider 负责基础文件效果限制；
-2. Orcana 在返回 argv 上增加请求的 `prlimit` / network-none；
-3. required 层无法表达时 fail-closed；
-4. 有界 ledger 记录 requested / applied / degraded；
-5. dispose 时仅在仍拥有 patch 的前提下恢复精确原引用。
-
-## 平台矩阵
-
-| 表面 | Linux / WSL | macOS | Windows 主机 |
-|---|---|---|---|
-| `dsh-orcana` 执行 | 原生 | 原生命令 | 整个 DSH 进入 WSL |
-| resource hardening | `prlimit` | 降级 | 进入 WSL 后由 Linux 插件执行 |
-| `network: none` | bwrap `--unshare-net` | Seatbelt | 进入 WSL 后由 Linux 插件执行 |
-| evidence ledger | 是 | 是 | 在 WSL runtime 内记录 |
-| 交互终端 / Ctrl+C | 原生 | 原生 | 原生 `wsl.exe` → Linux 路径 |
-| Windows 原生加固 | n/a | n/a | 不宣称；需要 Linux 语义时走 WSL Bridge |
-
-## 开发
+## 开发 / 发布
 
 ```sh
 pnpm install
@@ -260,9 +284,13 @@ pnpm --filter @leooday/dsh-orcana-linux build
 pnpm --filter @leooday/dsh-orcana-linux pack
 ```
 
-WSL Bridge 单测会固定 `--`/argv 透传、DSH 固定版本 fallback、profile 安装、
-UNC/wslpath 映射、工作区分类和 WSLENV 隔离，不要求 Windows runner。原生
-bwrap/prlimit 集成测试在主机缺少对应能力时自动跳过。
+`prepack` 会跑 typecheck + tests + build。Profile verifier 现在探测的是真实运行
+模块，包括 `@leooday/dsh-orcana-linux/native-evidence`，因此 export map 或
+DSH/Cordis peer 链坏掉时，不会因为 legacy 根入口还能 import 就假通过。
+
+仓库 release contract 也会故意阻断 stale lockfile。当前 `pnpm-lock.yaml` 仍需在
+具备 registry 网络的环境中用仓库固定的 pnpm 重新生成；不要手工把 rc.6 dependency
+snapshot 改成 rc.5 伪造一致性。
 
 ## License
 
