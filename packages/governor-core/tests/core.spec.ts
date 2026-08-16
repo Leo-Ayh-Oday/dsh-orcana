@@ -7,10 +7,12 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_VERIFY_PATTERNS,
   ProgressFactEngine,
+  canonicalizeArgs,
   classifyObservation,
   isVerificationCommand,
   matchesVerificationPattern,
   receiptStatus,
+  sha256,
   verificationToken,
 } from '../src/index.ts'
 import type { EngineEvent } from '../src/index.ts'
@@ -106,6 +108,41 @@ describe('ProgressFactEngine.applyEvent (engine behavior)', () => {
     engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":3}' }))
     // p:1 was evicted: replaying it is progress, not repeated.
     expect(engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":1}' }))).toEqual({ kind: 'progress' })
+  })
+
+  it('a generation advance drops dead fingerprints so the window never shrinks', () => {
+    const engine = new ProgressFactEngine({ fingerprintWindow: 4 })
+    engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":1}' }))
+    engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":2}' }))
+    engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":3}' }))
+    engine.applyEvent(event({ tool: 'write', canonicalArgs: '{"p":1}', mutation: true }))
+    // gen 1: every pre-mutation entry was cleared; the old calls replay as
+    // first-observation (never repeated) — and the window is not polluted.
+    expect(engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":1}' }))).toEqual({ kind: 'first-observation' })
+    engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":2}' }))
+    engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":3}' }))
+    engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":4}' }))
+    // p:1 is still in the window at gen 1 (fourth slot) — replaying it is
+    // repeated, which a polluted ring could no longer detect.
+    expect(engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":1}' }))).toEqual({ kind: 'repeated-observation' })
+  })
+})
+
+describe('fingerprint primitives (canonicalizeArgs / sha256)', () => {
+  it('canonicalizes deep objects regardless of key order', () => {
+    expect(canonicalizeArgs({ b: 1, a: { d: 2, c: [3, 4] } }))
+      .toBe(canonicalizeArgs({ a: { c: [3, 4], d: 2 }, b: 1 }))
+  })
+
+  it('canonicalization is not identity (order still matters for arrays)', () => {
+    expect(canonicalizeArgs({ list: [1, 2] })).not.toBe(canonicalizeArgs({ list: [2, 1] }))
+  })
+
+  it('produces stable SHA-256 hex digests', () => {
+    const digest = sha256('{"command":"npm test"}')
+    expect(digest).toMatch(/^[0-9a-f]{64}$/)
+    expect(sha256('{"command":"npm test"}')).toBe(digest)
+    expect(sha256('{"command":"npm test"}')).not.toBe(sha256('{"command":"npm run build"}'))
   })
 })
 

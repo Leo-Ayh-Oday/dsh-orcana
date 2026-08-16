@@ -15,6 +15,7 @@ import {
   mulberry32,
   outcomeOf,
   planRuns,
+  renderPairedReport,
 } from '../supervisor.mjs'
 
 describe('armOrder (paired, deterministic)', () => {
@@ -70,14 +71,56 @@ describe('outcomeOf (authoritative verdicts)', () => {
       .toBe(OUTCOMES.INCOMPLETE_CALLS)
   })
 
+  it('the cost fuse is incomplete with its own reason', () => {
+    expect(outcomeOf({ budgetHit: 'cost', exitCode: 0, signal: 'SIGTERM' }))
+      .toEqual({ outcome: OUTCOMES.INCOMPLETE_CALLS, reason: 'cost_ceiling_hit', exitCode: 0, signal: 'SIGTERM' })
+  })
+
   it('a natural exit is completed — success is the judges call', () => {
     expect(outcomeOf({ budgetHit: undefined, exitCode: 0, signal: undefined }))
       .toEqual({ outcome: OUTCOMES.COMPLETED, reason: 'exited', exitCode: 0, signal: undefined })
   })
 
   it('a killed run without budget is infra (spawn-level) failure', () => {
-    expect(outcomeOf({ budgetHit: undefined, exitCode: null, signal: 'SIGKILL' }).outcome)
-      .toBe(OUTCOMES.INFRA_FAILURE)
+    expect(outcomeOf({ budgetHit: undefined, exitCode: null, signal: 'SIGKILL' }))
+      .toEqual({ outcome: OUTCOMES.INFRA_FAILURE, reason: 'terminated_by_signal', exitCode: null, signal: 'SIGKILL' })
+  })
+
+  it('an exit-code-less, signal-less failure is a spawn failure', () => {
+    expect(outcomeOf({ budgetHit: undefined, exitCode: null, signal: null }).reason)
+      .toBe('spawn_failed')
+  })
+})
+
+describe('renderPairedReport', () => {
+  function row(task, arm, outcome, judgment, calls, wallMs) {
+    return {
+      task,
+      arm,
+      wallMs,
+      record: { verdict: { outcome } },
+      judgment: { verdict: judgment },
+      metrics: { llm_calls: calls, input_tokens: 100, output_tokens: 50 },
+    }
+  }
+
+  it('renders per-task paired rows with deltas', () => {
+    const report = renderPairedReport([
+      row('demo', 'control', 'completed', 'success', 12, 90_000),
+      row('demo', 'treatment', 'completed', 'false-completion', 9, 70_000),
+    ])
+    expect(report).toContain('  demo:')
+    expect(report).toContain('control:   completed:success calls=12 wall=90s')
+    expect(report).toContain('treatment: completed:false-completion calls=9 wall=70s')
+    expect(report).toContain('delta: calls=-3 tokens=0 wall_ms=-20000')
+  })
+
+  it('is deterministic across row order', () => {
+    const rows = [
+      row('a', 'control', 'completed', 'success', 1, 1000),
+      row('a', 'treatment', 'completed', 'failed', 2, 2000),
+    ]
+    expect(renderPairedReport(rows)).toBe(renderPairedReport([...rows].reverse()))
   })
 })
 

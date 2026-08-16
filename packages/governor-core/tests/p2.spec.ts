@@ -9,6 +9,8 @@ import {
   INLINE_REPEAT_REMINDER,
   ProgressFactEngine,
   REEVALUATE_TURN_REMINDER,
+  gentleTurnReminder,
+  reevaluateTurnReminder,
   steerText,
   strongTurnReminder,
 } from '../src/index.ts'
@@ -55,11 +57,25 @@ describe('turn aggregation (endTurn)', () => {
     expect(engine.endTurn()).toMatchObject({ zeroProgress: true, chainLength: 1 })
   })
 
-  it('a mutation makes the round progress', () => {
+  it('a mutation makes the round progress — the mutation flag itself carries it', () => {
     const engine = new ProgressFactEngine()
     engine.applyEvent(READ_A)
+    engine.endTurn() // A is now known
+    // A round of pure repeats PLUS a mutation: never zero-progress, and the
+    // verdict no longer relies on the observation classifying as progress.
+    engine.applyEvent(READ_A)
+    engine.applyEvent(READ_A_AGAIN)
     engine.applyEvent(WRITE)
     expect(engine.endTurn()).toMatchObject({ zeroProgress: false, chainLength: 0 })
+  })
+
+  it('the same round without the mutation stays zero-progress (flag is load-bearing)', () => {
+    const engine = new ProgressFactEngine()
+    engine.applyEvent(READ_A)
+    engine.endTurn()
+    engine.applyEvent(READ_A)
+    engine.applyEvent(READ_A_AGAIN)
+    expect(engine.endTurn()).toMatchObject({ zeroProgress: true, chainLength: 1 })
   })
 
   it('new evidence (changed result) makes the round progress', () => {
@@ -162,9 +178,9 @@ describe('steer text (stable model-visible strings)', () => {
     )
   })
 
-  it('custom thresholds remap the tiers', () => {
-    expect(steerText(3, undefined, [3, 5])).toBe(GENTLE_TURN_REMINDER)
-    expect(steerText(5, undefined, [3, 5])).toBe(REEVALUATE_TURN_REMINDER)
+  it('custom thresholds remap the tiers, counting the actual chain length', () => {
+    expect(steerText(3, undefined, [3, 5])).toBe(gentleTurnReminder(3))
+    expect(steerText(5, undefined, [3, 5])).toBe(reevaluateTurnReminder(5))
     expect(steerText(6, undefined, [3, 5])).toContain('6 consecutive rounds')
   })
 })

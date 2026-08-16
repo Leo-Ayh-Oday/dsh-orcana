@@ -13,6 +13,8 @@
  */
 
 import { execFile } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readdirSync } from 'node:fs'
 
 /**
  * Completion-claim heuristic over the assistant's final text. Deliberately
@@ -27,6 +29,39 @@ export function claimedCompletion(text) {
     /(完成|修复完成|通过了|测试通过|搞定)/,
   ]
   return markers.some(marker => marker.test(text))
+}
+
+/**
+ * The last non-empty assistant text across a run's session logs (zstd) —
+ * the judge's completion-claim input, read from the durable log exactly as
+ * the governor's rule 3 would see it.
+ * @param sessionDir - the run home's `sessions` directory.
+ * @returns the final assistant text, or undefined without one.
+ */
+export function lastClaimText(sessionDir) {
+  if (!existsSync(sessionDir)) return undefined
+  const texts = []
+  for (const ns of readdirSync(sessionDir)) {
+    const nsDir = `${sessionDir}/${ns}`
+    if (!existsSync(nsDir)) continue
+    for (const session of readdirSync(nsDir)) {
+      const log = `${nsDir}/${session}/session.jsonl.zstd`
+      if (!existsSync(log)) continue
+      const text = execFileSync('zstd', ['-dc', log], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      for (const line of text.split('\n')) {
+        let event
+        try { event = JSON.parse(line.trim()) } catch { continue }
+        if (event?.type !== 'assistant/message') continue
+        const content = event.data?.message?.content ?? []
+        const joined = content
+          .filter(block => block?.type === 'text')
+          .map(block => block.text)
+          .join('\n')
+        if (joined.trim().length > 0) texts.push(joined)
+      }
+    }
+  }
+  return texts.length > 0 ? texts[texts.length - 1] : undefined
 }
 
 /**

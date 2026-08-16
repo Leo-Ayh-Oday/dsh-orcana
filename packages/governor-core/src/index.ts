@@ -273,7 +273,16 @@ export class ProgressFactEngine {
     const signal = classifyObservation(this.ring, observation, this.generation)
     this.ring.push({ ...observation, generation: this.generation })
     if (this.ring.length > this.window) this.ring.shift()
-    if (event.mutation) this.generation += 1
+    if (event.mutation) {
+      this.generation += 1
+      // A generation advance invalidates every earlier fingerprint — drop the
+      // dead entries outright so the ring's effective window never shrinks
+      // with mutations (audit fix; the classification already filters by
+      // generation, this only reclaims the slots).
+      for (let index = this.ring.length - 1; index >= 0; index--) {
+        if (this.ring[index].generation !== this.generation) this.ring.splice(index, 1)
+      }
+    }
 
     const verification = event.command !== undefined
       && isVerificationCommand(event.tool, event.command, this.patterns)
@@ -289,9 +298,9 @@ export class ProgressFactEngine {
       this.observeTurn(signal, observation, verification, {
         firstSeen,
         pass: receiptStatus(event) === 'pass',
-      })
+      }, event.mutation)
     } else {
-      this.observeTurn(signal, observation, verification, { firstSeen: false, pass: false })
+      this.observeTurn(signal, observation, verification, { firstSeen: false, pass: false }, event.mutation)
     }
     return signal
   }
@@ -305,9 +314,11 @@ export class ProgressFactEngine {
     observation: ToolObservation,
     verification: boolean,
     receipt: { firstSeen: boolean; pass: boolean },
+    mutation: boolean,
   ): void {
     const turn = this.turn ??= newTurnState()
     turn.observations += 1
+    if (mutation) turn.mutation = true
     if (signal.kind === 'repeated-observation') {
       turn.repeatedPattern = {
         tool: observation.tool,
@@ -462,13 +473,28 @@ export interface TurnVerdict {
 export const INLINE_REPEAT_REMINDER =
   'You are repeating the exact same call with unchanged results. Take a different action or finish the task.'
 
-/** The gentle first-tier turn reminder. */
+/** The gentle first-tier turn reminder (default-threshold snapshot text). */
 export const GENTLE_TURN_REMINDER =
   'You have spent 2 consecutive rounds without progress. Stop repeating investigation and take the next concrete action.'
 
-/** The second-tier turn reminder. */
+/** The second-tier turn reminder (default-threshold snapshot text). */
 export const REEVALUATE_TURN_REMINDER =
   'You have spent 3 consecutive rounds without progress. Re-evaluate the current approach before continuing.'
+
+/**
+ * The gentle first-tier reminder, counting the actual chain length (custom
+ * thresholds map to their own round numbers — audit fix).
+ */
+export function gentleTurnReminder(chainLength: number): string {
+  return `You have spent ${chainLength} consecutive rounds without progress. Stop repeating investigation and take the next concrete action.`
+}
+
+/**
+ * The second-tier reminder, counting the actual chain length.
+ */
+export function reevaluateTurnReminder(chainLength: number): string {
+  return `You have spent ${chainLength} consecutive rounds without progress. Re-evaluate the current approach before continuing.`
+}
 
 /**
  * The strong steer naming the repeated pattern and the round count.
@@ -501,8 +527,8 @@ export function steerText(
   thresholds: readonly number[],
 ): string {
   const index = thresholds.indexOf(chainLength)
-  if (index === 0) return GENTLE_TURN_REMINDER
-  if (index === 1) return REEVALUATE_TURN_REMINDER
+  if (index === 0) return gentleTurnReminder(chainLength)
+  if (index === 1) return reevaluateTurnReminder(chainLength)
   return strongTurnReminder(chainLength, pattern)
 }
 
@@ -686,7 +712,7 @@ export function completionViolations(
   }
   if (options.claimCheck && lastAssistantText !== undefined
     && options.claimPatterns.some(pattern => new RegExp(pattern, 'i').test(lastAssistantText))) {
-    for (const token of claimedTokens(lastAssistantText, options.verifyPatterns)) {
+    for (const token of claimedTokens(lastAssistantText, options.verifyPatterns).sort()) {
       const receiptPasses = state.receipts.some(receipt =>
         freshPass(receipt) && matchesVerificationPattern(verificationToken('bash', receipt.command) ?? '', token))
       if (!receiptPasses) {

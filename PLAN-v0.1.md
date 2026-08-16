@@ -494,6 +494,27 @@ gates:
 7. **限制(环境)**:live A/B 需 OPENCODE_GO_API_KEY + run-home 模型配置;当前环境缺 key → live 执行与 P7 一起在具备凭证的环境跑;runner 全部路径已由 fake-dsh 覆盖
 8. **dry-run 验证**:`node benchmark/runner/supervisor.mjs --manifests benchmark/manifests` 输出配对计划(seed=1 → treatment 先行)且不执行
 
+### 11.10 全量审核结论(对照计划,2026-08-16,已修复)
+
+三路独立 reviewer 对照 §3/§4/§5/§7/§10 与各阶段结论逐条核对;复验 161/161 测试、三 Gate、配对序、prompt_sha256。修复清单(本次提交):
+
+1. **M1 turn.mutation 死字段(已修)**:`observeTurn` 从不置位 mutation 标志,endTurn 的 `!turn.mutation` 恒真(行为靠 significant 兜底碰巧正确);已置位并补测试("mutation 轮即使全重复也非零进展" + 无 mutation 对照)
+2. **L1 steer 文本轮次硬编码(已修)**:GENTLE/REEVALUATE 常量文本写死 2/3 轮,自定义阈值(如 [3,5])下计数错误且 p2.spec 锁错文本;改为 `gentleTurnReminder(n)`/`reevaluateTurnReminder(n)` 插值,默认阈值输出不变
+3. **L2 rule3 token 序(已修)**:claimedTokens 按文本出现序,与 §11.7.1 声称"升序"不符;completionViolations 排序后产出
+4. **L3 ring 死条目(已修)**:gen 前进只"作废"不"清除",mutation 多后有效窗口萎缩;applyEvent 现在清理非当前 gen 条目,补窗口语义测试
+5. **M2 fingerprint 原语零测试(已修)**:canonicalizeArgs/sha256 无任何断言;补深排序/数组序/hash 稳定性测试
+6. **M4 cost ceiling(已修)**:`BUDGETS.maxSessionTokens` 累计 tokens 保险丝(默认 off 可配),超限 → incomplete/cost_ceiling_hit
+7. **M5 env pin 泄漏+未记录(已修)**:父环境 DSH_TELEMETRY_MODE/DSH_TOOLS_MODE 不再透传(ENV_STRIP);记录 env_pin 到 run record
+8. **M6 pin 清单(部分)**:recordRun + collectPins 记 node/dsh version/platform/arch/kernel/profile_config_digest/manifest digest/timestamps;model id 与 Orcana SHA 留 P7 报告期
+9. **H3 live 编排(已修)**:main --live 实际执行 plan——runOne → aggregate → judge → 仅 infra 重试 1 次 → `runLive` + `renderPairedReport`(paired deltas)+ paired-*.json 落盘;`--max-calls/--wall-ms/--max-tokens` 预算覆盖;runLive 端到端测试(demo workspace + fake dsh)
+10. **outcomeOf 命名(已修)**:信号终止 = terminated_by_signal(原 spawn_failed 名不副实);cost 分支独立 reason
+11. **Gate C 证据留存(已修)**:`scripts/verify-task-gates.sh` 可复跑三 Gate(临时副本 + gates/fix 应用),产出 dated gates JSON;demo 已记录(fix 版本入库 `tasks/demo/gates/fix/src/format.js`)
+12. **smoke 一致(已修)**:packed 安装路径的协调 patch 补 `tool-web disabled`(与 local-file 路径一致)
+13. **.gitignore(已修)**:`benchmark/run-home-*/`、`benchmark/reports/` 忽略(原条目与产物不匹配)
+14. **文档(已修)**:methodology 逐条标注实现状态(#8 部分、#9 OS 层待 bench-run.sh);manifests README YAML→JSON;benchmark README 补 runner 用法与任务生命周期
+
+**遗留(单列,非本批次)**:H1 resume 重放接线(adapter 无 session 重建监听,库层机制齐备)、H2 OS 层网络隔离(缺 bench-run.sh wrapper)、M3 adapter apply() 行为级测试、M7 真实任务 prep 流程(origin 移除/fix 排除/allowlist)、R1-M3 重放多 block 假设(DSH ToolResultMessage 类型契约为单 block,低疑)。
+
 ## 下一步(P7)
 
-A/B 实验 + paired 分析:在具备模型凭证的环境运行 supervisor live;导出 session 指标(aggregate)+ judge 判定;报告 paired success/call/token/wall deltas + 纪律指标(duplicate reads/commands/zero-progress rounds)+ 全量 pin 清单(§5.8,§7)。
+A/B 实验 + paired 分析:补 bench-run.sh(OS 层网络隔离)与 resume 接线后,在具备模型凭证的环境运行 `supervisor.mjs --live`;导出 session 指标(aggregate)+ judge 判定;报告 paired success/call/token/wall deltas + 纪律指标(duplicate reads/commands/zero-progress rounds)+ 全量 pin 清单(§5.8,§7)。

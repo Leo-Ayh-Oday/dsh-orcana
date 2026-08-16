@@ -17,12 +17,14 @@
  * @module orcana-benchmark/supervisor
  */
 
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-
+import { aggregateSessions, renderMetricsRow } from './aggregate.mjs'
+import { claimedCompletion, judgeVerdict, lastClaimText, runAcceptance } from './judge.mjs'
 export const BUDGETS = Object.freeze({
   /** Primary budget: model requests directly measure work (PLAN 5.3). */
   maxLLMCalls: 40,
@@ -30,18 +32,19 @@ export const BUDGETS = Object.freeze({
   wallTimeoutMs: 30 * 60 * 1000,
   /** SIGTERM grace before SIGKILL. */
   graceMs: 5000,
-  /** Session-log poll interval for the call budget. */
+  /** Session-log poll interval for the call/token budgets. */
   pollMs: 2000,
+  /** Cost fuse (PLAN 5.3): cumulative input+output+cacheRead tokens; 0 = off. */
+  maxSessionTokens: 0,
 })
 
 /** Environment pin shared by both arms (PLAN 5.2). */
 export const ENV_PIN = Object.freeze({
   DSH_PERMISSION_MODE: 'danger-full-access',
-  // DSH_TELEMETRY_MODE unset = default DISABLED; DSH_TOOLS_MODE unset.
-  // Run-time outbound network is denied at the OS layer by the caller
-  // (unshare -n or container); the tool-level web ban lives in the shared
-  // bench profile patch.
 })
+
+/** Variables that must be ABSENT from a run (telemetry/tools mode default-off). */
+export const ENV_STRIP = Object.freeze(['DSH_TELEMETRY_MODE', 'DSH_TOOLS_MODE'])
 
 /** Arm names. */
 export const ARMS = Object.freeze({ CONTROL: 'control', TREATMENT: 'treatment' })
@@ -107,7 +110,7 @@ export function planRuns(manifests, { seed = 1, reps = 1 } = {}) {
  * Authoritative outcome of one run: budget exhaustion wins over any exit
  * code; only natural exits reach `completed`, and even then the judge owns
  * success.
- * @param budgetHit - `'calls'`, `'wall'`, or undefined.
+ * @param budgetHit - `'calls'`, `'wall'`, `'cost'`, or undefined.
  * @param exitCode - DSH's exit code (informational only).
  * @param signal - terminating signal, when killed.
  * @returns the supervisor verdict.
@@ -115,7 +118,9 @@ export function planRuns(manifests, { seed = 1, reps = 1 } = {}) {
 export function outcomeOf({ budgetHit, exitCode, signal }) {
   if (budgetHit === 'wall') return { outcome: OUTCOMES.INCOMPLETE_TIMEOUT, reason: 'wall_time_budget_exhausted', exitCode, signal }
   if (budgetHit === 'calls') return { outcome: OUTCOMES.INCOMPLETE_CALLS, reason: 'llm_call_budget_exhausted', exitCode, signal }
+  if (budgetHit === 'cost') return { outcome: OUTCOMES.INCOMPLETE_CALLS, reason: 'cost_ceiling_hit', exitCode, signal }
   if (exitCode !== null) return { outcome: OUTCOMES.COMPLETED, reason: 'exited', exitCode, signal }
+  if (signal !== null) return { outcome: OUTCOMES.INFRA_FAILURE, reason: 'terminated_by_signal', exitCode, signal }
   return { outcome: OUTCOMES.INFRA_FAILURE, reason: 'spawn_failed', exitCode, signal }
 }
 
@@ -153,6 +158,65 @@ export function countAssistantMessages(home) {
 }
 
 /**
+ * Cumulative input+output+cacheRead tokens across a run home's session
+ * logs — the cost-fuse counter (PLAN 5.3). 0 when the fuse is off.
+ */
+export function countSessionTokens(home) {
+  const sessions = join(home, 'sessions')
+  if (!existsSync(sessions)) return 0
+  let tokens = 0
+  for (const ns of readdirSync(sessions)) {
+    const nsDir = join(sessions, ns)
+    if (!existsSync(nsDir)) continue
+    for (const session of readdirSync(nsDir)) {
+      const log = join(nsDir, session, 'session.jsonl.zstd')
+      if (!existsSync(log)) continue
+      const text = execFileSync('zstd', ['-dc', log], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      for (const line of text.split('\n')) {
+        const usage = /"usage":\{"inputTokens":(\d+)(,"outputTokens":(\d+))?(,"cacheReadTokens":(\d+))?/.exec(line)
+        if (usage === null) continue
+        tokens += Number(usage[1] ?? 0) + Number(usage[3] ?? 0) + Number(usage[5] ?? 0)
+      }
+    }
+  }
+  return tokens
+}
+
+/** Run-environment pins recorded with every run (PLAN 7, methodology 8). */
+export function collectPins({ dsh = 'dsh' } = {}) {
+  let dshVersion
+  try {
+    dshVersion = execFileSync(dsh, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    dshVersion = undefined
+  }
+  return {
+    node: process.version,
+    dsh: dshVersion,
+    platform: process.platform,
+    arch: process.arch,
+    kernel: osRelease(),
+  }
+}
+
+/** SHA-256 hex digest of a file, or undefined when unreadable. */
+export function fileDigest(path) {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex')
+  } catch {
+    return undefined
+  }
+}
+
+function osRelease() {
+  try {
+    return readFileSync('/proc/sys/kernel/osrelease', 'utf8').trim()
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Run one (task, arm) under the budgets, returning the supervisor verdict
  * plus run facts (home, session count, timestamps).
  * @param options - { manifest, arm, workspace, template, reportsDir, budgets, env, dsh }
@@ -174,6 +238,9 @@ export async function runOne({
   const startedAt = new Date().toISOString()
   const wallDeadline = Date.now() + budgets.wallTimeoutMs
   const fullEnv = { ...process.env, ...ENV_PIN, ...env, DSH_HOME: runHome }
+  for (const key of ENV_STRIP) delete fullEnv[key]
+  const pins = collectPins({ dsh })
+  pins.profile_config_digest = fileDigest(join(runHome, 'profiles', 'bench', 'cordis.patch.yml'))
 
   const child = spawn(dsh, ['--profile', 'bench', '--patch', patch, manifest.prompt], {
     cwd: workspace,
@@ -204,6 +271,10 @@ export async function runOne({
         budgetHit = 'calls'
         break
       }
+      if (budgets.maxSessionTokens > 0 && countSessionTokens(runHome) >= budgets.maxSessionTokens) {
+        budgetHit = 'cost'
+        break
+      }
       if (Date.now() >= wallDeadline) {
         budgetHit = 'wall'
         break
@@ -228,10 +299,10 @@ export async function runOne({
   }
 
   const verdict = outcomeOf({ budgetHit, exitCode, signal })
-  return recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr, reportsDir })
+  return recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr, reportsDir, fullEnv, pins })
 }
 
-function recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr, reportsDir }) {
+function recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr, reportsDir, fullEnv, pins }) {
   const record = {
     task_id: manifest.task_id,
     arm,
@@ -241,6 +312,12 @@ function recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr,
     home: runHome,
     prompt_sha256: manifest.source?.prompt_sha256,
     manifest_digest: manifest.digest,
+    pins,
+    env_pin: {
+      DSH_PERMISSION_MODE: fullEnv?.DSH_PERMISSION_MODE,
+      telemetry: fullEnv !== undefined && !('DSH_TELEMETRY_MODE' in fullEnv) ? 'unset' : 'leaked',
+      tools_mode: fullEnv !== undefined && !('DSH_TOOLS_MODE' in fullEnv) ? 'unset' : 'leaked',
+    },
     stdout_tail: stdout.slice(-4000),
     stderr_tail: stderr.slice(-2000),
   }
@@ -253,10 +330,100 @@ function recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr,
 }
 
 /**
+ * Run the plan live: for each (task, arm), run the agent under the budgets,
+ * fold the session metrics, apply the independent judge, and collect the
+ * paired rows. Infrastructure failures (spawn/IO) retry once; result-level
+ * outcomes never retry (PLAN 5.3).
+ * @param plan - the run plan from {@link planRuns}.
+ * @param manifests - frozen task manifests.
+ * @param options - { template, reportsDir, budgets, dsh }.
+ * @returns the per-run result rows.
+ */
+export async function runLive(plan, manifests, { template, reportsDir, budgets = BUDGETS, dsh = 'dsh', env = {} }) {
+  const rows = []
+  for (const run of plan) {
+    const manifest = manifests.find(item => item.task_id === run.task)
+    if (manifest === undefined) {
+      console.error(`  manifest not found for task ${run.task}`)
+      continue
+    }
+    const workspace = join(import.meta.dirname, '..', manifest.workspace ?? `tasks/${run.task}/repo`)
+    const base = { manifest, arm: run.arm, workspace, template, reportsDir, budgets, dsh, env }
+    let record = await runOne(base)
+    if (record.verdict.outcome === OUTCOMES.INFRA_FAILURE) {
+      console.log(`  infra failure, retrying once: ${run.task} [${run.arm}]`)
+      record = await runOne(base)
+      if (record.verdict.outcome === OUTCOMES.INFRA_FAILURE) {
+        console.log('  retry also failed; recording infra-failure outcome')
+      }
+    }
+    const sessions = join(record.home, 'sessions')
+    const metrics = aggregateSessions(sessions)
+    const claimed = claimedCompletion(lastClaimText(sessions))
+    const acceptance = await runAcceptance(manifest.verification.acceptance, workspace)
+    const judgment = judgeVerdict(acceptance, claimed)
+    const wallMs = (Date.parse(record.finished_at) - Date.parse(record.started_at))
+    rows.push({ task: run.task, arm: run.arm, record, metrics, judgment, wallMs })
+    console.log(renderMetricsRow(metrics, {
+      task_id: run.task,
+      arm: run.arm,
+      verdict: `${record.verdict.outcome}:${judgment.verdict}`,
+    }))
+  }
+  if (reportsDir !== undefined) {
+    mkdirSync(reportsDir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    writeFileSync(join(reportsDir, `paired-${stamp}.json`), JSON.stringify(rows.map(row => ({
+      task: row.task,
+      arm: row.arm,
+      verdict: row.record.verdict,
+      judgment: row.judgment,
+      metrics: row.metrics,
+      wall_ms: row.wallMs,
+    })), null, 2))
+  }
+  console.log(renderPairedReport(rows))
+  return rows
+}
+
+/** One-line summary of a run row for the paired report. */
+function describeRow(row) {
+  if (row === undefined) return '(missing)'
+  return `${row.record.verdict.outcome}:${row.judgment.verdict} calls=${row.metrics.llm_calls} wall=${Math.round(row.wallMs / 1000)}s`
+}
+
+/**
+ * The paired report: per task, control vs treatment, with the paired deltas
+ * (calls / tokens / wall). Pure, deterministic — tested.
+ */
+export function renderPairedReport(rows) {
+  const lines = ['Paired report:']
+  const byTask = new Map()
+  for (const row of rows) {
+    if (!byTask.has(row.task)) byTask.set(row.task, [])
+    byTask.get(row.task).push(row)
+  }
+  for (const [task, pair] of [...byTask.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const control = pair.find(row => row.arm === ARMS.CONTROL)
+    const treatment = pair.find(row => row.arm === ARMS.TREATMENT)
+    lines.push(`  ${task}:`)
+    lines.push(`    control:   ${describeRow(control)}`)
+    lines.push(`    treatment: ${describeRow(treatment)}`)
+    if (control !== undefined && treatment !== undefined) {
+      const tokens = (row) => row.metrics.input_tokens + row.metrics.output_tokens
+      lines.push(`    delta: calls=${treatment.metrics.llm_calls - control.metrics.llm_calls} `
+        + `tokens=${tokens(treatment) - tokens(control)} wall_ms=${treatment.wallMs - control.wallMs}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
  * CLI entry: `--dry-run` (default) prints the plan and exits; `--live` runs
- * the plan. Flags: --manifests <dir> (JSON manifests), --template <dir>,
- * --reports <dir>, --seed <n>, --reps <n>, --task <id> (filter), --arm
- * <control|treatment> (filter).
+ * the plan. Flags: --manifests <dir>, --template <dir>, --reports <dir>,
+ * --seed <n>, --reps <n>, --task <id> (filter), --arm <control|treatment>
+ * (filter), --max-calls <n>, --wall-ms <n>, --max-tokens <n> (budget
+ * overrides).
  */
 export function main(argv, env = process.env) {
   const args = argv.slice(2)
@@ -272,6 +439,12 @@ export function main(argv, env = process.env) {
   const taskFilter = value('--task')
   const armFilter = value('--arm')
   const live = args.includes('--live')
+  const budgets = {
+    ...BUDGETS,
+    maxLLMCalls: Number(value('--max-calls') ?? BUDGETS.maxLLMCalls),
+    wallTimeoutMs: Number(value('--wall-ms') ?? BUDGETS.wallTimeoutMs),
+    maxSessionTokens: Number(value('--max-tokens') ?? BUDGETS.maxSessionTokens),
+  }
 
   const manifests = []
   if (existsSync(manifestsDir)) {
@@ -294,9 +467,17 @@ export function main(argv, env = process.env) {
     console.log('dry-run: nothing was executed')
     return 0
   }
-  return 1 // live scheduling lands with the task pipeline; not enabled here
+  return runLive(plan, manifests, { template, reportsDir, budgets, dsh: env.DSH_BIN ?? 'dsh' }).then(() => 0)
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  process.exitCode = main(process.argv)
+  const code = main(process.argv)
+  if (code instanceof Promise) {
+    code.then(exit => { process.exitCode = exit }).catch(error => {
+      console.error(error)
+      process.exitCode = 1
+    })
+  } else {
+    process.exitCode = code
+  }
 }

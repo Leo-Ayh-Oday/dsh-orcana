@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { OUTCOMES, countAssistantMessages, runOne } from '../supervisor.mjs'
+import { OUTCOMES, countAssistantMessages, runLive, runOne } from '../supervisor.mjs'
 
 const BUDGETS = { maxLLMCalls: 3, wallTimeoutMs: 5000, graceMs: 400, pollMs: 100 }
 let fakeDsh
@@ -94,4 +94,34 @@ describe('runOne (live, fake dsh)', () => {
     expect(countAssistantMessages(record.home)).toBe(2)
     rmSync(record.home, { recursive: true, force: true })
   })
+})
+
+describe('runLive (end to end with the demo workspace)', () => {
+  it('folds metrics and judges against the real acceptance command', async () => {
+    const rows = await runLive(
+      [{ task: 'demo-format-money', arm: 'control', taskIndex: 0, rep: 0 }],
+      [{
+        task_id: 'demo-format-money',
+        workspace: 'tasks/demo/repo',
+        verification: { acceptance: 'npm test && node reproducer.js' },
+        source: { prompt_sha256: 'abc' },
+        digest: 'd',
+      }],
+      {
+        template: templateWith(false),
+        budgets: { maxLLMCalls: 10, wallTimeoutMs: 5000, graceMs: 400, pollMs: 100 },
+        dsh: fakeDsh,
+        env: { FAKE_CALLS: '1', FAKE_EXIT: '0' },
+      },
+    )
+    const row = rows[0]
+    // Fake dsh exits 0 quickly: completed. No assistant claim text (fake
+    // dsh only writes tool-less assistant messages) → the judge sees the
+    // buggy base failing its acceptance as a plain fail.
+    expect(row.record.verdict.outcome).toBe(OUTCOMES.COMPLETED)
+    expect(row.judgment.verdict).toBe('failed')
+    expect(row.metrics.llm_calls).toBe(1)
+    expect(row.wallMs).toBeGreaterThan(0)
+    rmSync(row.record.home, { recursive: true, force: true })
+  }, 30000)
 })

@@ -4,4 +4,5 @@ dist/
 *.tgz
 benchmark/bench-home-template/
 benchmark/runs/
-benchmark/reports/*.log
+benchmark/run-home-*/
+benchmark/reports/

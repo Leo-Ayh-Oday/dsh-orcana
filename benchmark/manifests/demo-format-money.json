@@ -22,6 +22,7 @@
     "install_command": "none (zero-dependency demo)",
     "network": "deny"
   },
+  "workspace": "tasks/demo/repo",
   "calibration": {
     "install_seconds": 0,
     "test_seconds": 1
@@ -31,5 +32,5 @@
     "reproducer": { "base": "FAIL" },
     "official_fix": { "existing_suite": "PASS", "reproducer": "PASS" }
   },
-  "digest": "demo-manifest-v1"
+  "digest": "demo-manifest-v2"
 }

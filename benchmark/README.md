@@ -2,26 +2,42 @@
 
 A/B harness for the Orcana runtime pack. **Same model. Same DSH. One runtime
 intervention.** See [docs/methodology.md](../docs/methodology.md) for the
-frozen invariants.
+frozen invariants and their implementation status.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `tasks/` | Candidate task pool + dry-run results (Gates A/B/C) |
-| `manifests/` | Frozen, content-addressed task manifests |
-| `patches/` | control.patch.yml (off) / treatment.patch.yml (on) |
-| `runner/` (P6) | Supervisor: budgets, pairing, isolated homes, authoritative status |
-| `reports/` (P6) | Per-run logs and paired reports |
+| `tasks/` | Candidate task pool: `demo/` is the synthetic verification-trap task with its three gates recorded |
+| `manifests/` | Frozen, content-addressed task manifests (JSON, §5.7 contract) |
+| `patches/` | control.patch.yml (off) / treatment.patch.yml (on) — the only arm difference |
+| `runner/` | Supervisor (budgets, pairing, isolated homes, authoritative verdicts), metrics aggregation, independent judge |
+| `reports/` | Per-run records (`run-*.json`) and paired reports (`paired-*.json`) |
 
-## Arms
+## Running
 
 ```sh
-# A (control): orcana installed, not activated
-DSH_HOME=<run-home> dsh --profile bench --patch patches/control.patch.yml "<task>"
-# B (treatment): orcana activated
-DSH_HOME=<run-home> dsh --profile bench --patch patches/treatment.patch.yml "<task>"
+# Dry-run: print the paired plan (task × arms, deterministic seed) — nothing executes
+node benchmark/runner/supervisor.mjs --manifests benchmark/manifests
+
+# Live: run the plan end to end (requires DSH + model credentials)
+node benchmark/runner/supervisor.mjs --manifests benchmark/manifests --live
+#   filters: --task <id> --arm <control|treatment> --seed <n> --reps <n>
+#   budget overrides: --max-calls <n> --wall-ms <n> --max-tokens <n>
 ```
+
+Each live run: isolated `DSH_HOME` (template copy) → agent under budgets →
+session metrics (aggregate.mjs) → independent judge (acceptance command +
+completion-claim check). Infrastructure failures retry once; result-level
+outcomes never retry.
+
+## Task lifecycle
+
+1. Prepare the task workspace (`tasks/<name>/repo/`): base checkout, hidden
+   reproducer, official fix under `tasks/<name>/gates/fix/`.
+2. Verify the three gates and record them:
+   `scripts/verify-task-gates.sh tasks/<name> benchmarks/manifests/<id>.json`
+3. Freeze the manifest (`manifests/<id>.json`, §5.7 fields + `workspace`).
 
 ## Hard invariants (frozen)
 
@@ -29,5 +45,5 @@ DSH_HOME=<run-home> dsh --profile bench --patch patches/treatment.patch.yml "<ta
 2. Isolated `DSH_HOME` per run (template copy/reflink); no user profile/home patches.
 3. Timeout verdict belongs to the supervisor, never to DSH's exit code.
 4. Durability = semantic-checkpoint durability; the last in-flight streaming batch may be lost; unfinished external side effects are unknown-outcome.
-5. Gates A/B/C verified separately and pinned: existing suite green, reproducer red, official fix green.
-6. Environment pin: permission mode danger-full-access (approval never), telemetry off, web_search disabled in both arms, run-time network denied; recorded per run.
+5. Gates A/B/C verified separately and pinned (verify-task-gates.sh writes the dated record).
+6. Environment pin: permission mode danger-full-access (approval never), telemetry/tools-mode stripped, web_search disabled in both arms, recorded per run; run-time OS-level network denial is a pending wrapper (methodology #9).

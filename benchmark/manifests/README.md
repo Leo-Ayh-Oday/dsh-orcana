@@ -1,9 +1,9 @@
 # Frozen task manifests
 
-One YAML file per task, content-addressed and immutable once frozen. See
+One JSON file per task, content-addressed and immutable once frozen. See
 [PLAN-v0.1.md](../../PLAN-v0.1.md) §5.7 for the field contract:
 
-```yaml
+```json
 task_id: <repo>-<issue#>
 source: { issue, snapshot_at, prompt_sha256 }
 repository: { repo, base_sha, fix_sha, verifier_sha }

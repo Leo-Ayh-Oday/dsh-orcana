@@ -116,6 +116,8 @@ cat > "$PACKED/home/profiles/bench/cordis.patch.yml" <<'YAML'
 - id: repeat-tool-reminder
   config:
     exclude: [read, bash, '*search*']
+- id: tool-web
+  disabled: true
 YAML
 (cd "$PACKED/home/profiles/bench" && pnpm install >/dev/null 2>&1)
 set +e
