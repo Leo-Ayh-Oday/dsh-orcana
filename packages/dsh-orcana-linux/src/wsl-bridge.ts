@@ -1,4 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process'
+import {
+  buildWslSignalArgs,
+  buildWslSupervisedDshArgs,
+  createWslBridgeRunId,
+  type WslBridgeSignal,
+} from './wsl-supervisor.js'
 
 export const DEFAULT_WSL_PROFILE = 'orcana'
 export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
@@ -42,7 +48,8 @@ const DOCTOR_SCRIPT = [
   'printf "kernel: "; uname -sr || fail=1',
   'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; if ! node -e "$node_contract"; then printf "node-contract: UNSUPPORTED (need ^22.19.0 || >=24.0.0)\\n"; fail=1; else printf "node-contract: OK\\n"; fi; else printf "node: MISSING\\n"; fail=1; fi',
   'if command -v dsh >/dev/null 2>&1; then printf "dsh: "; command -v dsh; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx %s\\n" "$package_spec"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
-  'for x in bwrap prlimit setsid; do if command -v "$x" >/dev/null 2>&1; then printf "%s: " "$x"; command -v "$x"; else printf "%s: MISSING\\n" "$x"; fi; done',
+  'if command -v pkill >/dev/null 2>&1; then printf "pkill: "; command -v pkill; else printf "pkill: MISSING (required for Windows/WSL session cancellation)\\n"; fail=1; fi',
+  'for x in bwrap prlimit; do if command -v "$x" >/dev/null 2>&1; then printf "%s: " "$x"; command -v "$x"; else printf "%s: MISSING\\n" "$x"; fi; done',
   'exit "$fail"',
 ].join('; ')
 
@@ -207,10 +214,8 @@ export function windowsWorkspaceKind(cwd: string): WindowsWorkspaceKind {
 }
 
 /**
- * Build the WSL argv. A caller-supplied DSH command is executed directly.
- * Otherwise a fixed shell resolver prefers `dsh` and safely falls back to the
- * pinned compatible DSH npm package. User DSH/task arguments are positional
- * parameters (`$@`), never interpolated into the resolver script.
+ * Build an unsupervised WSL argv. Kept as a public pure helper for embedders;
+ * the Windows CLI path uses buildWslSupervisedDshArgs instead.
  */
 export function buildWslDshArgs(
   linuxCwd: string,
@@ -273,16 +278,60 @@ export function environmentForWsl(
   return { ...env, ...(merged.length > 0 ? { WSLENV: merged.join(':') } : {}) }
 }
 
+/** Control invocations do not need model/runtime secrets in their WSL process. */
+export function environmentForWslControl(
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const control = { ...env, WSLENV: '' }
+  for (const key of Object.keys(control)) {
+    const upper = key.toUpperCase()
+    if (
+      key.startsWith('DSH_')
+      || key.startsWith('ORCANA_')
+      || upper.endsWith('_API_KEY')
+      || upper.endsWith('_BASE_URL')
+      || upper === 'HTTP_PROXY'
+      || upper === 'HTTPS_PROXY'
+      || upper === 'NO_PROXY'
+    ) {
+      delete control[key]
+    }
+  }
+  return control
+}
+
+export function wslSignalForInterruptCount(count: number): WslBridgeSignal {
+  if (count <= 1) return 'INT'
+  if (count === 2) return 'TERM'
+  return 'KILL'
+}
+
+function sendWslSessionSignal(
+  control: { runId: string; distro?: string; env: NodeJS.ProcessEnv; cwd: string },
+  signal: WslBridgeSignal,
+): boolean {
+  const result = spawnSync('wsl.exe', buildWslSignalArgs(control.runId, signal, control.distro), {
+    cwd: control.cwd,
+    env: control.env,
+    stdio: 'ignore',
+    windowsHide: true,
+    timeout: 2500,
+  })
+  return result.error === undefined && result.status === 0
+}
+
 function exitCodeFromSignal(signal: NodeJS.Signals | null): number {
   if (signal === 'SIGINT') return 130
   if (signal === 'SIGTERM') return 143
   return signal === null ? 1 : 128
 }
 
+type SignalMode = 'none' | 'posix' | 'wsl-session'
+
 /**
- * Launch the complete DSH process in one Linux execution world. No task
- * command is shell-quoted or re-parsed: wsl.exe receives DSH argv directly or
- * through the fixed resolver whose user-controlled values live only in `$@`.
+ * Launch the complete DSH process in one Linux execution world. Windows runs
+ * use a WSL-side Node supervisor so Ctrl+C targets the Linux session rather
+ * than pretending child.kill() on wsl.exe is POSIX signaling.
  */
 export async function launchWslBridge(
   rawArgs: readonly string[],
@@ -300,17 +349,17 @@ export async function launchWslBridge(
       return await spawnAndWait('/bin/sh', ['-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT], {
         env,
         cwd,
-        relaySignals: true,
+        signalMode: 'posix',
       })
     }
     const dshArgs = dshArgsForBridge(options)
     if (dshCommand !== undefined) {
-      return await spawnAndWait(dshCommand, dshArgs, { env, cwd, relaySignals: true })
+      return await spawnAndWait(dshCommand, dshArgs, { env, cwd, signalMode: 'posix' })
     }
     return await spawnAndWait('/bin/sh', ['-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, ...dshArgs], {
       env,
       cwd,
-      relaySignals: true,
+      signalMode: 'posix',
     })
   }
 
@@ -331,17 +380,42 @@ export async function launchWslBridge(
       '--cd', mapped.linuxPath,
       '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT,
     ]
-    return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, relaySignals: false })
+    return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, signalMode: 'none' })
   }
 
-  const args = buildWslDshArgs(mapped.linuxPath, dshArgsForBridge(options), distro, dshCommand, dshPackage)
-  return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, relaySignals: false })
+  const runId = createWslBridgeRunId()
+  const dshArgs = dshArgsForBridge(options)
+  const args = buildWslSupervisedDshArgs(
+    mapped.linuxPath,
+    runId,
+    dshArgs,
+    dshPackage,
+    DSH_RESOLVER_SCRIPT,
+    distro,
+    dshCommand,
+  )
+  return await spawnAndWait('wsl.exe', args, {
+    env: childEnv,
+    cwd: hostCwd,
+    signalMode: 'wsl-session',
+    wslControl: {
+      runId,
+      ...(distro !== undefined ? { distro } : {}),
+      env: environmentForWslControl(env),
+      cwd: hostCwd,
+    },
+  })
 }
 
 async function spawnAndWait(
   command: string,
   args: readonly string[],
-  options: { env: NodeJS.ProcessEnv; cwd: string; relaySignals: boolean },
+  options: {
+    env: NodeJS.ProcessEnv
+    cwd: string
+    signalMode: SignalMode
+    wslControl?: { runId: string; distro?: string; env: NodeJS.ProcessEnv; cwd: string }
+  },
 ): Promise<number> {
   return await new Promise<number>((resolve) => {
     const child = spawn(command, [...args], {
@@ -351,30 +425,45 @@ async function spawnAndWait(
       windowsHide: false,
     })
     let settled = false
+    let interruptCount = 0
+
     const finish = (code: number) => {
       if (settled) return
       settled = true
-      if (options.relaySignals) {
+      if (options.signalMode !== 'none') {
         process.off('SIGINT', onSigint)
         process.off('SIGTERM', onSigterm)
       }
       resolve(code)
     }
+
     const onSigint = () => {
-      try { child.kill('SIGINT') } catch { /* process already gone */ }
+      if (options.signalMode === 'posix') {
+        try { child.kill('SIGINT') } catch { /* process already gone */ }
+        return
+      }
+      if (options.signalMode !== 'wsl-session' || options.wslControl === undefined) return
+      interruptCount += 1
+      const signal = wslSignalForInterruptCount(interruptCount)
+      const delivered = sendWslSessionSignal(options.wslControl, signal)
+      console.error(`[orcana-wsl] interrupt ${interruptCount}: Linux SIG${signal}${delivered ? '' : ' (session control not ready)'}`)
     }
+
     const onSigterm = () => {
-      try { child.kill('SIGTERM') } catch { /* process already gone */ }
+      if (options.signalMode === 'posix') {
+        try { child.kill('SIGTERM') } catch { /* process already gone */ }
+        return
+      }
+      if (options.signalMode !== 'wsl-session' || options.wslControl === undefined) return
+      const delivered = sendWslSessionSignal(options.wslControl, 'TERM')
+      console.error(`[orcana-wsl] termination: Linux SIGTERM${delivered ? '' : ' (session control not ready)'}`)
     }
-    // POSIX can genuinely relay signals. Windows child.kill(SIGINT/SIGTERM)
-    // is an abrupt termination, not a Linux signal, so do not pretend it is
-    // graceful process-group forwarding. The inherited Windows console owns
-    // Ctrl+C delivery to wsl.exe; a future WSL-side supervisor will provide
-    // explicit Linux process-group cancellation semantics.
-    if (options.relaySignals) {
+
+    if (options.signalMode !== 'none') {
       process.on('SIGINT', onSigint)
       process.on('SIGTERM', onSigterm)
     }
+
     child.once('error', (error) => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         console.error(`${command} was not found`)
