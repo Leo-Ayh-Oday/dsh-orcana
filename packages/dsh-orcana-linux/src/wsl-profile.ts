@@ -4,11 +4,18 @@ import {
   parseExactPackageSpec,
 } from './wsl-install.js'
 
+/** Actual modules mounted by Orcana-owned DSH profiles. */
+export const DEFAULT_ORCANA_PROFILE_IMPORT_MODULES = Object.freeze([
+  '@leooday/governor-core',
+  '@leooday/dsh-governor',
+  '@leooday/dsh-orcana-linux/native-evidence',
+] as const)
+
 export interface WslProfileExpectation {
   dependencies: Record<string, string>
   /** Required bundle subsequence; extra user bundles may exist between rows. */
   bundles: string[]
-  /** Implementation packages that must resolve and import from the profile anchor. */
+  /** Actual runtime module specifiers that must resolve/import from the profile anchor. */
   importPackages: string[]
 }
 
@@ -17,6 +24,7 @@ export function buildWslCompanionProfileExpectation(
   companionName: string,
   orcanaRuntimePackages: readonly string[],
   orcanaBundlePackages: readonly string[],
+  importModules: readonly string[] = DEFAULT_ORCANA_PROFILE_IMPORT_MODULES,
 ): WslProfileExpectation {
   const companion = dshCompanionPackage(dshPackage, companionName)
   const allDependencies = [
@@ -30,7 +38,6 @@ export function buildWslCompanionProfileExpectation(
     dependencies[parsed.name] = parsed.version
   }
   const bundleNames = orcanaBundlePackages.map(spec => parseExactPackageSpec(spec).name)
-  const importPackages = orcanaRuntimePackages.map(spec => parseExactPackageSpec(spec).name)
   return {
     dependencies,
     bundles: [
@@ -38,7 +45,7 @@ export function buildWslCompanionProfileExpectation(
       companionName,
       ...bundleNames,
     ],
-    importPackages,
+    importPackages: [...importModules],
   }
 }
 
@@ -47,20 +54,23 @@ export function buildWslProfileExpectation(
   dshPackage: string,
   orcanaRuntimePackages: readonly string[],
   orcanaBundlePackages: readonly string[],
+  importModules: readonly string[] = DEFAULT_ORCANA_PROFILE_IMPORT_MODULES,
 ): WslProfileExpectation {
   return buildWslCompanionProfileExpectation(
     dshPackage,
     DSH_HEADLESS_PACKAGE,
     orcanaRuntimePackages,
     orcanaBundlePackages,
+    importModules,
   )
 }
 
 /**
  * Read-only verification of one DSH profile manifest plus the actual Orcana
- * implementation modules resolved from that profile. It never calls DSH,
- * creates a profile, rewrites cordis.yml, or mutates node_modules. The import
- * probe catches optional-peer/fallback failures that a config-only smoke cannot.
+ * runtime modules resolved from that profile. It never calls DSH, creates a
+ * profile, rewrites cordis.yml, or mutates node_modules. The import probe
+ * catches export-map, optional-peer, and DSH fallback failures that a
+ * config-only smoke cannot.
  */
 export const PROFILE_VERIFY_NODE_SCRIPT = [
   'const fs=require("node:fs"),os=require("node:os"),path=require("node:path"),{createRequire}=require("node:module"),{pathToFileURL}=require("node:url")',
