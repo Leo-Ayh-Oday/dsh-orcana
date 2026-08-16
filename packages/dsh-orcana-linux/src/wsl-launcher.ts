@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { augmentWslHostEnvironment } from './wsl-host-env.js'
+import { runWslParityDoctor } from './wsl-parity-doctor.js'
 import { reportWslLoopbackProxyDoctor } from './wsl-proxy-doctor.js'
 import {
   installOrcanaWebProfile,
@@ -183,6 +184,7 @@ export async function launchDshOrcana(
     const proxyStatus = reportWslLoopbackProxyDoctor(effectiveEnv, selectedDistro)
     const mapped = windowsPathToWsl(cwd, selectedDistro)
     const workspaceStatus = runWslWorkspaceDoctor(mapped.linuxPath, effectiveEnv, selectedDistro)
+    runWslParityDoctor(mapped.linuxPath, effectiveEnv, selectedDistro)
     return proxyStatus !== 0 ? proxyStatus : workspaceStatus
   }
 
