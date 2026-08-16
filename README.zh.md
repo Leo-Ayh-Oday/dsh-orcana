@@ -59,6 +59,22 @@ bash scripts/install-orcana-linux.sh     # 安装加固 profile 到 ~/.dsh/profi
 dsh --profile orcana "<task>"
 ```
 
+## 实测效果（初步）
+
+配对 A/B：同一模型（deepseek-v4-flash），control vs treatment（governor
+激活），由独立 acceptance 命令判定。完整装置与原始数据：
+[benchmark/](benchmark/README.md)、`benchmark/reports/`。
+
+| 任务 | n | treatment 相对 control |
+|---|---|---|
+| demo-format-money（合成 verification trap） | 2 | 两臂都成功；tokens **-871 / -2695** |
+| marked-blank-tab（真实 issue markedjs#4007） | 3 | tokens **-4079 / +4082 / -29107**（均值约 -9.7k）；wall 均值约 **-48 秒**；重复验证命令 **0 vs 1** |
+
+方向性结论：governor 不改变任务成功率，但在长会话中稳定减少 token
+消耗与重复验证工作。样本小（n=2–3），数字仅为方向性而非定论。marked
+两臂都顶满 24-call 预算（任务偏难），calls 维度被截断——tokens 节省是
+稳定信号。
+
 ## 已知限制
 
 - 工作区代际只观察 mutation 类型的工具调用；shell 命令内的变更

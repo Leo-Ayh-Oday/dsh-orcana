@@ -51,6 +51,26 @@ outcomes never retry.
    `scripts/verify-task-gates.sh tasks/<name> benchmarks/manifests/<id>.json`
 3. Freeze the manifest (`manifests/<id>.json`, §5.7 fields + `workspace`).
 
+## Results (2026-08-16 snapshot)
+
+Paired A/B, deepseek-v4-flash, independent judge. Raw data: `reports/`
+(`run-*.json` per run, `paired-*.json` per plan, `analysis-v2.json` full
+fold); first runs archived in `reports-v1-archive/`.
+
+| Task | n | Outcome | Treatment − control |
+|---|---|---|---|
+| demo-format-money | 2 | both arms success | tokens −871 / −2695 |
+| marked-blank-tab | 3 | both arms 24/24 calls (budget-capped) | tokens −4079 / +4082 / −29107 (mean ≈ −9.7k), wall mean ≈ −48 s, duplicate verification commands 0 vs 1 |
+
+Discipline metrics (replayed from session logs, `analyze.mjs --sessions`):
+marked control showed 1 repeated verification command, treatment 0. Both
+arms had zero zero-progress rounds on these runs (the model made progress on
+every step).
+
+Direction: token savings and fewer repeated commands are consistent signals;
+call counts are censored by the budget on the hard task. Small samples —
+directional, not conclusive.
+
 ## Hard invariants (frozen)
 
 1. A/B share the same profile, dependency tree, and installed Orcana package — only activation differs.
