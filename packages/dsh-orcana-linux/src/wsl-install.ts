@@ -6,24 +6,38 @@ export const DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES = Object.freeze([
   '@leooday/dsh-orcana-linux@0.4.0',
 ] as const)
 
-const DSH_PACKAGE_PREFIX = '@deepseek-ai/dsh@'
+export interface ExactPackageSpec {
+  name: string
+  version: string
+}
+
+const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+
+export function parseExactPackageSpec(spec: string): ExactPackageSpec {
+  const at = spec.lastIndexOf('@')
+  if (at <= 0) throw new Error(`package spec must include an exact version: ${JSON.stringify(spec)}`)
+  const name = spec.slice(0, at)
+  const version = spec.slice(at + 1)
+  if (!EXACT_SEMVER.test(version)) {
+    throw new Error(`package spec must use an exact semver version: ${JSON.stringify(spec)}`)
+  }
+  return { name, version }
+}
+
+const DSH_PACKAGE = '@deepseek-ai/dsh'
 const DSH_HEADLESS_PACKAGE = '@deepseek-ai/dsh-headless'
 
 /**
- * Derive an official DSH companion package at the same selector/version as the
- * selected CLI. This keeps the one-shot task surface in lockstep with the DSH
- * runtime instead of hard-coding a second independently drifting version.
+ * Derive an official DSH companion package at the exact version selected for
+ * the CLI. Install-time selectors are deliberately exact; floating tags/ranges
+ * remain allowed only for ordinary runtime compatibility experiments.
  */
 export function dshCompanionPackage(dshPackage: string, companionName: string): string {
-  if (dshPackage === '@deepseek-ai/dsh') return companionName
-  if (!dshPackage.startsWith(DSH_PACKAGE_PREFIX)) {
-    throw new Error(`cannot derive ${companionName} from DSH package spec ${JSON.stringify(dshPackage)}`)
+  const parsed = parseExactPackageSpec(dshPackage)
+  if (parsed.name !== DSH_PACKAGE) {
+    throw new Error(`expected ${DSH_PACKAGE}@<exact-version>, received ${JSON.stringify(dshPackage)}`)
   }
-  const selector = dshPackage.slice(DSH_PACKAGE_PREFIX.length)
-  if (selector.length === 0) {
-    throw new Error(`cannot derive ${companionName} from an empty DSH package selector`)
-  }
-  return `${companionName}@${selector}`
+  return `${companionName}@${parsed.version}`
 }
 
 export function dshHeadlessPackage(dshPackage: string): string {
@@ -96,7 +110,12 @@ export function nativeInstallShellArgs(
   versionContract: string,
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
 ): string[] {
+  const parsedPnpm = parseExactPackageSpec(pnpmPackage)
+  if (parsedPnpm.name !== 'pnpm') {
+    throw new Error(`expected pnpm@<exact-version>, received ${JSON.stringify(pnpmPackage)}`)
+  }
   const headlessPackage = dshHeadlessPackage(dshPackage)
+  for (const spec of DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES) parseExactPackageSpec(spec)
   const orcanaPackages = DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES.join(' ')
   return [
     '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
