@@ -20,7 +20,7 @@ const RUNTIME_PACKAGES = [
 ] as const
 const BUNDLE_PACKAGES = [
   '@leooday/dsh-bundle@0.1.0-rc.1',
-  '@leooday/dsh-orcana-linux-bundle@0.2.0',
+  '@leooday/dsh-orcana-linux-bundle@0.3.0',
 ] as const
 
 const expectation = buildWslProfileExpectation(DSH_PACKAGE, RUNTIME_PACKAGES, BUNDLE_PACKAGES)
@@ -78,7 +78,7 @@ describe('WSL profile expectation', () => {
         '@leooday/dsh-governor': '0.1.0-rc.1',
         '@leooday/dsh-orcana-linux': '0.4.0',
         '@leooday/dsh-bundle': '0.1.0-rc.1',
-        '@leooday/dsh-orcana-linux-bundle': '0.2.0',
+        '@leooday/dsh-orcana-linux-bundle': '0.3.0',
       },
       bundles: [
         '@deepseek-ai/dsh-base',
