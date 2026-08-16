@@ -1,0 +1,37 @@
+{
+  "task_id": "marked-blank-tab",
+  "source": {
+    "issue": "markedjs/marked#4007: a line of only tabs should be a blank line between paragraphs",
+    "snapshot_at": "2026-08-16T00:00:00Z",
+    "prompt_sha256": "13a7be274422ee7c8d8ed8306ad8d4fa91f7791303918f5c8404c7718b83c18f"
+  },
+  "prompt": "修复 marked 库的一个解析 bug：一行只包含制表符（tab，可能夹杂空格）的文本应该被当作空行，从而分隔相邻段落。当前实现把这样的行当作段落内容，导致相邻文本被错误合并进同一个段落。请修改源码并构建（npm run build:esbuild），确保现有测试套件仍然通过。",
+  "repository": {
+    "repo": "markedjs/marked",
+    "base_sha": "bc2f121456d152fafd7d2cbd2c21b273ca4c6862^",
+    "fix_sha": "bc2f121456d152fafd7d2cbd2c21b273ca4c6862",
+    "verifier_sha": "bc2f121456d152fafd7d2cbd2c21b273ca4c6862"
+  },
+  "verification": {
+    "baseline_command": "npm run build:esbuild && npm run test:specs",
+    "reproducer": "node reproducer.js",
+    "acceptance": "npm run build:esbuild && npm run test:specs && node reproducer.js"
+  },
+  "environment": {
+    "node": ">=20",
+    "install_command": "npm install",
+    "network": "deny"
+  },
+  "workspace": "tasks/marked-blank-tab/repo",
+  "hidden": "tasks/marked-blank-tab/hidden",
+  "calibration": {
+    "install_seconds": 22,
+    "test_seconds": 4
+  },
+  "gates": {
+    "baseline": { "existing_suite": "PASS" },
+    "reproducer": { "base": "FAIL" },
+    "official_fix": { "existing_suite": "PASS", "reproducer": "PASS" }
+  },
+  "digest": "marked-blank-tab-v1"
+}

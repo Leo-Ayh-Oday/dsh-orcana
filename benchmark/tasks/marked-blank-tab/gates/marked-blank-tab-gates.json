@@ -1,0 +1,17 @@
+{
+  "task": "marked-blank-tab",
+  "verified_at": "2026-08-16T03:19:44Z",
+  "gates": {
+    "baseline": {
+      "existing_suite": true
+    },
+    "reproducer": {
+      "base": "FAIL"
+    },
+    "official_fix": {
+      "existing_suite": true,
+      "reproducer": true,
+      "acceptance": true
+    }
+  }
+}

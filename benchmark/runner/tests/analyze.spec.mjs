@@ -48,7 +48,7 @@ describe('foldPairs', () => {
 describe('tokenSum / wallMs', () => {
   it('sums tokens and wall time from records', () => {
     const run = record('t', 'control', 'x', 1, '2026-08-16T00:00:00Z', '2026-08-16T00:00:05Z')
-    expect(tokenSum(run)).toBe(160)
+    expect(tokenSum(run)).toBe(150)
     expect(wallMs(run)).toBe(5000)
   })
 })

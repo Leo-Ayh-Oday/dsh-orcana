@@ -565,6 +565,17 @@ gates:
 6. **实验流程**:make-bench-home.sh(模板+settings)→ bench-run.sh --live(配对,seed 决定臂序)→ analyze.mjs 出报告;reports/ 已含首跑数据(run-*/paired-*/analysis-full.json)
 7. **剩余**:真实任务池(三 Gate 通过的任务,区分度验证)、reps 提升(§5.4 主效果 <20% 时)、netns 模式的模型端点部署(正式隔离环境)
 
+### 11.15 真实任务 marked-blank-tab(2026-08-16,已提交)
+
+1. **任务**:markedjs/marked#4007——仅 tab(或 tab+空格)行应为段落间空行;base 的 `_paragraph` 正则只认 ` +\n`;fix 为 1 行正则改动 + 新增 spec;base_sha = bc2f1214^,fix_sha = bc2f1214
+2. **prep 流程(prep.sh)**:clone → checkout base → npm install(22s)→ build:esbuild → 剥离 .git(无 origin、无 fix 历史,§5.6 污染封锁);workspace repo/ gitignored,入库内容 = manifest + hidden reproducer + gates/fix + prep.sh + README
+3. **三 Gate 实测**:A = base 1749/1749 specs 绿(3.3s);B = reproducer 3 用例红(合并段落输出);C = fix 应用后双绿;记录 gates/marked-blank-tab-gates.json
+4. **A/B 首跑(seed=3,max-calls=10)**:两臂都 incomplete(任务偏难,10 calls 内模型未修对正则);treatment 出现 **false-completion 信号**(声称完成但 acceptance 失败)——governor 未拦截,原因见下
+5. **headless 单 turn 语义发现(重要)**:headless 会话是**单 turn**(turn/start=1,turn/end=0),模型从不主动结束 turn;预算耗尽 SIGTERM 打断 → `agent/turn-stopping` 永不触发 → completion guard 与零进展阶梯**在预算耗尽路径不生效**。正常完成路径(模型停)时 turn-stopping 正常触发(demo 已验证,无 violation 不 steer 行为正确)。**语义正确性**:guard 设计为"模型决定完成时拦截";headless 被杀时模型没有完成决策,guard 不触发符合设计;false-completion 由 judge 在报告层捕获(测量信号不丢失)。可选改进(留 v0.2):request 前完成声明检测(文本含完成声明 + violations → 提醒)
+6. **A/B 复跑(seed=5,max-calls=24)**:两臂都修好——treatment completed:success 22 calls(120s),control incomplete:success 24 calls(155s,预算耗尽但 acceptance 过);delta calls -2、**tokens -22667(-32%)**、wall -34s(方向一致,governor 减负)
+7. **analyze 口径修正**:tokenSum 只计 input+output(与 live paired 报告一致,原含 cacheRead 导致 -356875 虚高);纪律指标按轮累计
+8. **数据**:reports/ 已含全部首跑/复跑记录;两任务的 paired 报告 + 完整分析(analysis-full.json)
+
 ## 下一步(P7 收尾 / P8)
 
-扩充任务池(JS 候选:marked/dayjs/zod 等真实 issue 任务,走 prep→三 Gate→冻结流程);按 §5.4 决定 reps;正式环境(直连或 netns+模型端点)复跑;P8 收口文档(发布物 README/插件文档)。
+任务池扩充(候选:dayjs/zod/fastify 的 verification-trap 类任务,走同一 prep→三 Gate→冻结流程);reps 提升(§5.4 主效果 <20% 时,当前 calls 差 ~8%、tokens 差 ~32%——tokens 差异显著,calls 需更多样本);正式环境(直连或 netns+模型端点)复跑;P8 收口文档(发布物 README/插件文档)。

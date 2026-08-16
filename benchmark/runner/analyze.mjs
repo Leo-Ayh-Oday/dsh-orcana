@@ -50,10 +50,10 @@ export function loadPairedRecords(reportsDir) {
   return rows
 }
 
-/** Token sum of a run record (input+output+cacheRead, from the session metrics). */
+/** Token sum of a run record (input+output, matching the live paired report). */
 export function tokenSum(record) {
   const m = record.metrics ?? {}
-  return (m.input_tokens ?? 0) + (m.output_tokens ?? 0) + (m.cache_read_tokens ?? 0)
+  return (m.input_tokens ?? 0) + (m.output_tokens ?? 0)
 }
 
 /** Wall ms between the recorded timestamps. */

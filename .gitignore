@@ -6,3 +6,4 @@ benchmark/bench-home-template/
 benchmark/ws-*/
 benchmark/run-home-*/
 benchmark/reports/
+benchmark/tasks/*/repo/
