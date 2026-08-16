@@ -6,54 +6,67 @@
 
 **同一个模型。同一个 DSH。一次运行时干预。**
 
-- 进度感知的活性检测（Progress Governor）
-- 以代际（generation）为界的验证证据（Evidence Freshness）
-- 证据感知的完成判定（Completion Claim Guard）
-- 任务级配置能力披露（Capability Router）
-- Linux 原生执行加固 + Windows → WSL 单执行世界桥接
+- 进度感知活性检测（Progress Governor）
+- 以 generation 为界的验证证据（Evidence Freshness）
+- 证据感知完成判定（Completion Claim Guard）
+- 任务级能力披露（Capability Router）
+- DSH 原生 Linux 执行证据
+- Windows → WSL 单一 Linux 执行世界入口
 
-状态：v0.1 governor 实验范围仍由 [PLAN-v0.1.md](PLAN-v0.1.md) 冻结；
-Linux/WSL 执行层正在独立演进到 v0.4。细节见
-[docs/architecture.md](docs/architecture.md)、[docs/methodology.md](docs/methodology.md)
-和 [Linux/WSL 包文档](packages/dsh-orcana-linux/README.zh.md)。
+v0.1 governor 范围仍由 [PLAN-v0.1.md](PLAN-v0.1.md) 冻结。Linux/WSL 线独立演进，
+现在采用明确的 authority 分工：
+
+```text
+DSH                         Orcana
+├ sandbox-policy            ├ Progress / Completion 治理
+├ sandbox-local             ├ Native Execution Evidence
+├ cgroup / prlimit          └ Windows → WSL 执行适配
+└ SandboxReceipt
+      │
+      └──────────────► Orcana 消费事实，不重复执行限制
+```
+
+详细设计见 [docs/architecture.md](docs/architecture.md)、
+[docs/methodology.md](docs/methodology.md) 与
+[Linux/WSL 包文档](packages/dsh-orcana-linux/README.zh.md)。
 
 ## 目录结构
 
 | 路径 | 角色 |
 |---|---|
-| `packages/governor-core` | 框架无关的进度事实引擎（零 Cordis 依赖） |
-| `packages/dsh-governor` | DSH 适配插件（函数插件，挂载 DSH 扩展点） |
-| `packages/dsh-bundle` | Profile 组合包（`dsh.bundle.patch` 契约） |
-| `packages/dsh-orcana-linux` | Linux 原生加固层 + Windows → WSL `dsh-orcana` 统一入口 |
-| `packages/dsh-orcana-linux-bundle` | Linux 版的 Profile 组合包（`dsh.bundle.patch` 契约） |
-| `benchmark/` | A/B 测试：任务清单、patch、运行器、报告 |
-| `scripts/` | dev-install / smoke / bench-run |
+| `packages/governor-core` | 与框架无关的进度事实引擎 |
+| `packages/dsh-governor` | DSH 治理适配器 |
+| `packages/dsh-bundle` | Governor Profile 组合包 |
+| `packages/dsh-orcana-linux` | DSH 原生证据适配器 + 跨平台 `dsh-orcana`；旧 root API 暂作兼容 |
+| `packages/dsh-orcana-linux-bundle` | 中立组合包，默认加载 `@leooday/dsh-orcana-linux/native-evidence` |
+| `benchmark/` | A/B 测试 |
+| `scripts/` | 安装、smoke、release gate |
 
 ## 安装
 
-npm scope 已统一为 `@leooday`。DSH profile 继续使用官方插件命令：
+npm scope 为 `@leooday`：
 
 ```sh
-# 一个 profile 一条命令装全部（governor + Linux 加固）：
-dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
-# 或分开两个 profile：
-dsh plugin --profile orcana add @leooday/dsh-bundle
-dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add \
+  @leooday/dsh-bundle \
+  @leooday/dsh-orcana-linux-bundle
+
 dsh --profile orcana "<task>"
 ```
 
-`dsh plugin add` 会安装组合包并激活为 profile 层。组合包默认值是**中立的** ——
-安装本身不会偷偷开启更强的资源/网络限制；需要的加固由 profile config 或
-`--patch` 明确配置。
+安装默认**不改变执行策略**。Orcana 负责观察执行事实；资源/网络限制配置在 DSH
+已有的 `sandbox-policy` 行，DSH 最终产生的 `SandboxReceipt` 才是 Orcana 的证据源。
 
-如果需要程序化嵌入，也可以直接使用同一 scope 下的实现包，包括
-`@leooday/dsh-governor`、`@leooday/governor-core` 和
-`@leooday/dsh-orcana-linux`。
+程序化使用新证据入口：
+
+```ts
+import nativeEvidence from '@leooday/dsh-orcana-linux/native-evidence'
+ctx.plugin(nativeEvidence)
+```
 
 ## Windows / WSL：同一个执行入口
 
-v0.4 的核心原则不是“Windows DSH 每次工具调用再跳 WSL”，而是让 Windows
-只承担启动入口：
+设计不是“Windows 上运行 DSH，再把单个工具调用扔进 WSL”。Windows 只负责启动：
 
 ```text
 Windows Terminal / PowerShell
@@ -62,72 +75,57 @@ Windows Terminal / PowerShell
         ↓
       wsl.exe
         ↓
-整个 DSH runtime 一次性进入 WSL
-        ↓
-DSH + Orcana + sandbox + subprocess + bash/PTC/LSP
+整个 DSH + Orcana runtime 进入 WSL
         ↓
 同一个原生 Linux execution world
 ```
 
-这样上层 Agent、preset 和任务无需维护 Windows/Linux 两套执行逻辑；cwd、
-进程、shell、sandbox、后台任务以及交互式 Ctrl+C 都继续走 WSL 自己的原生
-终端/取消路径，而不是由 Bridge 重新发明一套进程语义。
-
-v0.4 发布后，Windows 侧安装一次统一入口：
+Windows 安装 launcher：
 
 ```powershell
 npm install -g @leooday/dsh-orcana-linux@^0.4.0
 ```
 
-检查 WSL 环境：
+然后：
 
 ```powershell
 dsh-orcana --wsl-doctor
-```
-
-Bridge 会优先使用 WSL 中已有的 `dsh`。没有全局 `dsh` 时不会静默跟随 npm
-`latest`，而是回退到当前 Bridge 明确兼容并固定的 DSH 包版本：
-`@deepseek-ai/dsh@0.1.0-rc.5`。以后验证新 DSH 时可以显式设置
-`ORCANA_WSL_DSH_PACKAGE`，确认兼容后再升级默认值。
-
-然后可以直接从 Windows Terminal 把 Orcana profile 装进 WSL：
-
-```powershell
 dsh-orcana --wsl-install
+dsh-orcana "修复失败的测试"
 ```
 
-之后 Windows / Linux 都使用同一个命令：
+Bridge 保持 cwd/argv 边界，Windows 与 WSL 使用独立 DSH home，通过 WSLENV
+选择性单向传递启动/运行环境，并固定 DSH/pnpm 兼容契约。`--wsl-install` 在安装后
+不仅检查 profile composition，还会真实 resolve/import 实际运行模块与 peer 链，
+包括 `@leooday/dsh-orcana-linux/native-evidence`。
 
-```sh
-dsh-orcana "<task>"
-```
+`--wsl-doctor` 还会检查 Web localhost relay、代理可达性、工作区文件系统语义、
+Git identity/credential 能力、TTY/UTF-8/path parity、DrvFS metadata 等，但不会
+偷偷修改 Windows/WSL/Git 全局配置。
 
-关键边界：Windows `DSH_HOME` 不与 WSL 共用；Windows cwd 由目标发行版自己的
-`wslpath` 映射；`--` 与任务 argv 原样透传；模型密钥和常见 provider base URL
-通过单向 `WSLENV` 进入 WSL。Windows 文件系统项目可以直接运行，但
-Git/npm/build I/O 很重时，项目放在 WSL Linux 文件系统中是性能快路径。完整
-契约见 [`packages/dsh-orcana-linux/README.zh.md`](packages/dsh-orcana-linux/README.zh.md)。
+完整契约见
+[`packages/dsh-orcana-linux/README.zh.md`](packages/dsh-orcana-linux/README.zh.md)。
 
-从 checkout 做交互式开发：
+## 当前 authority 边界
 
-```sh
-pnpm install && pnpm build
-bash scripts/dev-install.sh
-bash scripts/install-orcana-linux.sh
-dsh --profile orcana "<task>"
-```
+- **DSH 负责原生 enforcement。** 当前 DSH 已正式拥有 `resourceLimits` / `network`
+  policy、cgroup-v2 / prlimit 机制、进程 lifecycle、cleanup 与 `SandboxReceipt`。
+- **Orcana 负责治理与证据。** 默认 Linux bundle 观察 `ctx.shell` 的前台/后台执行，
+  记录 DSH 真正产生的 receipt。
+- **旧 package-root argv-hardening 只是兼容入口。** 当前 bundle 已经不再加载它。
+- **自定义 persistent-terminal/PTTY profile 暂不宣称 receipt 等价。** Orcana 自己的
+  headless/web 产品 profile 默认并不挂这个 capability。
 
 ## 已知限制
 
-- 工作区代际只观察 mutation 类型的工具调用；shell 命令内的变更
-  （`sed -i` 等）对代际计数器不可见（后续 git-probe receipts）。
-- governor 当前不会直接 kill/cancel Agent；最强动作仍受
-  `maxForcedContinuations` 限制。
-- 交互式 Ctrl+C 有意继续交给 `wsl.exe` / Linux 终端语义。Orcana 后续若需要
-  **程序化 timeout/cancel**，应在执行控制面增加独立能力，而不是为了控制 API
-  改变正常终端任务的 session/process-group 语义。
+- Workspace generation 仍只观察 mutation 类型工具；shell 内部 mutation 需要未来
+  git-probe receipt 链。
+- Governor 不直接拥有 Agent kill/cancel authority，当前 steering 有明确上限。
+- 交互式 Ctrl+C 有意继续走 `wsl.exe` / Linux 终端原生语义。未来程序化
+  timeout/cancel 应属于 execution control plane，而不是伪造 Windows POSIX signal。
+- `pnpm-lock.yaml` 仍必须在有 registry 网络的环境中使用仓库固定 pnpm 真正重新生成；
+  release contract 会阻止手工伪造 rc.5 dependency snapshot。
 
 ## 贡献
 
-见 [CONTRIBUTING.md](CONTRIBUTING.md) —— PR 携带恰好一个 kind/* 和至少一个
-area/* 标签，与上游贡献约定一致。
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。
