@@ -3,7 +3,9 @@ import { augmentWslHostEnvironment } from './wsl-host-env.js'
 import { reportWslLoopbackProxyDoctor } from './wsl-proxy-doctor.js'
 import {
   installOrcanaWebProfile,
+  orcanaWebProfileName,
   rewriteOrcanaWebInvocation,
+  verifyOrcanaHeadlessProfile,
   verifyOrcanaWebProfile,
 } from './wsl-product-profiles.js'
 import { reportWslWebDoctor } from './wsl-web-doctor.js'
@@ -12,6 +14,7 @@ import {
   launchWslBridge,
   parseWslBridgeArgs,
   parseWslUncPath,
+  shouldInjectDefaultProfile,
   windowsPathToWsl,
   type WslBridgeOptions,
 } from './wsl-bridge.js'
@@ -41,6 +44,39 @@ function pluginPnpmArgsStart(args: readonly string[]): number | undefined {
     return args[2] === undefined ? undefined : 3
   }
   if (profileArg?.startsWith('--profile=')) return 2
+  return undefined
+}
+
+function explicitRootProfile(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    if (arg === '--') return undefined
+    if (arg === '--profile') return args[i + 1]
+    if (arg.startsWith('--profile=')) return arg.slice('--profile='.length)
+    if (arg === '--patch') {
+      i += 1
+      continue
+    }
+    if (arg.startsWith('--patch=') || arg === '--dump-config' || arg === '--dump-default-config') continue
+    return undefined
+  }
+  return undefined
+}
+
+/**
+ * Decide which Orcana-owned profile must be proven before a real run. The
+ * result deliberately reuses the bridge's own default-profile decision so the
+ * verification target cannot drift from the execution target.
+ */
+export function requiredOrcanaProfileForRun(
+  dshArgs: readonly string[],
+  baseProfile: string,
+): 'headless' | 'web' | undefined {
+  if (dshArgs[0] === 'web') return 'web'
+  if (shouldInjectDefaultProfile(dshArgs)) return 'headless'
+  const explicit = explicitRootProfile(dshArgs)
+  if (explicit === baseProfile) return 'headless'
+  if (explicit === orcanaWebProfileName(baseProfile)) return 'web'
   return undefined
 }
 
@@ -113,11 +149,11 @@ function canonicalBridgeArgs(options: WslBridgeOptions, dshArgs: readonly string
  * - `web ...` uses `<profile>-web` and therefore never silently falls back to
  *   the upstream plain-Web profile
  * - `--wsl-install` prepares and verifies both companion profiles
+ * - a real run is refused when the Orcana-owned target profile is absent,
+ *   version-drifted, or unable to resolve/import its implementation peers
  *
- * Windows additionally normalizes DSH bootstrap proxy/search/certificate
- * environment, local `dsh plugin` filesystem specs, and WSL distro ownership.
- * Doctor proves the same localhost transport DSH Web uses rather than widening
- * the server bind address when forwarding is misconfigured.
+ * Explicit selection of some other DSH profile is a deliberate escape hatch
+ * and remains transparent.
  */
 export async function launchDshOrcana(
   rawArgs: readonly string[],
@@ -137,7 +173,7 @@ export async function launchDshOrcana(
     const bridgeStatus = await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
     if (bridgeStatus !== 0) return bridgeStatus
 
-    const webStatus = await verifyOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro)
+    const webStatus = await verifyOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, true)
     if (webStatus !== 0) return webStatus
 
     if (!isWindows) return 0
@@ -153,6 +189,15 @@ export async function launchDshOrcana(
     const headlessStatus = await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
     if (headlessStatus !== 0) return headlessStatus
     return await installOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro)
+  }
+
+  const required = requiredOrcanaProfileForRun(parsed.dshArgs, parsed.profile)
+  if (required === 'headless') {
+    const status = await verifyOrcanaHeadlessProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, false)
+    if (status !== 0) return status
+  } else if (required === 'web') {
+    const status = await verifyOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, false)
+    if (status !== 0) return status
   }
 
   const productArgs = rewriteOrcanaWebInvocation(parsed.dshArgs, parsed.profile)
