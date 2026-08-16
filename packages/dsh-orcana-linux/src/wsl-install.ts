@@ -26,7 +26,8 @@ export function parseExactPackageSpec(spec: string): ExactPackageSpec {
 }
 
 const DSH_PACKAGE = '@deepseek-ai/dsh'
-const DSH_HEADLESS_PACKAGE = '@deepseek-ai/dsh-headless'
+export const DSH_HEADLESS_PACKAGE = '@deepseek-ai/dsh-headless'
+export const DSH_WEB_APP_PACKAGE = '@deepseek-ai/dsh-web-app'
 
 /**
  * Derive an official DSH companion package at the exact version selected for
@@ -45,20 +46,21 @@ export function dshHeadlessPackage(dshPackage: string): string {
   return dshCompanionPackage(dshPackage, DSH_HEADLESS_PACKAGE)
 }
 
+export function dshWebAppPackage(dshPackage: string): string {
+  return dshCompanionPackage(dshPackage, DSH_WEB_APP_PACKAGE)
+}
+
 /**
- * Dedicated `--wsl-install` resolver.
- *
- * It creates a runnable and reproducible profile using an exact DSH/pnpm
- * toolchain, exact DSH headless bundle, exact Orcana runtime closure, and exact
- * Orcana bundles. Node compatibility is checked before any package-manager or
- * DSH action so an unsupported WSL runtime fails at the bridge boundary.
+ * Exact profile-install resolver shared by headless and Web Orcana profiles.
+ * The selected DSH companion bundle is an exact package spec supplied by the
+ * caller; everything else in the release closure remains identical.
  */
 export const INSTALL_RESOLVER_SCRIPT = [
   'dsh_package=$1',
   'pnpm_package=$2',
   'version_contract=$3',
   'node_contract=$4',
-  'headless_package=$5',
+  'companion_package=$5',
   'orcana_packages=$6',
   'shift 6',
   'if ! command -v node >/dev/null 2>&1; then printf "%s\\n" "dsh-orcana: Node.js is required inside the Linux execution world" >&2; exit 126; fi',
@@ -71,7 +73,7 @@ export const INSTALL_RESOLVER_SCRIPT = [
   'shift 4',
   '# The Orcana release package list is compile-time controlled and contains no spaces/globs.',
   'set -f',
-  'set -- plugin --profile "$profile" add --save-exact "$headless_package" $orcana_packages "$@"',
+  'set -- plugin --profile "$profile" add --save-exact "$companion_package" $orcana_packages "$@"',
   'runner=npx',
   'if command -v dsh >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then',
   '  dsh_version=$(dsh --version 2>/dev/null || true)',
@@ -107,9 +109,10 @@ function distroPrefix(distro?: string): string[] {
   return distro === undefined ? [] : ['--distribution', distro]
 }
 
-export function nativeInstallShellArgs(
+export function nativeCompanionInstallShellArgs(
   dshArgs: readonly string[],
   dshPackage: string,
+  companionName: string,
   versionContract: string,
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
   nodeContract = INSTALL_NODE_CONTRACT_SCRIPT,
@@ -118,19 +121,38 @@ export function nativeInstallShellArgs(
   if (parsedPnpm.name !== 'pnpm') {
     throw new Error(`expected pnpm@<exact-version>, received ${JSON.stringify(pnpmPackage)}`)
   }
-  const headlessPackage = dshHeadlessPackage(dshPackage)
+  const companionPackage = dshCompanionPackage(dshPackage, companionName)
   for (const spec of DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES) parseExactPackageSpec(spec)
   const orcanaPackages = DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES.join(' ')
   return [
     '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
-    dshPackage, pnpmPackage, versionContract, nodeContract, headlessPackage, orcanaPackages, ...dshArgs,
+    dshPackage, pnpmPackage, versionContract, nodeContract, companionPackage, orcanaPackages, ...dshArgs,
   ]
 }
 
-export function buildWslInstallArgs(
+/** Back-compatible headless install helper. */
+export function nativeInstallShellArgs(
+  dshArgs: readonly string[],
+  dshPackage: string,
+  versionContract: string,
+  pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
+  nodeContract = INSTALL_NODE_CONTRACT_SCRIPT,
+): string[] {
+  return nativeCompanionInstallShellArgs(
+    dshArgs,
+    dshPackage,
+    DSH_HEADLESS_PACKAGE,
+    versionContract,
+    pnpmPackage,
+    nodeContract,
+  )
+}
+
+export function buildWslCompanionInstallArgs(
   linuxCwd: string,
   dshArgs: readonly string[],
   dshPackage: string,
+  companionName: string,
   versionContract: string,
   distro?: string,
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
@@ -140,6 +162,35 @@ export function buildWslInstallArgs(
     ...distroPrefix(distro),
     '--cd', linuxCwd,
     '--exec', '/bin/sh',
-    ...nativeInstallShellArgs(dshArgs, dshPackage, versionContract, pnpmPackage, nodeContract),
+    ...nativeCompanionInstallShellArgs(
+      dshArgs,
+      dshPackage,
+      companionName,
+      versionContract,
+      pnpmPackage,
+      nodeContract,
+    ),
   ]
+}
+
+/** Back-compatible headless WSL install helper. */
+export function buildWslInstallArgs(
+  linuxCwd: string,
+  dshArgs: readonly string[],
+  dshPackage: string,
+  versionContract: string,
+  distro?: string,
+  pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
+  nodeContract = INSTALL_NODE_CONTRACT_SCRIPT,
+): string[] {
+  return buildWslCompanionInstallArgs(
+    linuxCwd,
+    dshArgs,
+    dshPackage,
+    DSH_HEADLESS_PACKAGE,
+    versionContract,
+    distro,
+    pnpmPackage,
+    nodeContract,
+  )
 }
