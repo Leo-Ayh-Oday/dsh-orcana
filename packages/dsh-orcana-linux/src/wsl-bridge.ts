@@ -26,22 +26,44 @@ const NEVER_IMPLICITLY_FORWARD = new Set(['DSH_HOME', 'HOME', 'PATH', 'Path'])
 
 const NODE_CONTRACT_SCRIPT = 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 19) || major >= 24 ? 0 : 1)'
 
+/**
+ * Runtime-compatible DSH family for this bridge release. The npm fallback is
+ * pinned to rc.5, while an already-installed DSH may be a later 0.1.x release.
+ * Explicit ORCANA_WSL_DSH_COMMAND bypasses this guard by design.
+ */
+export const DSH_VERSION_CONTRACT_SCRIPT = [
+  'const value=(process.argv[1]||"").trim()',
+  'const m=/^(\\d+)\\.(\\d+)\\.(\\d+)(?:-rc\\.(\\d+))?(?:\\+.*)?$/.exec(value)',
+  'if(!m)process.exit(1)',
+  'const major=Number(m[1]),minor=Number(m[2]),patch=Number(m[3]),rc=m[4]===undefined?undefined:Number(m[4])',
+  'if(major!==0||minor!==1)process.exit(1)',
+  'if(patch>0||rc===undefined)process.exit(0)',
+  'process.exit(rc>=5?0:1)',
+].join(';')
+
 const DSH_RESOLVER_SCRIPT = [
   'package_spec=$1',
-  'shift',
-  'if command -v dsh >/dev/null 2>&1; then exec dsh "$@"; fi',
+  'dsh_contract=$2',
+  'shift 2',
+  'if command -v dsh >/dev/null 2>&1; then',
+  '  installed_version=$(dsh --version 2>/dev/null || true)',
+  '  if command -v node >/dev/null 2>&1 && node -e "$dsh_contract" "$installed_version" >/dev/null 2>&1; then exec dsh "$@"; fi',
+  '  printf "%s\\n" "dsh-orcana: installed dsh version ${installed_version:-unknown} is outside the compatible 0.1.x family (minimum 0.1.0-rc.5); using pinned npm fallback" >&2',
+  'fi',
   'if command -v npx >/dev/null 2>&1; then exec npx --yes "$package_spec" "$@"; fi',
-  'printf "%s\\n" "dsh-orcana: neither dsh nor npx is available in this Linux execution world" >&2',
+  'printf "%s\\n" "dsh-orcana: no compatible dsh executable and npx is unavailable in this Linux execution world" >&2',
   'exit 127',
 ].join('\n')
 
 const DOCTOR_SCRIPT = [
   'package_spec=$1',
   'node_contract=$2',
+  'dsh_contract=$3',
   'fail=0',
+  'node_ok=0',
   'printf "kernel: "; uname -sr || fail=1',
-  'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; if ! node -e "$node_contract"; then printf "node-contract: UNSUPPORTED (need ^22.19.0 || >=24.0.0)\\n"; fail=1; else printf "node-contract: OK\\n"; fi; else printf "node: MISSING\\n"; fail=1; fi',
-  'if command -v dsh >/dev/null 2>&1; then printf "dsh: "; command -v dsh; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx %s\\n" "$package_spec"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
+  'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; if ! node -e "$node_contract"; then printf "node-contract: UNSUPPORTED (need ^22.19.0 || >=24.0.0)\\n"; fail=1; else printf "node-contract: OK\\n"; node_ok=1; fi; else printf "node: MISSING\\n"; fail=1; fi',
+  'if command -v dsh >/dev/null 2>&1; then installed_version=$(dsh --version 2>/dev/null || true); printf "dsh: %s (%s)\\n" "$(command -v dsh)" "${installed_version:-version-unknown}"; if [ "$node_ok" -eq 1 ] && node -e "$dsh_contract" "$installed_version" >/dev/null 2>&1; then printf "dsh-contract: OK\\n"; elif command -v npx >/dev/null 2>&1; then printf "dsh-contract: INCOMPATIBLE; runtime will fall back to npx %s\\n" "$package_spec"; else printf "dsh-contract: INCOMPATIBLE and npx unavailable\\n"; fail=1; fi; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx %s\\n" "$package_spec"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
   'for x in bwrap prlimit; do if command -v "$x" >/dev/null 2>&1; then printf "%s: " "$x"; command -v "$x"; else printf "%s: MISSING\\n" "$x"; fi; done',
   'exit "$fail"',
 ].join('; ')
@@ -208,8 +230,8 @@ export function windowsWorkspaceKind(cwd: string): WindowsWorkspaceKind {
 
 /**
  * Build WSL argv without task interpolation. A caller-supplied DSH command is
- * executed directly. Otherwise a fixed resolver prefers installed `dsh` and
- * falls back to the pinned compatible npm package; task values stay in `$@`.
+ * executed directly. Otherwise the resolver rejects an incompatible installed
+ * DSH before falling back to the pinned compatible npm package.
  */
 export function buildWslDshArgs(
   linuxCwd: string,
@@ -229,7 +251,7 @@ export function buildWslDshArgs(
   return [
     ...distroPrefix(distro),
     '--cd', linuxCwd,
-    '--exec', '/bin/sh', '-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage,
+    '--exec', '/bin/sh', '-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, DSH_VERSION_CONTRACT_SCRIPT,
     ...dshArgs,
   ]
 }
@@ -297,21 +319,17 @@ export async function launchWslBridge(
 
   if (process.platform !== 'win32') {
     if (options.mode === 'doctor') {
-      return await spawnAndWait('/bin/sh', ['-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT], {
-        env,
-        cwd,
-        signalMode: 'posix',
-      })
+      return await spawnAndWait('/bin/sh', [
+        '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT, DSH_VERSION_CONTRACT_SCRIPT,
+      ], { env, cwd, signalMode: 'posix' })
     }
     const dshArgs = dshArgsForBridge(options)
     if (dshCommand !== undefined) {
       return await spawnAndWait(dshCommand, dshArgs, { env, cwd, signalMode: 'posix' })
     }
-    return await spawnAndWait('/bin/sh', ['-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, ...dshArgs], {
-      env,
-      cwd,
-      signalMode: 'posix',
-    })
+    return await spawnAndWait('/bin/sh', [
+      '-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, DSH_VERSION_CONTRACT_SCRIPT, ...dshArgs,
+    ], { env, cwd, signalMode: 'posix' })
   }
 
   const mapped = windowsPathToWsl(cwd, options.distro)
@@ -329,7 +347,8 @@ export async function launchWslBridge(
     const args = [
       ...distroPrefix(distro),
       '--cd', mapped.linuxPath,
-      '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT,
+      '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor',
+      dshPackage, NODE_CONTRACT_SCRIPT, DSH_VERSION_CONTRACT_SCRIPT,
     ]
     return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, signalMode: 'none' })
   }
