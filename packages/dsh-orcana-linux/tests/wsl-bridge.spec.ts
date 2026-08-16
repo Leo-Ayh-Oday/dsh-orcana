@@ -10,6 +10,8 @@ import {
   hostCwdForWslSpawn,
   parseWslBridgeArgs,
   parseWslUncPath,
+  shouldInjectDefaultProfile,
+  translateDshPathArgsForWsl,
   windowsPathToWsl,
   windowsWorkspaceKind,
 } from '../src/wsl-bridge.ts'
@@ -30,12 +32,28 @@ describe('WSL bridge argument contract', () => {
     })
   })
 
-  it('defaults to the orcana profile but respects an explicit pre-sentinel DSH profile', () => {
+  it('injects orcana only for task/profile boot and respects an explicit profile', () => {
     const defaulted = parseWslBridgeArgs(['fix it'], {})
     expect(dshArgsForBridge(defaulted)).toEqual(['--profile', 'orcana', 'fix it'])
 
     const explicit = parseWslBridgeArgs(['--profile', 'bench', 'fix it'], {})
     expect(dshArgsForBridge(explicit)).toEqual(['--profile', 'bench', 'fix it'])
+
+    const dump = parseWslBridgeArgs(['--dump-config'], {})
+    expect(dshArgsForBridge(dump)).toEqual(['--profile', 'orcana', '--dump-config'])
+  })
+
+  it.each([
+    [['web'], ['web']],
+    [['web', '--patch', './web.yml'], ['web', '--patch', './web.yml']],
+    [['plugin', '--profile', 'bench', 'add', 'pkg'], ['plugin', '--profile', 'bench', 'add', 'pkg']],
+    [['--patch', './invalid-parent.yml', 'web'], ['--patch', './invalid-parent.yml', 'web']],
+    [['--version'], ['--version']],
+    [['-h'], ['-h']],
+  ] as const)('keeps DSH root invocation %j transparent', (input, expected) => {
+    const parsed = parseWslBridgeArgs(input, {})
+    expect(shouldInjectDefaultProfile(parsed.dshArgs)).toBe(false)
+    expect(dshArgsForBridge(parsed)).toEqual(expected)
   })
 
   it('preserves the -- sentinel and treats everything after it as opaque DSH/task argv', () => {
@@ -54,7 +72,7 @@ describe('WSL bridge argument contract', () => {
     ])
   })
 
-  it('guards an installed dsh by version before the pinned npm fallback', () => {
+  it('requires auto-discovered dsh to exactly match the pinned npm package', () => {
     const task = 'echo "$HOME" && rm -rf nope'
     const argv = buildWslDshArgs(
       '/mnt/c/work tree',
@@ -68,7 +86,7 @@ describe('WSL bridge argument contract', () => {
     ])
     const resolver = argv[7]
     expect(resolver).toContain('dsh --version')
-    expect(resolver).toContain('node -e "$dsh_contract"')
+    expect(resolver).toContain('node -e "$dsh_contract" "$package_spec" "$installed_version"')
     expect(resolver).toContain('npx --yes "$package_spec"')
     expect(resolver).not.toContain(task)
     expect(argv[8]).toBe('dsh-orcana')
@@ -78,25 +96,22 @@ describe('WSL bridge argument contract', () => {
   })
 
   it.each([
-    ['0.1.0-rc.4', false],
-    ['0.1.0-rc.5', true],
-    ['0.1.0-rc.6', true],
-    ['0.1.0', true],
-    ['0.1.1', true],
-    ['0.1.1+build.7', true],
-    ['0.0.9', false],
-    ['0.2.0', false],
-    ['garbage', false],
-  ] as const)('classifies installed DSH version %s as compatible=%s', (version, compatible) => {
-    const result = spawnSync(process.execPath, ['-e', DSH_VERSION_CONTRACT_SCRIPT, version], {
+    ['@deepseek-ai/dsh@0.1.0-rc.5', '0.1.0-rc.5', true],
+    ['@deepseek-ai/dsh@0.1.0-rc.5', '0.1.0-rc.6', false],
+    ['@deepseek-ai/dsh@0.1.0-rc.5', '0.1.0', false],
+    ['@deepseek-ai/dsh@0.1.0-rc.6', '0.1.0-rc.6', true],
+    ['@deepseek-ai/dsh@latest', '0.1.0-rc.6', false],
+    ['garbage', '0.1.0-rc.5', false],
+  ] as const)('matches package %s to installed DSH %s => %s', (packageSpec, version, compatible) => {
+    const result = spawnSync(process.execPath, ['-e', DSH_VERSION_CONTRACT_SCRIPT, packageSpec, version], {
       stdio: 'ignore',
     })
     expect(result.status === 0).toBe(compatible)
   })
 
-  it('allows an explicit compatible DSH package fallback without shell interpolation', () => {
-    const argv = buildWslDshArgs('/home/leo/repo', ['web'], 'Ubuntu', undefined, '@deepseek-ai/dsh@0.1.0-rc.99')
-    expect(argv[9]).toBe('@deepseek-ai/dsh@0.1.0-rc.99')
+  it('allows an explicit DSH npm fallback package without shell interpolation', () => {
+    const argv = buildWslDshArgs('/home/leo/repo', ['web'], 'Ubuntu', undefined, '@deepseek-ai/dsh@0.1.0-rc.6')
+    expect(argv[9]).toBe('@deepseek-ai/dsh@0.1.0-rc.6')
     expect(argv.at(-1)).toBe('web')
   })
 
@@ -136,7 +151,7 @@ describe('WSL path contract', () => {
     })
   })
 
-  it('fails loud when a WSL UNC cwd conflicts with the selected distro', () => {
+  it('fails loud when a WSL UNC path conflicts with the selected distro', () => {
     expect(() => windowsPathToWsl('\\\\wsl$\\Ubuntu\\home\\leo', 'Debian')).toThrow(/belongs to WSL distro/)
   })
 
@@ -152,12 +167,39 @@ describe('WSL path contract', () => {
     expect(windowsWorkspaceKind('C:\\repo')).toBe('windows-mounted')
     expect(windowsWorkspaceKind('\\\\wsl.localhost\\Ubuntu\\home\\leo\\repo')).toBe('wsl-native')
   })
+
+  it('translates only DSH-owned --patch paths and leaves task argv opaque', () => {
+    const fake = ((_: string, args: readonly string[]) => ({
+      status: 0,
+      stdout: args.at(-1) === 'C:\\repo\\one.yml' ? '/mnt/c/repo/one.yml\n' : '/mapped/other\n',
+      stderr: '',
+      error: undefined,
+    })) as unknown as typeof import('node:child_process').spawnSync
+
+    expect(translateDshPathArgsForWsl([
+      '--profile', 'orcana',
+      '--patch', 'C:\\repo\\one.yml',
+      '--patch=.\\two.yml',
+      'task',
+      '--patch', 'C:\\do-not-touch.yml',
+    ], 'Ubuntu', fake)).toEqual([
+      '--profile', 'orcana',
+      '--patch', '/mnt/c/repo/one.yml',
+      '--patch=./two.yml',
+      'task',
+      '--patch', 'C:\\do-not-touch.yml',
+    ])
+
+    expect(translateDshPathArgsForWsl(['web', '--patch', '.\\web.yml', '--help'], 'Ubuntu', fake)).toEqual([
+      'web', '--patch', './web.yml', '--help',
+    ])
+  })
 })
 
 describe('WSL environment contract', () => {
-  it('forwards runtime/provider variables one-way into WSL without sharing Windows DSH_HOME', () => {
+  it('normalizes owned WSLENV direction while blocking Windows runtime-home contamination', () => {
     const result = environmentForWsl({
-      WSLENV: 'EXISTING/u',
+      WSLENV: 'EXISTING/u:DEEPSEEK_API_KEY/w:DSH_HOME/u:ORCANA_WSL_DISTRO/u:MY_PATH/pw',
       EXISTING: 'x',
       DEEPSEEK_API_KEY: 'secret',
       DEEPSEEK_BASE_URL: 'https://gateway.example.test',
@@ -166,11 +208,14 @@ describe('WSL environment contract', () => {
       ORCANA_MODE: 'warn-steer',
       ORCANA_WSL_DISTRO: 'Ubuntu',
       ORCANA_WSL_DSH_PACKAGE: '@deepseek-ai/dsh@custom',
+      ORCANA_WSL_FORWARD_ENV: 'MY_PATH',
+      MY_PATH: 'C:\\toolchain',
       PATH: 'C:\\Windows',
     })
     expect(result.WSLENV?.split(':')).toEqual([
       'EXISTING/u',
       'DEEPSEEK_API_KEY/u',
+      'MY_PATH/pu',
       'DEEPSEEK_BASE_URL/u',
       'DSH_TRACE/u',
       'ORCANA_MODE/u',
@@ -179,6 +224,16 @@ describe('WSL environment contract', () => {
     expect(result.WSLENV).not.toContain('ORCANA_WSL_DISTRO')
     expect(result.WSLENV).not.toContain('ORCANA_WSL_DSH_PACKAGE')
     expect(result.WSLENV).not.toContain('PATH')
+  })
+
+  it('repairs an invalid/reverse existing row for an explicitly forwarded scalar', () => {
+    const result = environmentForWsl({
+      WSLENV: 'MY_FLAG/zw:UNRELATED/lw',
+      ORCANA_WSL_FORWARD_ENV: 'MY_FLAG',
+      MY_FLAG: 'yes',
+      UNRELATED: 'C:\\a;C:\\b',
+    })
+    expect(result.WSLENV).toBe('MY_FLAG/u:UNRELATED/lw')
   })
 
   it('supports an explicit extra forward allowlist without leaking invalid names or Windows DSH_HOME', () => {
