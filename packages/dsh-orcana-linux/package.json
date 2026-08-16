@@ -54,7 +54,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
-    "prepack": "pnpm typecheck && pnpm test && pnpm build"
+    "prepack": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"
