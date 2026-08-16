@@ -12,6 +12,11 @@ import type {
   ShellRunResult,
   ShellSandboxInfo,
 } from '@deepseek-ai/dsh-shell'
+import {
+  currentNativeToolCorrelation,
+  installNativeToolCorrelation,
+  type NativeToolCorrelation,
+} from './native-tool-correlation.js'
 
 /** Legacy package-root resource vocabulary retained only to fail loud on migration. */
 export interface LegacyHardeningResourceLimits {
@@ -30,20 +35,19 @@ export interface LegacyHardeningDegradationPolicy {
  * Native observer configuration. Enforcement remains owned by DSH
  * sandbox-policy/provider.
  *
- * The deprecated fields intentionally remain in the schema so an upgraded
- * profile cannot have an old enforcement request silently stripped by
- * schemastery. Their presence throws {@link LegacyHardeningConfigMovedError}.
+ * Deprecated enforcement fields intentionally remain in the schema so an
+ * upgraded profile cannot have an old request silently stripped by
+ * schemastery. Their presence fails loud at mount.
  */
 export interface NativeEvidenceConfig {
-  /** Bounded final-execution evidence window. Older rows are dropped. */
   ledgerMaxEntries?: number
   /** @deprecated Move to DSH's `sandbox-policy.resourceLimits`. */
   resourceLimits?: LegacyHardeningResourceLimits
   /** @deprecated Move to DSH's `sandbox-policy.network`. */
   network?: 'inherit' | 'none'
-  /** @deprecated No native-evidence equivalent; DSH reports degradation in SandboxReceipt. */
+  /** @deprecated DSH reports degradation in SandboxReceipt. */
   degradationPolicy?: LegacyHardeningDegradationPolicy
-  /** @deprecated Legacy test/deployment capability pin; native-evidence never probes enforcement. */
+  /** @deprecated Native evidence never probes or overrides enforcement. */
   capabilities?: unknown
 }
 
@@ -51,9 +55,6 @@ export const DEFAULT_NATIVE_EVIDENCE_LEDGER_MAX_ENTRIES = 1024
 
 export const Config: z<NativeEvidenceConfig> = z.object({
   ledgerMaxEntries: z.number().min(1),
-  // These legacy rows are deliberately accepted by the schema and rejected
-  // by validateNativeEvidenceConfig(). If omitted here, schemastery may strip
-  // them before apply(), silently weakening an upgraded profile.
   resourceLimits: z.object({
     memoryBytes: z.number().min(0),
     cpuQuotaUs: z.number().min(0),
@@ -67,7 +68,6 @@ export const Config: z<NativeEvidenceConfig> = z.object({
   capabilities: z.any(),
 })
 
-/** Stable code for a second live observer wrapping the same shell provider. */
 export const DUPLICATE_NATIVE_EVIDENCE_INSTANCE = 'DUPLICATE_NATIVE_EVIDENCE_INSTANCE'
 
 export class DuplicateNativeEvidenceError extends Error {
@@ -78,7 +78,6 @@ export class DuplicateNativeEvidenceError extends Error {
   }
 }
 
-/** Stable migration error: an old Orcana enforcement config reached the evidence-only adapter. */
 export const LEGACY_HARDENING_CONFIG_MOVED = 'LEGACY_HARDENING_CONFIG_MOVED'
 
 export class LegacyHardeningConfigMovedError extends Error {
@@ -130,8 +129,8 @@ export type NativeExecutionKind = 'foreground' | 'background'
 export type NativeExecutionOutcome = 'completed' | 'infrastructure-error'
 
 /**
- * Final execution evidence derived only from DSH's public shell/sandbox result
- * contracts. Raw command text is intentionally absent; only a stable SHA-256
+ * Final execution evidence derived from DSH's public tool/shell/sandbox
+ * contracts. Raw command text is intentionally absent; only a SHA-256
  * fingerprint and byte length are retained.
  */
 export interface NativeExecutionRecord {
@@ -143,6 +142,8 @@ export interface NativeExecutionRecord {
   commandHash: string
   commandBytes: number
   workdir: string
+  /** Exact DSH causal identity when this shell work ran under ToolRuntime. */
+  correlation?: NativeToolCorrelation
   policy?: NativePolicySnapshot
   evidenceKind: NativeEvidenceKind
   sandbox?: NativeSandboxSnapshot
@@ -159,6 +160,7 @@ interface NativeExecutionStartSnapshot {
   commandHash: string
   commandBytes: number
   workdir: string
+  correlation?: NativeToolCorrelation
   policy?: NativePolicySnapshot
 }
 
@@ -191,13 +193,11 @@ function pushRecord(state: NativeEvidenceLedgerState, record: NativeExecutionRec
   state.records.push(record)
 }
 
-/** DSH-native evidence exposed to Orcana/governance consumers. */
 export class NativeExecutionEvidenceService extends Service {
   constructor(ctx: Context, private readonly state: NativeEvidenceLedgerState) {
     super(ctx, 'orcanaLinuxEvidence')
   }
 
-  /** Snapshot copy; callers cannot mutate the bounded internal window. */
   get ledger(): readonly NativeExecutionRecord[] {
     return [...this.state.records]
   }
@@ -214,7 +214,7 @@ export class NativeExecutionEvidenceService extends Service {
     return this.state.pendingBackground
   }
 
-  /** Authority declaration: DSH enforces, Orcana observes and governs evidence. */
+  /** DSH enforces. Orcana observes facts and correlates them to tool/session identity. */
   get scope(): Readonly<{
     enforcementOwner: 'dsh'
     observationSeam: 'shell'
@@ -303,10 +303,12 @@ function infrastructureError(error: unknown): NativeExecutionRecord['error'] {
 }
 
 function executionStartSnapshot(spec: ShellExecSpec): NativeExecutionStartSnapshot {
+  const correlation = currentNativeToolCorrelation()
   return {
     startedAt: Date.now(),
     ...commandFingerprint(spec.command),
     workdir: spec.workdir,
+    ...(correlation !== undefined ? { correlation } : {}),
     ...(spec.sandboxPolicy !== undefined ? { policy: snapshotNativePolicy(spec.sandboxPolicy) } : {}),
   }
 }
@@ -319,6 +321,7 @@ function recordBase(start: NativeExecutionStartSnapshot, finishedAt: number) {
     commandHash: start.commandHash,
     commandBytes: start.commandBytes,
     workdir: start.workdir,
+    ...(start.correlation !== undefined ? { correlation: { ...start.correlation } } : {}),
     ...(start.policy !== undefined ? { policy: start.policy } : {}),
   }
 }
@@ -374,7 +377,6 @@ function rejectedRecord(
   }
 }
 
-/** Live observer patch metadata stored on the raw shell provider. */
 interface ObserverPatchState {
   owner: symbol
   originalRun: ShellExecutor['run']
@@ -409,9 +411,8 @@ export function validateNativeEvidenceConfig(config: NativeEvidenceConfig): void
 }
 
 /**
- * Observe DSH's public shell result seam without changing policy, argv,
- * lifecycle, result objects, or process handles. DSH remains the sole native
- * enforcement owner; Orcana consumes the facts DSH actually reports.
+ * Observe DSH's public tool/shell result seams without changing policy, argv,
+ * lifecycle, execution identity, result objects, or process handles.
  */
 export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   validateNativeEvidenceConfig(config)
@@ -421,6 +422,11 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   }
   const raw = (shell as unknown as Record<symbol, ShellExecutor>)[symbols.original] as PatchableShell
   if (raw[OBSERVER_PATCH_STATE]) throw new DuplicateNativeEvidenceError()
+
+  // Official around-dispatch correlation: this does not mutate ToolRuntime or
+  // the tool execution object. The shell wrappers below read only the current
+  // process-local ALS identity at the exact execution-start boundary.
+  installNativeToolCorrelation(ctx)
 
   const maxEntries = config.ledgerMaxEntries ?? DEFAULT_NATIVE_EVIDENCE_LEDGER_MAX_ENTRIES
   let state = raw[EVIDENCE_LEDGER_STATE] as NativeEvidenceLedgerState | undefined
@@ -437,8 +443,7 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   let active = true
 
   const wrappedRun: ShellExecutor['run'] = async (spec: ShellExecSpec): Promise<ShellRunResult> => {
-    const observing = active
-    if (!observing) return await originalRun.call(raw, spec)
+    if (!active) return await originalRun.call(raw, spec)
     const start = executionStartSnapshot(spec)
     try {
       const result = await originalRun.call(raw, spec)
@@ -451,8 +456,7 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   }
 
   const wrappedStart: ShellExecutor['start'] = (spec: ShellExecSpec): ShellProcess => {
-    const observing = active
-    if (!observing) return originalStart.call(raw, spec)
+    if (!active) return originalStart.call(raw, spec)
     const start = executionStartSnapshot(spec)
     let process: ShellProcess
     try {
@@ -463,12 +467,10 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
     }
     state.pendingBackground += 1
     void process.done.then(() => {
-      // A process that started while this observer was active still belongs to
-      // this evidence stream even if the observer fiber reloaded before exit.
+      // Correlation was copied at start, so a detached background task keeps
+      // its exact tool/session identity after ToolRuntime/ALS scope unwinds.
       pushRecord(state, completedBackgroundRecord(start, process, Date.now()))
     }).catch((error: unknown) => {
-      // DSH's ShellProcess.done contract says it never rejects. Keep the
-      // observer total if a third-party shell provider violates that contract.
       pushRecord(state, rejectedRecord('background', start, error, Date.now()))
     }).finally(() => {
       state.pendingBackground = Math.max(0, state.pendingBackground - 1)
@@ -491,9 +493,6 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
     active = false
     if (raw[OBSERVER_PATCH_STATE] !== patchState) return
     raw[OBSERVER_PATCH_STATE] = undefined
-    // Restore only methods still owned by this observer. A later wrapper is
-    // never clobbered during disposal; any stale observer wrapper becomes a
-    // pure pass-through because `active` is now false.
     if (raw.run === wrappedRun) raw.run = originalRun
     if (raw.start === wrappedStart) raw.start = originalStart
     ctx.logger?.info('[dsh-orcana-linux] native evidence observer disposed')
@@ -501,6 +500,6 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
 }
 
 apply.Config = Config
-apply.inject = ['shell']
+apply.inject = ['shell', 'tools']
 
 export default apply
