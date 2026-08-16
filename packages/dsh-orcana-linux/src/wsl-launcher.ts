@@ -1,6 +1,11 @@
 import { spawnSync } from 'node:child_process'
 import { augmentWslHostEnvironment } from './wsl-host-env.js'
 import { reportWslLoopbackProxyDoctor } from './wsl-proxy-doctor.js'
+import {
+  installOrcanaWebProfile,
+  rewriteOrcanaWebInvocation,
+  verifyOrcanaWebProfile,
+} from './wsl-product-profiles.js'
 import { runWslWorkspaceDoctor } from './wsl-workspace-doctor.js'
 import {
   launchWslBridge,
@@ -102,24 +107,24 @@ function canonicalBridgeArgs(options: WslBridgeOptions, dshArgs: readonly string
 /**
  * Preferred cross-platform launcher API.
  *
- * Windows composition normalizes DSH bootstrap proxy/search/certificate
- * environment, local filesystem package specs passed to `dsh plugin`, and WSL
- * distro ownership before entering the core bridge. Doctor additionally checks
- * explicit loopback proxy reachability plus the real WSL workspace/Git surface;
- * it never guesses proxy gateways or copies Windows Git credentials/SSH keys.
- * Platform authority stays inside this function and cannot be overridden by a
- * caller pretending to run on another operating system.
+ * Product semantics live here rather than in the transport primitive:
+ * - task invocations use `<profile>` (default `orcana`)
+ * - `web ...` uses `<profile>-web` and therefore never silently falls back to
+ *   the upstream plain-Web profile
+ * - `--wsl-install` prepares and verifies both companion profiles
+ *
+ * Windows additionally normalizes DSH bootstrap proxy/search/certificate
+ * environment, local `dsh plugin` filesystem specs, and WSL distro ownership.
  */
 export async function launchDshOrcana(
   rawArgs: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
 ): Promise<number> {
-  if (process.platform !== 'win32') return await launchWslBridge(rawArgs, env, cwd)
-
-  const effectiveEnv = augmentWslHostEnvironment(env)
+  const isWindows = process.platform === 'win32'
+  const effectiveEnv = isWindows ? augmentWslHostEnvironment(env) : env
   const parsed = parseWslBridgeArgs(rawArgs, effectiveEnv)
-  const selectedDistro = distroForWindowsWorkspace(cwd, parsed.distro)
+  const selectedDistro = isWindows ? distroForWindowsWorkspace(cwd, parsed.distro) : parsed.distro
   const baseOptions: WslBridgeOptions = {
     ...parsed,
     ...(selectedDistro === undefined ? {} : { distro: selectedDistro }),
@@ -129,6 +134,10 @@ export async function launchDshOrcana(
     const bridgeStatus = await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
     if (bridgeStatus !== 0) return bridgeStatus
 
+    const webStatus = await verifyOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro)
+    if (webStatus !== 0) return webStatus
+
+    if (!isWindows) return 0
     const proxyStatus = reportWslLoopbackProxyDoctor(effectiveEnv, selectedDistro)
     const mapped = windowsPathToWsl(cwd, selectedDistro)
     const workspaceStatus = runWslWorkspaceDoctor(mapped.linuxPath, effectiveEnv, selectedDistro)
@@ -136,10 +145,17 @@ export async function launchDshOrcana(
   }
 
   if (parsed.mode === 'install') {
-    return await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
+    const headlessStatus = await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
+    if (headlessStatus !== 0) return headlessStatus
+    return await installOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro)
   }
 
-  const plugin = translateDshPluginPathSpecsForWsl(parsed.dshArgs, selectedDistro)
+  const productArgs = rewriteOrcanaWebInvocation(parsed.dshArgs, parsed.profile)
+  if (!isWindows) {
+    return await launchWslBridge(canonicalBridgeArgs(baseOptions, productArgs), effectiveEnv, cwd)
+  }
+
+  const plugin = translateDshPluginPathSpecsForWsl(productArgs, selectedDistro)
   const effectiveOptions: WslBridgeOptions = {
     ...baseOptions,
     ...(plugin.distro === undefined ? {} : { distro: plugin.distro }),
