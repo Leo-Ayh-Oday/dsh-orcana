@@ -31,7 +31,7 @@ describe('@leooday/dsh-orcana-linux package contract', () => {
     expect(manifest.files).toContain('lib/types/**/*.d.ts')
   })
 
-  it('publishes the plugin and bridge entrypoints', () => {
+  it('publishes the plugin, low-level bridge and preferred launcher entrypoints', () => {
     expect(manifest.exports).toMatchObject({
       '.': {
         types: './lib/types/index.d.ts',
@@ -40,6 +40,10 @@ describe('@leooday/dsh-orcana-linux package contract', () => {
       './wsl-bridge': {
         types: './lib/types/wsl-bridge.d.ts',
         default: './lib/wsl-bridge.js',
+      },
+      './wsl-launcher': {
+        types: './lib/types/wsl-launcher.d.ts',
+        default: './lib/wsl-launcher.js',
       },
       './package.json': './package.json',
     })
