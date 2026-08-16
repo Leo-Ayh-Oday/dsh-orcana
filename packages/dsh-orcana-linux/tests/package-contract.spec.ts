@@ -31,11 +31,15 @@ describe('@leooday/dsh-orcana-linux package contract', () => {
     expect(manifest.files).toContain('lib/types/**/*.d.ts')
   })
 
-  it('publishes the plugin, low-level bridge and preferred launcher entrypoints', () => {
+  it('publishes legacy plugin, native evidence, low-level bridge and preferred launcher entrypoints', () => {
     expect(manifest.exports).toMatchObject({
       '.': {
         types: './lib/types/index.d.ts',
         default: './lib/index.js',
+      },
+      './native-evidence': {
+        types: './lib/types/native-evidence.d.ts',
+        default: './lib/native-evidence.js',
       },
       './wsl-bridge': {
         types: './lib/types/wsl-bridge.d.ts',
@@ -54,10 +58,12 @@ describe('@leooday/dsh-orcana-linux package contract', () => {
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/cordis': '4.0.1',
       '@deepseek-ai/dsh-sandbox': '0.1.0-rc.5',
+      '@deepseek-ai/dsh-shell': '0.1.0-rc.5',
     })
     expect(manifest.peerDependenciesMeta).toEqual({
       '@deepseek-ai/cordis': { optional: true },
       '@deepseek-ai/dsh-sandbox': { optional: true },
+      '@deepseek-ai/dsh-shell': { optional: true },
     })
   })
 
