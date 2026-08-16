@@ -63,7 +63,7 @@ function withFakeLocalToolchain<T>(run: (env: NodeJS.ProcessEnv, log: string) =>
 const INSTALL_ARGS = [
   'plugin', '--profile', 'orcana', 'add',
   '@leooday/dsh-bundle@0.1.0-rc.1',
-  '@leooday/dsh-orcana-linux-bundle@0.2.0',
+  '@leooday/dsh-orcana-linux-bundle@0.3.0',
 ] as const
 
 describe('WSL plugin-install toolchain', () => {
@@ -173,7 +173,7 @@ describe('WSL plugin-install toolchain', () => {
         `plugin --profile orcana add --save-exact ${HEADLESS_PACKAGE}`,
         `plugin --profile orcana add --save-exact ${ORCANA_RUNTIME_PACKAGES.join(' ')}`,
         'plugin --profile orcana add --save-exact @leooday/dsh-bundle@0.1.0-rc.1',
-        'plugin --profile orcana add --save-exact @leooday/dsh-orcana-linux-bundle@0.2.0',
+        'plugin --profile orcana add --save-exact @leooday/dsh-orcana-linux-bundle@0.3.0',
         '--profile orcana --dump-config',
       ])
     })
@@ -184,7 +184,7 @@ describe('WSL plugin-install toolchain', () => {
       const result = spawnSync('/bin/sh', nativeCompanionInstallShellArgs(
         ['plugin', '--profile', 'orcana-web', 'add',
           '@leooday/dsh-bundle@0.1.0-rc.1',
-          '@leooday/dsh-orcana-linux-bundle@0.2.0'],
+          '@leooday/dsh-orcana-linux-bundle@0.3.0'],
         DSH_PACKAGE,
         DSH_WEB_APP_PACKAGE,
         VERSION_CONTRACT,
@@ -195,7 +195,7 @@ describe('WSL plugin-install toolchain', () => {
         `plugin --profile orcana-web add --save-exact ${WEB_PACKAGE}`,
         `plugin --profile orcana-web add --save-exact ${ORCANA_RUNTIME_PACKAGES.join(' ')}`,
         'plugin --profile orcana-web add --save-exact @leooday/dsh-bundle@0.1.0-rc.1',
-        'plugin --profile orcana-web add --save-exact @leooday/dsh-orcana-linux-bundle@0.2.0',
+        'plugin --profile orcana-web add --save-exact @leooday/dsh-orcana-linux-bundle@0.3.0',
         '--profile orcana-web --dump-config',
       ])
     })
