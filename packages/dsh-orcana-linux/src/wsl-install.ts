@@ -49,17 +49,19 @@ export function dshHeadlessPackage(dshPackage: string): string {
  *
  * It creates a runnable and reproducible profile using an exact DSH/pnpm
  * toolchain, exact DSH headless bundle, exact Orcana runtime closure, and exact
- * Orcana bundles. After `dsh plugin add` succeeds, it runs the official
- * boot-free `dsh --profile <name> --dump-config` path. The install is reported
- * successful only when the resulting profile patch stack can actually compose.
+ * Orcana bundles. Node compatibility is checked before any package-manager or
+ * DSH action so an unsupported WSL runtime fails at the bridge boundary.
  */
 export const INSTALL_RESOLVER_SCRIPT = [
   'dsh_package=$1',
   'pnpm_package=$2',
   'version_contract=$3',
-  'headless_package=$4',
-  'orcana_packages=$5',
-  'shift 5',
+  'node_contract=$4',
+  'headless_package=$5',
+  'orcana_packages=$6',
+  'shift 6',
+  'if ! command -v node >/dev/null 2>&1; then printf "%s\\n" "dsh-orcana: Node.js is required inside the Linux execution world" >&2; exit 126; fi',
+  'if ! node -e "$node_contract" >/dev/null 2>&1; then node_version=$(node --version 2>/dev/null || true); printf "%s\\n" "dsh-orcana: unsupported Node ${node_version:-unknown}; need ^22.19.0 || >=24.0.0" >&2; exit 126; fi',
   'if [ "$1" != "plugin" ] || [ "$2" != "--profile" ] || [ -z "$3" ] || [ "$4" != "add" ]; then',
   '  printf "%s\\n" "dsh-orcana: internal install argv does not match plugin --profile <name> add" >&2',
   '  exit 64',
@@ -70,7 +72,7 @@ export const INSTALL_RESOLVER_SCRIPT = [
   'set -f',
   'set -- plugin --profile "$profile" add --save-exact "$headless_package" $orcana_packages "$@"',
   'runner=npx',
-  'if command -v dsh >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then',
+  'if command -v dsh >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then',
   '  dsh_version=$(dsh --version 2>/dev/null || true)',
   '  pnpm_version=$(pnpm --version 2>/dev/null || true)',
   '  if node -e "$version_contract" "$dsh_package" "$dsh_version" >/dev/null 2>&1 && node -e "$version_contract" "$pnpm_package" "$pnpm_version" >/dev/null 2>&1; then runner=local; fi',
@@ -108,6 +110,7 @@ export function nativeInstallShellArgs(
   dshArgs: readonly string[],
   dshPackage: string,
   versionContract: string,
+  nodeContract: string,
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
 ): string[] {
   const parsedPnpm = parseExactPackageSpec(pnpmPackage)
@@ -119,7 +122,7 @@ export function nativeInstallShellArgs(
   const orcanaPackages = DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES.join(' ')
   return [
     '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
-    dshPackage, pnpmPackage, versionContract, headlessPackage, orcanaPackages, ...dshArgs,
+    dshPackage, pnpmPackage, versionContract, nodeContract, headlessPackage, orcanaPackages, ...dshArgs,
   ]
 }
 
@@ -128,6 +131,7 @@ export function buildWslInstallArgs(
   dshArgs: readonly string[],
   dshPackage: string,
   versionContract: string,
+  nodeContract: string,
   distro?: string,
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
 ): string[] {
@@ -135,6 +139,6 @@ export function buildWslInstallArgs(
     ...distroPrefix(distro),
     '--cd', linuxCwd,
     '--exec', '/bin/sh',
-    ...nativeInstallShellArgs(dshArgs, dshPackage, versionContract, pnpmPackage),
+    ...nativeInstallShellArgs(dshArgs, dshPackage, versionContract, nodeContract, pnpmPackage),
   ]
 }
