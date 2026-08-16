@@ -594,13 +594,22 @@ gates:
 `@leooday/dsh-bundle`);`dsh-orcana-linux*` 由独立分支(codex/v4f-dynamic-runtime)
 合入后另行发布(R5)。
 
+### R0 结论(2026-08-16,链路已验证)
+
+1. **必须用 `pnpm publish`**:npm publish 保留 `workspace:^` 死链(实测 tgz 内依赖原样),pnpm publish 正确重写为 `^0.1.0-rc.1`(实测)
+2. **`scripts/static-registry.mjs`(新工具,可复用)**:从本地 pnpm-pack tgz 目录提供真实 npm registry 元数据 + tarball,其余路径反代上游 registry(需宿主代理 env:NODE_USE_ENV_PROXY=1 + HTTP(S)_PROXY,本环境直连 registry 不通)
+3. **链路实测通过**:`dsh plugin add @leooday/dsh-bundle`(静态 registry)→ 依赖树全解析(leooday 三包本地 + @deepseek-ai/* 上游代理)→ 补装 `@deepseek-ai/dsh-headless@next` → boot 达 MISSING_CREDENTIAL(组合树加载成功、bundle 自动激活)
+4. **发现(DSH 上游)**:`@deepseek-ai/dsh-headless@latest`(0.0.1-rc.1)依赖不存在的 `dsh-code-runtime-worker`(官方发布断裂);`@next`(0.1.0-rc.6)依赖 `dsh-code-runtime-worker-thread` 存在——**安装必须指名 @next**;官方 plugin add 只装 orcana bundle,需再装 headless(或先 init profile)
+5. **registry 安装语义差异**:plugin add 自动激活 bundle(profile bundles 列表),treatment.patch.yml 的 orcana insert 行此时会 duplicate id 冲突——benchmark 的 file: override 独立安装场景不受影响;registry 场景的 config 覆盖用纯 config patch
+6. 发布命令(正式):`pnpm publish --registry https://registry.npmjs.org --no-git-checks`(core → dsh-governor → dsh-bundle 顺序)
+
 | 步骤 | 内容 | 验收标准 | 预估 |
 |---|---|---|---|
-| R0 发布链路验证 | `npm publish --dry-run` 三包;确认 workspace:^ 重写为真实版本;本地 registry(verdaccio/临时)模拟 `dsh plugin add` 真装 + MISSING_CREDENTIAL 哨兵 | registry 安装链路全通,依赖解析无 workspace:^ 残留 | 0.5 天 |
+| R0 发布链路验证 | ✅ 已完成(见上) | registry 安装链路全通 | 0.5 天 ✅ |
 | R1 benchmark 数据加固 | marked reps → n≥5(seed 9-12);新增 1 个真实任务(verification-trap 类,走 prep→三 Gate→冻结);README 数据更新为统计结论 | n≥5;新任务三 Gate 记录;README 数据刷新 | 1-2 天 |
 | R2 代码收口 | M3:adapter apply() 行为级测试(ctx 级最小);低危残留清理;全量门禁 | 测试全绿;无新增审查阻断 | 0.5 天 |
 | R3 文档与发布物 | CHANGELOG.md(rc.1→0.1.0);版本号 0.1.0;发布物自检清单 | 自检清单全过 | 0.5 天 |
-| R4 正式发布 | `npm publish` 三包(顺序 core→governor→bundle);干净环境 `dsh plugin add @leooday/dsh-bundle` 验证 | 全新 DSH_HOME 下 plugin add 成功且 governor 行为生效(smoke 哨兵) | 0.5 天 |
+| R4 正式发布 | `pnpm publish` 三包(顺序 core→governor→bundle);干净环境 `dsh plugin add @leooday/dsh-bundle` 验证 | 全新 DSH_HOME 下 plugin add 成功且 governor 行为生效(smoke 哨兵) | 0.5 天 |
 | R5 Linux 线合并发布(待 GPT) | Linux 分支合入 → `dsh-orcana-linux*` 发布;README 安装命令更新为单条全量 | registry 可装 Linux bundle | 待定 |
 
-关键路径:R0 → R1 → R2 → R3 → R4;R1 可与 R0/R2 并行。总计约 3-4 天(不含 R5)。
+关键路径:R1 → R2 → R3 → R4;R1 可与 R2 并行。总计约 3 天(不含 R5)。
