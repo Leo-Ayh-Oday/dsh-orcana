@@ -42,6 +42,23 @@ See [docs/architecture.md](docs/architecture.md),
 | `benchmark/` | A/B harness |
 | `scripts/` | install / smoke / release checks |
 
+## Measured impact (preliminary)
+
+Paired A/B runs, same model (deepseek-v4-flash), control vs treatment
+(governor active), judged by an independent acceptance command. Full harness
+and raw data: [benchmark/](benchmark/README.md), `benchmark/reports/`.
+
+| Task | n | Treatment − control (tokens) |
+|---|---|---|
+| demo-format-money (synthetic verification trap) | 2 | −871 / −2695 (both negative) |
+| marked-blank-tab (real issue markedjs#4007) | 6 | −4079 / +4082 / −29107 / −12181 / +48428 / −8850 (4/6 negative, median ≈ −6.5k) |
+| dayjs-updatelocale (real issue dayjs#1118) | 3 | +2459 / −1841 / −731 (2/3 negative, median ≈ −0.7k) |
+
+Pooled: **8 of 11 paired runs used fewer tokens with the governor active**
+(median negative on every task). Call counts are censored by the budgets on
+the real tasks. Small samples — the harness is the reliable deliverable;
+effect size needs more reps and tasks.
+
 ## Install
 
 The npm scope is `@leooday`:

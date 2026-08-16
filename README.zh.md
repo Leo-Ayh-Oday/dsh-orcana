@@ -42,6 +42,22 @@ DSH                         Orcana
 | `benchmark/` | A/B 测试 |
 | `scripts/` | 安装、smoke、release gate |
 
+## 实测效果（初步）
+
+配对 A/B：同一模型（deepseek-v4-flash），control vs treatment（governor
+激活），由独立 acceptance 命令判定。完整装置与原始数据：
+[benchmark/](benchmark/README.md)、`benchmark/reports/`。
+
+| 任务 | n | treatment − control（tokens） |
+|---|---|---|
+| demo-format-money（合成 verification trap） | 2 | -871 / -2695（均为负） |
+| marked-blank-tab（真实 issue markedjs#4007） | 6 | -4079 / +4082 / -29107 / -12181 / +48428 / -8850（4/6 负，中位数约 -6.5k） |
+| dayjs-updatelocale（真实 issue dayjs#1118） | 3 | +2459 / -1841 / -731（2/3 负，中位数约 -0.7k） |
+
+合计 11 对中 **8 对 treatment tokens 更少**（每个任务中位数均为负）。真实
+任务的 calls 维度被预算截断。样本小——可靠交付物是整套实验装置，效果
+大小需要更多 reps 与任务。
+
 ## 安装
 
 npm scope 为 `@leooday`：
