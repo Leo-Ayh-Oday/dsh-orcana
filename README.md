@@ -67,16 +67,19 @@ Paired A/B runs, same model (deepseek-v4-flash), control vs treatment
 (governor active), judged by an independent acceptance command. Full harness
 and raw data: [benchmark/](benchmark/README.md), `benchmark/reports/`.
 
-| Task | n | Treatment vs control |
+| Task | n | Treatment vs control (tokens, treatment − control) |
 |---|---|---|
-| demo-format-money (synthetic verification trap) | 2 | both succeed; tokens **-871 / -2695** |
-| marked-blank-tab (real issue markedjs#4007) | 3 | tokens **-4079 / +4082 / -29107** (mean ≈ -9.7k); wall mean ≈ **-48 s**; duplicate verification commands **0 vs 1** |
+| demo-format-money (synthetic verification trap) | 2 | **−871 / −2695** (both negative) |
+| marked-blank-tab (real issue markedjs#4007) | 6 | −4079 / +4082 / −29107 / −12181 / +48428 / −8850 — 4/6 negative, mean ≈ −0.3k, median ≈ −6.5k |
 
-Direction: the governor does not change task success rates but consistently
-reduces token spend and repeated verification work on long sessions. Sample
-sizes are small (n=2–3); the numbers are directional, not conclusive. Both
-marked arms hit the 24-call budget (hard task), so call-count differences are
-censored — token savings are the stable signal.
+Honest reading: on the real task the token direction is consistently
+negative in the median but the variance is high (one large positive
+outlier), so the effect is not statistically conclusive at n=6. On the
+synthetic task both pairs favored treatment. Call counts are censored by the
+24-call budget on the hard task (every arm hits it); duplicate verification
+commands were lower for treatment in the replayed discipline metrics (1 vs 0
+in the first snapshot). The harness itself is the reliable deliverable —
+sample sizes need more reps and tasks for a conclusive effect size.
 
 ## Known Limitations
 

@@ -65,15 +65,16 @@ dsh --profile orcana "<task>"
 激活），由独立 acceptance 命令判定。完整装置与原始数据：
 [benchmark/](benchmark/README.md)、`benchmark/reports/`。
 
-| 任务 | n | treatment 相对 control |
+| 任务 | n | treatment 相对 control（tokens，treatment − control） |
 |---|---|---|
-| demo-format-money（合成 verification trap） | 2 | 两臂都成功；tokens **-871 / -2695** |
-| marked-blank-tab（真实 issue markedjs#4007） | 3 | tokens **-4079 / +4082 / -29107**（均值约 -9.7k）；wall 均值约 **-48 秒**；重复验证命令 **0 vs 1** |
+| demo-format-money（合成 verification trap） | 2 | **-871 / -2695**（均为负） |
+| marked-blank-tab（真实 issue markedjs#4007） | 6 | -4079 / +4082 / -29107 / -12181 / +48428 / -8850 —— 4/6 为负，均值约 -0.3k，中位数约 -6.5k |
 
-方向性结论：governor 不改变任务成功率，但在长会话中稳定减少 token
-消耗与重复验证工作。样本小（n=2–3），数字仅为方向性而非定论。marked
-两臂都顶满 24-call 预算（任务偏难），calls 维度被截断——tokens 节省是
-稳定信号。
+诚实解读：真实任务上 token 方向中位数偏负但方差大（含一个大正异常值），
+n=6 统计上不显著；合成任务 2/2 偏向 treatment。calls 维度被 24-call 预算
+截断（两臂都顶格）；重放纪律指标中 treatment 的重复验证命令更少
+（首轮快照 1 vs 0）。**可靠交付物是整套实验装置本身**——效果大小需要
+更多 reps 与任务才能下统计结论。
 
 ## 已知限制
 

@@ -54,22 +54,23 @@ outcomes never retry.
 ## Results (2026-08-16 snapshot)
 
 Paired A/B, deepseek-v4-flash, independent judge. Raw data: `reports/`
-(`run-*.json` per run, `paired-*.json` per plan, `analysis-v2.json` full
+(`run-*.json` per run, `paired-*.json` per plan, `analysis-v3.json` full
 fold); first runs archived in `reports-v1-archive/`.
 
-| Task | n | Outcome | Treatment − control |
+| Task | n | Outcome | Treatment − control (tokens) |
 |---|---|---|---|
-| demo-format-money | 2 | both arms success | tokens −871 / −2695 |
-| marked-blank-tab | 3 | both arms 24/24 calls (budget-capped) | tokens −4079 / +4082 / −29107 (mean ≈ −9.7k), wall mean ≈ −48 s, duplicate verification commands 0 vs 1 |
+| demo-format-money | 2 | both arms success | −871 / −2695 (both negative) |
+| marked-blank-tab | 6 | all arms 24/24 calls (budget-capped) | −4079 / +4082 / −29107 / −12181 / +48428 / −8850 — 4/6 negative, mean ≈ −0.3k, median ≈ −6.5k |
 
 Discipline metrics (replayed from session logs, `analyze.mjs --sessions`):
-marked control showed 1 repeated verification command, treatment 0. Both
-arms had zero zero-progress rounds on these runs (the model made progress on
-every step).
+the first snapshot showed 1 repeated verification command for control vs 0
+for treatment on marked; zero-progress rounds were 0 on both arms (the model
+made progress on every step in these runs).
 
-Direction: token savings and fewer repeated commands are consistent signals;
-call counts are censored by the budget on the hard task. Small samples —
-directional, not conclusive.
+Honest reading: median token direction favors treatment but variance is
+high (one large positive outlier) — not conclusive at n=6. The hard task
+censors call-count differences at the budget. The harness is the durable
+deliverable; effect size needs more reps and tasks.
 
 ## Hard invariants (frozen)
 
