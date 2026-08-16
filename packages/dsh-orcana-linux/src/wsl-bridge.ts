@@ -1,5 +1,4 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { buildWslSupervisedDshArgs } from './wsl-supervisor.js'
 
 export const DEFAULT_WSL_PROFILE = 'orcana'
 export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
@@ -208,8 +207,9 @@ export function windowsWorkspaceKind(cwd: string): WindowsWorkspaceKind {
 }
 
 /**
- * Build an unsupervised WSL argv. Kept as a public pure helper for embedders;
- * the Windows CLI path uses buildWslSupervisedDshArgs instead.
+ * Build WSL argv without task interpolation. A caller-supplied DSH command is
+ * executed directly. Otherwise a fixed resolver prefers installed `dsh` and
+ * falls back to the pinned compatible npm package; task values stay in `$@`.
  */
 export function buildWslDshArgs(
   linuxCwd: string,
@@ -281,10 +281,10 @@ function exitCodeFromSignal(signal: NodeJS.Signals | null): number {
 type SignalMode = 'none' | 'posix' | 'windows-wsl'
 
 /**
- * Launch the complete DSH process in one Linux execution world. On Windows,
- * Ctrl+C stays on WSL's native console-cancellation path. The host Node keeps
- * itself alive while the WSL-side supervisor relays the resulting Linux
- * signal to the detached DSH process group.
+ * Launch the complete DSH process in one Linux execution world. Windows keeps
+ * `wsl.exe` as the terminal/cancellation authority instead of introducing a
+ * second artificial Linux session. The host Node only prevents itself from
+ * exiting before the WSL child reports its real exit status.
  */
 export async function launchWslBridge(
   rawArgs: readonly string[],
@@ -295,8 +295,6 @@ export async function launchWslBridge(
   const dshCommand = env.ORCANA_WSL_DSH_COMMAND?.trim() || undefined
   const dshPackage = env.ORCANA_WSL_DSH_PACKAGE?.trim() || DEFAULT_WSL_DSH_PACKAGE
 
-  // The same entrypoint remains useful from inside WSL/native Linux: no nested
-  // WSL, just run DSH with the identical profile/install semantics.
   if (process.platform !== 'win32') {
     if (options.mode === 'doctor') {
       return await spawnAndWait('/bin/sh', ['-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT], {
@@ -336,13 +334,12 @@ export async function launchWslBridge(
     return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, signalMode: 'none' })
   }
 
-  const args = buildWslSupervisedDshArgs(
+  const args = buildWslDshArgs(
     mapped.linuxPath,
     dshArgsForBridge(options),
-    dshPackage,
-    DSH_RESOLVER_SCRIPT,
     distro,
     dshCommand,
+    dshPackage,
   )
   return await spawnAndWait('wsl.exe', args, {
     env: childEnv,
@@ -386,9 +383,9 @@ async function spawnAndWait(
         try { child.kill('SIGINT') } catch { /* process already gone */ }
         return
       }
-      // On Windows the console event is broadcast to both this launcher and
-      // wsl.exe. Keeping a listener prevents this Node parent from exiting;
-      // wsl.exe's own Ctrl+C handler remains the single cancellation authority.
+      // Windows broadcasts Ctrl+C to both this launcher and wsl.exe. This
+      // listener only removes Node's default exit; wsl.exe's native handler
+      // stays the single authority for translating cancellation into WSL.
     }
 
     const onSigterm = () => {
