@@ -601,13 +601,13 @@ gates:
 5. **registry 安装语义差异**:plugin add 自动激活 bundle(profile bundles 列表),treatment.patch.yml 的 orcana insert 行此时会 duplicate id 冲突——benchmark 的 file: override 独立安装场景不受影响;registry 场景的 config 覆盖用纯 config patch
 6. 发布命令(正式):`pnpm publish --registry https://registry.npmjs.org --no-git-checks`(core → dsh-governor → dsh-bundle 顺序)
 
-### R1-R4 结论(2026-08-16,全部完成)
-
-1. **R1**:dayjs-updatelocale 任务(#1118,verification-trap,产物依赖→acceptance 含 build + --openssl-legacy-provider);verify-task-gates.sh 顺序修正(acceptance 先于 reproducer,支持需重建产物的任务);数据 n=11(3 任务合计 8/11 配对 treatment tokens 更少,中位数各任务均为负;marked 方差大含 +48k 异常);README 双语 + benchmark README 更新为诚实口径
+### R1-R4 结论(2026-08-16,全部完成)1. **R1**:dayjs-updatelocale 任务(#1118,verification-trap,产物依赖→acceptance 含 build + --openssl-legacy-provider);verify-task-gates.sh 顺序修正(acceptance 先于 reproducer,支持需重建产物的任务);数据 n=11(3 任务合计 8/11 配对 treatment tokens 更少,中位数各任务均为负;marked 方差大含 +48k 异常);README 双语 + benchmark README 更新为诚实口径
 2. **R2**:apply() 行为级测试 6 例(cordis ctx + mock services)——post-execute 折叠、阶梯 steer(链 2 触发 GENTLE)、pre-step 用户消息重置预算 vs 插件消息不重置、completion guard 在完成声明无证据时 steer、P5 restrict 接线与 off 惰性;踩坑:cordis waterfall 最后一参是 next(测试需显式传)、agent mock 需 steer/ctx.tools
 3. **R3**:三包版本 0.1.0;CHANGELOG.md(rc.1→0.1.0 全量变化);workspace:^ 重写 ^0.1.0 验证;三包 publish dry-run 自检
 4. **R4**:`pnpm publish --registry https://registry.npmjs.org` 三包成功(官方 registry dist-tags latest=0.1.0);干净 DSH_HOME 验证——注意 **pnpm store 缓存会命中旧 rc.1**(首次安装 reused 缓存),显式 `@0.1.0` 重装确认依赖链 `^0.1.0` 全部解析 + boot 达 MISSING_CREDENTIAL;git tag v0.1.0
 5. **R5 待办**:Linux 分支(codex/v4f-dynamic-runtime)合入后发布 `dsh-orcana-linux*` 并更新 README 安装命令;主分支 19 个未推送 commit 待 push
+6. **候选弃用记录(marked-fence-eof,#4039)**:EOF backtick/tilde fence 任务候选在本地环境 Gate C 失败——81bd7505 的 tilde 分支正则触发 `quadratic_tilde_paragraph_interrupt` redos spec 超时(7.7s vs 正常 <100ms);官方 main 已合入该 commit(其 CI 环境可能更快),但**性能敏感 fix 依赖机器**,基准任务不稳定 → 弃用;教训:新任务三 Gate 验证必须全绿才冻结,redos/性能类 spec 需先验证本机通过
+7. **纪律指标现状(step 边界重放)**:3 任务各臂 zero-progress rounds 均 0(模型每步有进展,数据为真);dayjs treatment 1 次重复读(唯一非零);区分度有限——纪律差异在现任务/模型组合上不显著,需更易重复行为(如更长会话或更难的验证路径)的任务才能体现
 
 | 步骤 | 内容 | 验收标准 | 预估 |
 |---|---|---|---|
