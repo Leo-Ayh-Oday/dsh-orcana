@@ -52,8 +52,11 @@ export function dshWebAppPackage(dshPackage: string): string {
 
 /**
  * Exact profile-install resolver shared by headless and Web Orcana profiles.
- * The selected DSH companion bundle is an exact package spec supplied by the
- * caller; everything else in the release closure remains identical.
+ *
+ * Bundle-bearing packages are intentionally installed in separate DSH plugin
+ * transactions. DSH appends newly discovered bundle layers when it reconciles
+ * each transaction, so the final layer order does not depend on how pnpm
+ * chooses to order package.json dependency keys.
  */
 export const INSTALL_RESOLVER_SCRIPT = [
   'dsh_package=$1',
@@ -71,24 +74,35 @@ export const INSTALL_RESOLVER_SCRIPT = [
   'fi',
   'profile=$3',
   'shift 4',
-  '# The Orcana release package list is compile-time controlled and contains no spaces/globs.',
-  'set -f',
-  'set -- plugin --profile "$profile" add --save-exact "$companion_package" $orcana_packages "$@"',
+  '# Remaining positional parameters are the exact Orcana bundle specs, in required layer order.',
   'runner=npx',
   'if command -v dsh >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then',
   '  dsh_version=$(dsh --version 2>/dev/null || true)',
   '  pnpm_version=$(pnpm --version 2>/dev/null || true)',
   '  if node -e "$version_contract" "$dsh_package" "$dsh_version" >/dev/null 2>&1 && node -e "$version_contract" "$pnpm_package" "$pnpm_version" >/dev/null 2>&1; then runner=local; fi',
   'fi',
-  'if [ "$runner" = local ]; then',
-  '  dsh "$@"',
-  '  install_status=$?',
-  'else',
-  '  if ! command -v npx >/dev/null 2>&1; then printf "%s\\n" "dsh-orcana: plugin installation needs either the pinned dsh+pnpm toolchain or npx" >&2; exit 127; fi',
+  'if [ "$runner" != local ] && ! command -v npx >/dev/null 2>&1; then printf "%s\\n" "dsh-orcana: plugin installation needs either the pinned dsh+pnpm toolchain or npx" >&2; exit 127; fi',
+  'run_plugin() {',
+  '  if [ "$runner" = local ]; then dsh "$@"; return $?; fi',
   '  npx --yes --package="$pnpm_package" --package="$dsh_package" -- dsh "$@"',
-  '  install_status=$?',
-  'fi',
+  '}',
+  '# Phase 1: install the DSH companion alone so it is the first dependency-managed bundle layer.',
+  'run_plugin plugin --profile "$profile" add --save-exact "$companion_package"',
+  'install_status=$?',
   'if [ "$install_status" -ne 0 ]; then exit "$install_status"; fi',
+  '# Phase 2: pin Orcana implementation packages. They are plain dependencies, not dsh.bundle layers.',
+  'set -f',
+  'if [ -n "$orcana_packages" ]; then',
+  '  run_plugin plugin --profile "$profile" add --save-exact $orcana_packages',
+  '  install_status=$?',
+  '  if [ "$install_status" -ne 0 ]; then exit "$install_status"; fi',
+  'fi',
+  '# Phase 3+: install each Orcana bundle separately, preserving the declared layer order independent of pnpm key sorting.',
+  'for bundle_spec in "$@"; do',
+  '  run_plugin plugin --profile "$profile" add --save-exact "$bundle_spec"',
+  '  install_status=$?',
+  '  if [ "$install_status" -ne 0 ]; then exit "$install_status"; fi',
+  'done',
   '# rc.5 --dump-config composes bundle/profile/overlay patches without booting the runtime or evaluating !!js.',
   'if [ "$runner" = local ]; then',
   '  dsh --profile "$profile" --dump-config >/dev/null',
