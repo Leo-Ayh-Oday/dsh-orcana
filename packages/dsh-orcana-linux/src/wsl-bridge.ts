@@ -24,6 +24,8 @@ const DEFAULT_FORWARD_ENV = Object.freeze([
 
 const NEVER_IMPLICITLY_FORWARD = new Set(['DSH_HOME', 'HOME', 'PATH', 'Path'])
 
+const NODE_CONTRACT_SCRIPT = 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 19) || major >= 24 ? 0 : 1)'
+
 const DSH_RESOLVER_SCRIPT = [
   'package_spec=$1',
   'shift',
@@ -35,9 +37,10 @@ const DSH_RESOLVER_SCRIPT = [
 
 const DOCTOR_SCRIPT = [
   'package_spec=$1',
+  'node_contract=$2',
   'fail=0',
   'printf "kernel: "; uname -sr || fail=1',
-  'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; if ! node -e '\''const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 19) || major >= 24 ? 0 : 1)'\''; then printf "node-contract: UNSUPPORTED (need ^22.19.0 || >=24.0.0)\\n"; fail=1; else printf "node-contract: OK\\n"; fi; else printf "node: MISSING\\n"; fail=1; fi',
+  'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; if ! node -e "$node_contract"; then printf "node-contract: UNSUPPORTED (need ^22.19.0 || >=24.0.0)\\n"; fail=1; else printf "node-contract: OK\\n"; fi; else printf "node: MISSING\\n"; fail=1; fi',
   'if command -v dsh >/dev/null 2>&1; then printf "dsh: "; command -v dsh; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx %s\\n" "$package_spec"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
   'for x in bwrap prlimit setsid; do if command -v "$x" >/dev/null 2>&1; then printf "%s: " "$x"; command -v "$x"; else printf "%s: MISSING\\n" "$x"; fi; done',
   'exit "$fail"',
@@ -294,7 +297,7 @@ export async function launchWslBridge(
   // WSL, just run DSH with the identical profile/install semantics.
   if (process.platform !== 'win32') {
     if (options.mode === 'doctor') {
-      return await spawnAndWait('/bin/sh', ['-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage], {
+      return await spawnAndWait('/bin/sh', ['-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT], {
         env,
         cwd,
         relaySignals: true,
@@ -326,7 +329,7 @@ export async function launchWslBridge(
     const args = [
       ...distroPrefix(distro),
       '--cd', mapped.linuxPath,
-      '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage,
+      '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT,
     ]
     return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, relaySignals: false })
   }
