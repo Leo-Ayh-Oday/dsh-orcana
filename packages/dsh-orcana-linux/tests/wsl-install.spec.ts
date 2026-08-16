@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_WSL_PNPM_PACKAGE,
@@ -22,6 +23,10 @@ describe('WSL plugin-install toolchain', () => {
     expect(INSTALL_RESOLVER_SCRIPT).toContain('exec npx --yes --package="$pnpm_package" --package="$dsh_package" -- dsh "$@"')
   })
 
+  it('persists the release bundle set as exact profile dependencies', () => {
+    expect(INSTALL_RESOLVER_SCRIPT).toContain('set -- plugin --profile "$profile" add --save-exact "$@"')
+  })
+
   it('keeps plugin arguments positional and out of the fixed resolver script', () => {
     const packageName = '@leooday/dsh-orcana-linux-bundle; echo should-not-run'
     const args = nativeInstallShellArgs(
@@ -37,6 +42,17 @@ describe('WSL plugin-install toolchain', () => {
     ])
     expect(INSTALL_RESOLVER_SCRIPT).not.toContain(packageName)
     expect(args.at(-1)).toBe(packageName)
+  })
+
+  it('rejects accidental use with a non-plugin-add internal argv shape', () => {
+    const result = spawnSync('/bin/sh', [
+      '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
+      DSH_PACKAGE, DEFAULT_WSL_PNPM_PACKAGE, VERSION_CONTRACT,
+      'web',
+    ], { encoding: 'utf8' })
+
+    expect(result.status).toBe(64)
+    expect(result.stderr).toContain('internal install argv does not match')
   })
 
   it('builds one WSL execution with mapped cwd and the same pinned toolchain', () => {
