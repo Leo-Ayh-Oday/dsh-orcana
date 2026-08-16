@@ -98,10 +98,18 @@ function companionExpectation(dshPackage: string, companionName: string): WslPro
   )
 }
 
+function expectationForVerification(
+  expectation: WslProfileExpectation,
+  importPeers: boolean,
+): WslProfileExpectation {
+  return importPeers ? expectation : { ...expectation, importPackages: [] }
+}
+
 async function verifyCompanionProfile(
   profile: string,
   companionName: string,
   missingOk: boolean,
+  importPeers: boolean,
   env: NodeJS.ProcessEnv,
   cwd: string,
   distro?: string,
@@ -109,7 +117,7 @@ async function verifyCompanionProfile(
   const dshPackage = env.ORCANA_WSL_DSH_PACKAGE?.trim() || DEFAULT_WSL_DSH_PACKAGE
   let expectation: WslProfileExpectation
   try {
-    expectation = companionExpectation(dshPackage, companionName)
+    expectation = expectationForVerification(companionExpectation(dshPackage, companionName), importPeers)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error(`[orcana-wsl] exact profile check unavailable for ${profile}: ${message}`)
@@ -140,27 +148,44 @@ async function verifyCompanionProfile(
   return code
 }
 
+/**
+ * Verify the owned headless profile. Set importPeers=false immediately before
+ * a real DSH boot: DSH's prepareProfile() is then free to heal its fallback
+ * peer links before loading plugins. Install/doctor keep the stronger default.
+ */
 export async function verifyOrcanaHeadlessProfile(
   baseProfile: string,
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
   distro?: string,
   missingOk = false,
+  importPeers = true,
 ): Promise<number> {
-  return await verifyCompanionProfile(baseProfile, DSH_HEADLESS_PACKAGE, missingOk, env, cwd, distro)
+  return await verifyCompanionProfile(
+    baseProfile,
+    DSH_HEADLESS_PACKAGE,
+    missingOk,
+    importPeers,
+    env,
+    cwd,
+    distro,
+  )
 }
 
+/** Same policy as headless, for the product-owned `<profile>-web` companion. */
 export async function verifyOrcanaWebProfile(
   baseProfile: string,
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
   distro?: string,
   missingOk = true,
+  importPeers = true,
 ): Promise<number> {
   return await verifyCompanionProfile(
     orcanaWebProfileName(baseProfile),
     DSH_WEB_APP_PACKAGE,
     missingOk,
+    importPeers,
     env,
     cwd,
     distro,
