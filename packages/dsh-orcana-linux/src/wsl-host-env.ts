@@ -17,22 +17,18 @@ function wslenvName(entry: string): string {
   return slash === -1 ? entry : entry.slice(0, slash)
 }
 
-function flagsForOwnedEntry(entry: string, pathValue: boolean): string {
-  const slash = entry.indexOf('/')
-  const flags = slash === -1 ? '' : entry.slice(slash + 1)
-  const listMode = flags.includes('l') ? 'l' : ''
-  const pathMode = pathValue ? 'p' : (flags.includes('p') ? 'p' : listMode)
-  return `${pathMode}u`
+function ownedEntry(name: string, pathValue: boolean): string {
+  return `${name}/${pathValue ? 'p' : ''}u`
 }
 
 function upsertOneWayEntry(entries: string[], name: string, pathValue: boolean): void {
   const first = entries.findIndex(entry => wslenvName(entry) === name)
+  const normalized = ownedEntry(name, pathValue)
   if (first === -1) {
-    entries.push(`${name}/${pathValue ? 'p' : ''}u`)
+    entries.push(normalized)
     return
   }
 
-  const normalized = `${name}/${flagsForOwnedEntry(entries[first]!, pathValue)}`
   entries[first] = normalized
   for (let i = entries.length - 1; i > first; i -= 1) {
     if (wslenvName(entries[i]!) === name) entries.splice(i, 1)
@@ -45,6 +41,8 @@ function upsertOneWayEntry(entries: string[], name: string, pathValue: boolean):
  * Scalar network settings cross one-way (`/u`). Certificate/trust settings
  * are Windows paths, so they cross one-way with WSL path translation (`/pu`).
  * Values never enter argv. Existing unrelated WSLENV rows are preserved.
+ * Rows owned by this launcher are normalized to deterministic flags even when
+ * the inherited WSLENV contained reverse-only or list/path modifiers.
  */
 export function augmentWslHostEnvironment(
   env: NodeJS.ProcessEnv = process.env,
