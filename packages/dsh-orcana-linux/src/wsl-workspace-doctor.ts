@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 export const WSL_WORKSPACE_DOCTOR_SCRIPT = [
   'fail=0',
   'printf "workspace-fs: "; if command -v stat >/dev/null 2>&1; then stat -f -c %T . 2>/dev/null || printf "UNKNOWN\\n"; else printf "UNKNOWN (stat missing)\\n"; fi',
+  'printf "wsl-networking: "; if command -v wslinfo >/dev/null 2>&1; then wslinfo --networking-mode 2>/dev/null || printf "UNKNOWN\\n"; else printf "UNKNOWN (wslinfo missing)\\n"; fi',
   'repo_hint=0',
   'probe=$PWD',
   'while [ -n "$probe" ] && [ "$probe" != "/" ]; do if [ -e "$probe/.git" ]; then repo_hint=1; break; fi; probe=${probe%/*}; [ -n "$probe" ] || probe=/; done',
