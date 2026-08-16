@@ -1,9 +1,15 @@
 import { spawn, spawnSync } from 'node:child_process'
 import {
+  DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
   DEFAULT_WSL_PNPM_PACKAGE,
   buildWslInstallArgs,
   nativeInstallShellArgs,
 } from './wsl-install.js'
+import {
+  buildWslProfileExpectation,
+  buildWslProfileVerifyArgs,
+  profileVerifyNodeArgs,
+} from './wsl-profile.js'
 
 export const DEFAULT_WSL_PROFILE = 'orcana'
 export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
@@ -451,6 +457,19 @@ function nativeSignalMode(): SignalMode {
   return process.stdin.isTTY === true ? 'posix-terminal' : 'posix-relay'
 }
 
+function tryBuildProfileExpectation(dshPackage: string) {
+  try {
+    return buildWslProfileExpectation(
+      dshPackage,
+      DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
+      DEFAULT_WSL_BUNDLES,
+    )
+  } catch (error) {
+    console.error(`[orcana-wsl] exact profile manifest check unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    return undefined
+  }
+}
+
 /**
  * Launch the complete DSH process in one Linux execution world. Windows keeps
  * `wsl.exe` as the terminal/cancellation authority. Native POSIX TTY runs also
@@ -469,20 +488,42 @@ export async function launchWslBridge(
   if (process.platform !== 'win32') {
     const signalMode = nativeSignalMode()
     if (options.mode === 'doctor') {
-      return await spawnAndWait('/bin/sh', [
+      const environmentCode = await spawnAndWait('/bin/sh', [
         '-c', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT,
         DSH_VERSION_CONTRACT_SCRIPT, pnpmPackage,
       ], { env, cwd, signalMode })
+      if (environmentCode !== 0) return environmentCode
+      const expectation = tryBuildProfileExpectation(dshPackage)
+      if (expectation === undefined) return 0
+      const profileCode = await spawnAndWait(process.execPath, profileVerifyNodeArgs(options.profile, expectation), {
+        env,
+        cwd,
+        signalMode,
+      })
+      return profileCode === 2 ? 0 : profileCode
     }
+
     const dshArgs = dshArgsForBridge(options)
     if (options.mode === 'install') {
-      return await spawnAndWait('/bin/sh', nativeInstallShellArgs(
+      const expectation = buildWslProfileExpectation(
+        dshPackage,
+        DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
+        DEFAULT_WSL_BUNDLES,
+      )
+      const installCode = await spawnAndWait('/bin/sh', nativeInstallShellArgs(
         dshArgs,
         dshPackage,
         DSH_VERSION_CONTRACT_SCRIPT,
         pnpmPackage,
       ), { env, cwd, signalMode })
+      if (installCode !== 0) return installCode
+      return await spawnAndWait(process.execPath, profileVerifyNodeArgs(options.profile, expectation), {
+        env,
+        cwd,
+        signalMode,
+      })
     }
+
     if (dshCommand !== undefined) {
       return await spawnAndWait(dshCommand, dshArgs, { env, cwd, signalMode })
     }
@@ -516,10 +557,28 @@ export async function launchWslBridge(
       '--exec', '/bin/sh', '-c', DOCTOR_SCRIPT, 'dsh-orcana-doctor',
       dshPackage, NODE_CONTRACT_SCRIPT, DSH_VERSION_CONTRACT_SCRIPT, pnpmPackage,
     ]
-    return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, signalMode: 'none' })
+    const environmentCode = await spawnAndWait('wsl.exe', args, {
+      env: childEnv,
+      cwd: hostCwd,
+      signalMode: 'none',
+    })
+    if (environmentCode !== 0) return environmentCode
+    const expectation = tryBuildProfileExpectation(dshPackage)
+    if (expectation === undefined) return 0
+    const profileCode = await spawnAndWait('wsl.exe', buildWslProfileVerifyArgs(options.profile, expectation, distro), {
+      env: childEnv,
+      cwd: hostCwd,
+      signalMode: 'none',
+    })
+    return profileCode === 2 ? 0 : profileCode
   }
 
   if (options.mode === 'install') {
+    const expectation = buildWslProfileExpectation(
+      dshPackage,
+      DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
+      DEFAULT_WSL_BUNDLES,
+    )
     const args = buildWslInstallArgs(
       mapped.linuxPath,
       baseDshArgs,
@@ -528,7 +587,17 @@ export async function launchWslBridge(
       distro,
       pnpmPackage,
     )
-    return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, signalMode: 'windows-wsl' })
+    const installCode = await spawnAndWait('wsl.exe', args, {
+      env: childEnv,
+      cwd: hostCwd,
+      signalMode: 'windows-wsl',
+    })
+    if (installCode !== 0) return installCode
+    return await spawnAndWait('wsl.exe', buildWslProfileVerifyArgs(options.profile, expectation, distro), {
+      env: childEnv,
+      cwd: hostCwd,
+      signalMode: 'windows-wsl',
+    })
   }
 
   const dshArgs = translateDshPathArgsForWsl(baseDshArgs, distro)
