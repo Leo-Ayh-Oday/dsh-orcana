@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
   DEFAULT_WSL_PNPM_PACKAGE,
   INSTALL_RESOLVER_SCRIPT,
   buildWslInstallArgs,
@@ -12,10 +13,16 @@ import {
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
 const HEADLESS_PACKAGE = '@deepseek-ai/dsh-headless@0.1.0-rc.5'
 const VERSION_CONTRACT = 'fixed version contract'
+const ORCANA_RUNTIME_PACKAGES = [
+  '@leooday/governor-core@0.1.0-rc.1',
+  '@leooday/dsh-governor@0.1.0-rc.1',
+  '@leooday/dsh-orcana-linux@0.4.0',
+] as const
 
 describe('WSL plugin-install toolchain', () => {
-  it('pins the pnpm version declared by the current DSH release family', () => {
+  it('pins the pnpm version and Orcana implementation closure', () => {
     expect(DEFAULT_WSL_PNPM_PACKAGE).toBe('pnpm@11.7.0')
+    expect(DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES).toEqual(ORCANA_RUNTIME_PACKAGES)
   })
 
   it('derives official DSH companion bundles from the selected CLI package', () => {
@@ -33,9 +40,9 @@ describe('WSL plugin-install toolchain', () => {
     expect(INSTALL_RESOLVER_SCRIPT).toContain('exec npx --yes --package="$pnpm_package" --package="$dsh_package" -- dsh "$@"')
   })
 
-  it('adds the matching headless task surface and persists every release bundle exactly', () => {
+  it('adds headless plus exact Orcana runtime packages before exact bundle specs', () => {
     expect(INSTALL_RESOLVER_SCRIPT).toContain(
-      'set -- plugin --profile "$profile" add --save-exact "$headless_package" "$@"',
+      'set -- plugin --profile "$profile" add --save-exact "$headless_package" $orcana_packages "$@"',
     )
   })
 
@@ -47,10 +54,10 @@ describe('WSL plugin-install toolchain', () => {
       VERSION_CONTRACT,
     )
 
-    expect(args.slice(0, 8)).toEqual([
+    expect(args.slice(0, 9)).toEqual([
       '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
       DSH_PACKAGE, DEFAULT_WSL_PNPM_PACKAGE, VERSION_CONTRACT,
-      HEADLESS_PACKAGE, 'plugin',
+      HEADLESS_PACKAGE, ORCANA_RUNTIME_PACKAGES.join(' '), 'plugin',
     ])
     expect(INSTALL_RESOLVER_SCRIPT).not.toContain(packageName)
     expect(args.at(-1)).toBe(packageName)
@@ -60,6 +67,7 @@ describe('WSL plugin-install toolchain', () => {
     const result = spawnSync('/bin/sh', [
       '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
       DSH_PACKAGE, DEFAULT_WSL_PNPM_PACKAGE, VERSION_CONTRACT, HEADLESS_PACKAGE,
+      ORCANA_RUNTIME_PACKAGES.join(' '),
       'web',
     ], { encoding: 'utf8' })
 
@@ -70,7 +78,7 @@ describe('WSL plugin-install toolchain', () => {
   it('builds one WSL execution with mapped cwd and the same pinned toolchain', () => {
     const args = buildWslInstallArgs(
       '/mnt/c/work tree',
-      ['plugin', '--profile', 'orcana', 'add', '@leooday/dsh-bundle'],
+      ['plugin', '--profile', 'orcana', 'add', '@leooday/dsh-bundle@0.1.0-rc.1'],
       DSH_PACKAGE,
       VERSION_CONTRACT,
       'Ubuntu-24.04',
@@ -85,6 +93,7 @@ describe('WSL plugin-install toolchain', () => {
     expect(args[9]).toBe(DSH_PACKAGE)
     expect(args[10]).toBe(DEFAULT_WSL_PNPM_PACKAGE)
     expect(args[12]).toBe(HEADLESS_PACKAGE)
-    expect(args.at(-1)).toBe('@leooday/dsh-bundle')
+    expect(args[13]).toBe(ORCANA_RUNTIME_PACKAGES.join(' '))
+    expect(args.at(-1)).toBe('@leooday/dsh-bundle@0.1.0-rc.1')
   })
 })
