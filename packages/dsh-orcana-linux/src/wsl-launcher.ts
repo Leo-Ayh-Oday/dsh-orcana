@@ -149,11 +149,12 @@ function canonicalBridgeArgs(options: WslBridgeOptions, dshArgs: readonly string
  * - `web ...` uses `<profile>-web` and therefore never silently falls back to
  *   the upstream plain-Web profile
  * - `--wsl-install` prepares and verifies both companion profiles
- * - a real run is refused when the Orcana-owned target profile is absent,
- *   version-drifted, or unable to resolve/import its implementation peers
+ * - a real run fails closed on missing/version-drifted Orcana-owned profile
+ *   manifests, then lets DSH prepareProfile() heal peer fallback links before
+ *   runtime imports
  *
- * Explicit selection of some other DSH profile is a deliberate escape hatch
- * and remains transparent.
+ * Install/doctor retain the stronger resolve/import peer verification. Explicit
+ * selection of some other DSH profile is a deliberate escape hatch.
  */
 export async function launchDshOrcana(
   rawArgs: readonly string[],
@@ -173,7 +174,7 @@ export async function launchDshOrcana(
     const bridgeStatus = await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
     if (bridgeStatus !== 0) return bridgeStatus
 
-    const webStatus = await verifyOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, true)
+    const webStatus = await verifyOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, true, true)
     if (webStatus !== 0) return webStatus
 
     if (!isWindows) return 0
@@ -193,10 +194,10 @@ export async function launchDshOrcana(
 
   const required = requiredOrcanaProfileForRun(parsed.dshArgs, parsed.profile)
   if (required === 'headless') {
-    const status = await verifyOrcanaHeadlessProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, false)
+    const status = await verifyOrcanaHeadlessProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, false, false)
     if (status !== 0) return status
   } else if (required === 'web') {
-    const status = await verifyOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, false)
+    const status = await verifyOrcanaWebProfile(parsed.profile, effectiveEnv, cwd, selectedDistro, false, false)
     if (status !== 0) return status
   }
 
