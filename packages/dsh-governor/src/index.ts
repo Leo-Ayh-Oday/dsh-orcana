@@ -39,6 +39,9 @@ import type { EngineEvent, TurnVerdict } from '@leooday/governor-core'
 
 export const name = 'orcana-governor'
 
+/** Required services (audit L-1: the capability router needs ctx.tools). */
+export const inject = ['tools']
+
 /** Governor steer decision: escalate the ladder or pass. */
 export interface SteerDecision {
   readonly action: 'steer' | 'pass'

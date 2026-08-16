@@ -268,6 +268,7 @@ export async function runOne({
   budgets = BUDGETS,
   env = {},
   dsh = 'dsh',
+  modelProxy,
 }) {
   const patch = join(import.meta.dirname, '..', 'patches', `${arm}.patch.yml`)
   const runHome = join(template, '..', `run-home-${arm}-${manifest.task_id}-${Date.now()}`)
@@ -276,6 +277,13 @@ export async function runOne({
   const wallDeadline = Date.now() + budgets.wallTimeoutMs
   const fullEnv = { ...process.env, ...ENV_PIN, ...env, DSH_HOME: runHome }
   for (const key of ENV_STRIP) delete fullEnv[key]
+  if (modelProxy !== undefined) {
+    // The allowlist model proxy is injected AFTER the strip, so the agent's
+    // bash inherits only the allowlisted proxy — everything else 403s.
+    fullEnv.NODE_USE_ENV_PROXY = '1'
+    fullEnv.HTTP_PROXY = modelProxy
+    fullEnv.HTTPS_PROXY = modelProxy
+  }
   const pins = collectPins({ dsh })
   pins.profile_config_digest = fileDigest(join(runHome, 'profiles', 'bench', 'cordis.patch.yml'))
 
@@ -384,7 +392,7 @@ function recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr,
  * @param options - { template, reportsDir, budgets, dsh }.
  * @returns the per-run result rows.
  */
-export async function runLive(plan, manifests, { template, reportsDir, budgets = BUDGETS, dsh = 'dsh', env = {} }) {
+export async function runLive(plan, manifests, { template, reportsDir, budgets = BUDGETS, dsh = 'dsh', env = {}, modelProxy }) {
   const rows = []
   for (const run of plan) {
     const manifest = manifests.find(item => item.task_id === run.task)
@@ -395,7 +403,7 @@ export async function runLive(plan, manifests, { template, reportsDir, budgets =
     const baseWorkspace = join(import.meta.dirname, '..', manifest.workspace ?? `tasks/${run.task}/repo`)
     const runWorkspace = join(template, '..', `ws-${run.arm}-${run.task}-${Date.now()}`)
     stageWorkspace(baseWorkspace, manifest.hidden !== undefined ? join(import.meta.dirname, '..', manifest.hidden) : undefined, runWorkspace)
-    const base = { manifest, arm: run.arm, workspace: runWorkspace, template, reportsDir, budgets, dsh, env }
+    const base = { manifest, arm: run.arm, workspace: runWorkspace, template, reportsDir, budgets, dsh, env, modelProxy }
     let record = await runOne(base)
     if (record.verdict.outcome === OUTCOMES.INFRA_FAILURE) {
       console.log(`  infra failure, retrying once: ${run.task} [${run.arm}]`)
@@ -489,6 +497,7 @@ export function main(argv, env = process.env) {
   const taskFilter = value('--task')
   const armFilter = value('--arm')
   const live = args.includes('--live')
+  const modelProxy = value('--model-proxy')
   const budgets = {
     ...BUDGETS,
     maxLLMCalls: Number(value('--max-calls') ?? BUDGETS.maxLLMCalls),
@@ -517,7 +526,7 @@ export function main(argv, env = process.env) {
     console.log('dry-run: nothing was executed')
     return 0
   }
-  return runLive(plan, manifests, { template, reportsDir, budgets, dsh: env.DSH_BIN ?? 'dsh' }).then(() => 0)
+  return runLive(plan, manifests, { template, reportsDir, budgets, dsh: env.DSH_BIN ?? 'dsh', modelProxy }).then(() => 0)
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

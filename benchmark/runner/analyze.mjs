@@ -29,6 +29,27 @@ export function loadRunRecords(reportsDir) {
   return records
 }
 
+/**
+ * Load the paired rows (metrics + judgment live in the paired files, not in
+ * the per-run records). Every paired-*.json under the reports directory is
+ * folded in.
+ */
+export function loadPairedRecords(reportsDir) {
+  if (!existsSync(reportsDir)) return []
+  const rows = []
+  for (const name of readdirSync(reportsDir).sort()) {
+    if (!name.startsWith('paired-') || !name.endsWith('.json')) continue
+    try {
+      const data = JSON.parse(readFileSync(join(reportsDir, name), 'utf8'))
+      const sourceRows = Array.isArray(data) ? data : (data.rows ?? [])
+      for (const row of sourceRows) rows.push({ ...row, source: name })
+    } catch (error) {
+      console.error(`  skipping unreadable ${name}: ${error.message}`)
+    }
+  }
+  return rows
+}
+
 /** Token sum of a run record (input+output+cacheRead, from the session metrics). */
 export function tokenSum(record) {
   const m = record.metrics ?? {}
@@ -41,16 +62,18 @@ export function wallMs(record) {
 }
 
 /**
- * Fold records into per-task paired rows: { task, reps: [{ control,
- * treatment, deltas }] }. Deterministic, tested.
+ * Fold paired rows into per-task paired rows: { task, reps: [{ control,
+ * treatment, deltas }] }. Deterministic, tested. Rows may come from the
+ * paired files (metrics/judgment) or run records (verdict only).
  */
-export function foldPairs(records) {
+export function foldPairs(rows) {
   const byTask = new Map()
-  for (const record of records) {
-    if (!byTask.has(record.task_id)) byTask.set(record.task_id, [])
-    byTask.get(record.task_id).push(record)
+  for (const row of rows) {
+    const task = row.task ?? row.task_id
+    if (!byTask.has(task)) byTask.set(task, [])
+    byTask.get(task).push(row)
   }
-  const rows = []
+  const out = []
   for (const [task, runs] of [...byTask.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const controls = runs.filter(run => run.arm === 'control')
     const treatments = runs.filter(run => run.arm === 'treatment')
@@ -60,24 +83,31 @@ export function foldPairs(records) {
       const control = controls[rep]
       const treatment = treatments[rep]
       repRows.push({
-        control: control ? { verdict: control.verdict, metrics: control.metrics ?? {}, wall: wallMs(control) } : undefined,
-        treatment: treatment ? { verdict: treatment.verdict, metrics: treatment.metrics ?? {}, wall: wallMs(treatment) } : undefined,
+        control: control ? { verdict: control.verdict, judgment: control.judgment, metrics: control.metrics ?? {}, wall: wallOf(control) } : undefined,
+        treatment: treatment ? { verdict: treatment.verdict, judgment: treatment.judgment, metrics: treatment.metrics ?? {}, wall: wallOf(treatment) } : undefined,
         deltas: control !== undefined && treatment !== undefined ? {
           calls: (treatment.metrics?.llm_calls ?? 0) - (control.metrics?.llm_calls ?? 0),
           tokens: tokenSum(treatment) - tokenSum(control),
-          wall_ms: wallMs(treatment) - wallMs(control),
+          wall_ms: wallOf(treatment) - wallOf(control),
         } : undefined,
       })
     }
-    rows.push({ task, reps: repRows })
+    out.push({ task, reps: repRows })
   }
-  return rows
+  return out
+}
+
+/** Wall ms of a row: recorded wall_ms (paired files) or timestamps (run records). */
+function wallOf(row) {
+  if (row.wall_ms !== undefined && row.wall_ms !== null) return row.wall_ms
+  if (row.wallMs !== undefined && row.wallMs !== null) return row.wallMs
+  return wallMs(row)
 }
 
 /** One-line run summary for the report. */
 export function describeRun(run) {
   if (run === undefined) return '(missing)'
-  const verdict = `${run.verdict?.outcome ?? '?'}:${run.verdict?.reason ?? ''}`
+  const verdict = `${run.verdict?.outcome ?? '?'}:${run.judgment?.verdict ?? run.verdict?.reason ?? ''}`
   const calls = run.metrics?.llm_calls ?? 0
   return `${verdict} calls=${calls} wall=${Math.round(run.wall / 1000)}s`
 }
@@ -102,6 +132,33 @@ export function renderAnalysis(rows) {
 }
 
 /**
+ * Resolve the governor packages for discipline replay. Workspace links live
+ * on the dependency side (pnpm), so try the package name first, then the
+ * compiled libs relative to this file.
+ */
+async function loadGovernor() {
+  const core = await tryLoad('core')
+  const adapter = await tryLoad('adapter')
+  return core !== undefined && adapter !== undefined ? { core, adapter } : undefined
+}
+
+async function tryLoad(kind) {
+  const isCore = kind === 'core'
+  const candidates = [
+    isCore ? '@leooday/governor-core' : '@leooday/dsh-governor',
+    isCore ? '../../packages/governor-core/lib/index.js' : '../../packages/dsh-governor/lib/index.js',
+  ]
+  for (const candidate of candidates) {
+    try {
+      return await import(candidate)
+    } catch {
+      // try the next candidate
+    }
+  }
+  return undefined
+}
+
+/**
  * Discipline metrics rebuilt from a run home's session logs: zero-progress
  * rounds, duplicate reads, and duplicate verification commands. Uses
  * @leooday/governor-core's ProgressFactEngine through the adapter's replay
@@ -110,15 +167,9 @@ export function renderAnalysis(rows) {
  * @returns { zeroProgressRounds, duplicateReads, duplicateCommands } or undefined.
  */
 export async function disciplineMetrics(home) {
-  let governor
-  let adapter
-  try {
-    governor = await import('@leooday/governor-core')
-    adapter = await import('@leooday/dsh-governor')
-  } catch {
-    return undefined
-  }
-  const { ProgressFactEngine } = governor
+  const { core, adapter } = await loadGovernor() ?? {}
+  if (core === undefined || adapter === undefined) return undefined
+  const { ProgressFactEngine } = core
   const sessions = join(home, 'sessions')
   if (!existsSync(sessions)) return undefined
   const events = []
@@ -132,12 +183,31 @@ export async function disciplineMetrics(home) {
       for (const line of text.split('\n')) {
         let event
         try { event = JSON.parse(line.trim()) } catch { continue }
-        if (event?.type === 'tool/call' || event?.type === 'tool/result') events.push({ type: event.type, data: event.data })
+        if (event?.type === 'tool/call' || event?.type === 'tool/result' || event?.type === 'turn/end') {
+          events.push({ type: event.type, data: event.data })
+        }
       }
     }
   }
   if (events.length === 0) return undefined
-  const engine = ProgressFactEngine.rebuild(adapter.translateSessionEvents(events))
+  const engine = new ProgressFactEngine()
+  const pending = new Map()
+  let zeroProgressRounds = 0
+  for (const event of events) {
+    if (event.type === 'tool/call') {
+      pending.set(event.data.callId, { callId: event.data.callId, name: event.data.name, arguments: event.data.arguments })
+    } else if (event.type === 'tool/result') {
+      const block = event.data.message.content[0]
+      const call = pending.get(block.callId)
+      if (call === undefined) continue
+      engine.applyEvent(adapter.toEngineEvent(
+        { callId: call.callId, name: call.name, arguments: parseArguments(call.arguments) },
+        { content: block.content, isError: block.isError },
+      ))
+    } else if (event.type === 'turn/end') {
+      if (engine.endTurn().zeroProgress) zeroProgressRounds += 1
+    }
+  }
   const duplicateReads = new Map()
   const duplicateCommands = new Map()
   for (const entry of engine.snapshot().ring) {
@@ -147,9 +217,18 @@ export async function disciplineMetrics(home) {
     }
   }
   return {
-    zeroProgressRounds: engine.zeroProgressChain(),
+    zeroProgressRounds,
     duplicateReads: [...duplicateReads.values()].filter(count => count > 1).length,
     duplicateCommands: [...duplicateCommands.values()].filter(count => count > 1).length,
+  }
+}
+
+/** Parse model tool arguments the way the agent loop does: JSON, else the raw string. */
+function parseArguments(raw) {
+  try {
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return raw
   }
 }
 
@@ -169,9 +248,10 @@ export async function main(argv) {
   const sessionsDir = value('--sessions')
   const out = value('--out')
 
+  const runRows = loadPairedRecords(reportsDir)
   const records = loadRunRecords(reportsDir)
-  const rows = foldPairs(records)
-  console.log(`orcana-dsh analysis: ${records.length} run records from ${reportsDir}`)
+  const rows = foldPairs(runRows.length > 0 ? runRows : records)
+  console.log(`orcana-dsh analysis: ${runRows.length} paired rows, ${records.length} run records from ${reportsDir}`)
   console.log(renderAnalysis(rows))
 
   const report = { generated_at: new Date().toISOString(), rows: [], pins: {} }

@@ -23,9 +23,19 @@ node benchmark/runner/supervisor.mjs --manifests benchmark/manifests
 # Live with OS-level network isolation (PLAN 5.6 layer 2): no default route
 # in the run's namespace; model endpoint must be reachable inside it.
 scripts/bench-run.sh --live --manifests benchmark/manifests
+
+# Live on hosts where the model provider is only reachable through a proxy:
+# the run gets an allowlist CONNECT proxy (opencode.ai & co. only; everything
+# else the agent tries is 403) chained to the host proxy. Host proxy vars
+# never reach the run environment.
+UPSTREAM_PROXY=http://127.0.0.1:7890 scripts/bench-run.sh --no-netns --model-proxy -- \
+  --live --manifests benchmark/manifests
+
 #   filters: --task <id> --arm <control|treatment> --seed <n> --reps <n>
 #   budget overrides: --max-calls <n> --wall-ms <n> --max-tokens <n>
-#   --no-netns: diagnostics only (no isolation)
+
+# Offline analysis of the reports (paired deltas + discipline metrics):
+node benchmark/runner/analyze.mjs --reports benchmark/reports --sessions benchmark --out benchmark/reports/analysis.json
 ```
 
 Each live run: isolated `DSH_HOME` (template copy) → agent under budgets →

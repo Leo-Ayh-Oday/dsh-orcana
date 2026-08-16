@@ -551,6 +551,20 @@ gates:
 3. **测试**:analyze.spec 覆盖配对折叠/缺失臂/delta 计算/报告格式(50/50)
 4. **P7 剩余 = 执行侧**:live 需模型凭证(OPENCODE_GO_API_KEY 当前环境未设)+ netns 内模型端点;凭证就绪后 `scripts/bench-run.sh --live` 跑数据 → `node benchmark/runner/analyze.mjs --reports benchmark/reports --sessions benchmark` 出报告
 
-## 下一步(P7)
+### 11.14 P7 首跑结论(live A/B,2026-08-16,已提交)
 
-A/B 实验执行 + 报告:配置模型凭证后运行 `scripts/bench-run.sh --live`(配对计划由 seed 决定),随后 `analyze.mjs` 离线出 paired deltas + 纪律指标 + pin 清单;按 §5.4 主效果相对差 <20% 加 reps;结论写入 benchmark/reports/。
+1. **模型接入**:run-home 需要 settings.yaml(模型配置,key 走 apiKeyEnv 环境变量,模板由 make-bench-home.sh 生成,不含密钥);key 从 opencode auth.json 注入 OPENCODE_GO_API_KEY
+2. **allowlist 模型代理(model-proxy.mjs)**:本环境(直连 opencode.ai 超时、须经 127.0.0.1:7890)模型可达的落地——allowlist CONNECT 代理(仅 opencode.ai 等模型域,其余 403),链到宿主代理;supervisor `--model-proxy` 在 ENV_STRIP 之后注入 NODE_USE_ENV_PROXY + HTTP(S)_PROXY(agent 的 bash 只继承 allowlist 代理,防抄答案不依赖自觉);修复了链式转发的双写 bug(pipe + data 监听双发 TLS 记录损坏)
+3. **实测修复**:插件缺 `inject: ['tools']`(审核 L-1 隐患兑现)——capability router 的 ctx.tools 在运行期报 "cannot get property tools without inject";补 inject 后 treatment 臂正常
+4. **首跑数据(demo-format-money,deepseek-v4-flash,seed=2,n=1)**:
+   - control: success, 8 calls, 10 tools, in 9348/out 2215
+   - treatment: success, 6 calls, 7 tools, in 6922/out 1618
+   - delta: calls -2, tokens -3023, wall -4011ms(方向符合 governor 减负预期;n=1 仅演示,不统计)
+   - 纪律指标(重放):两臂 zero-progress rounds 0 / duplicate reads 0 / duplicate commands 0(demo 单轮完成、模型直接修对,trap 未触发——demo 区分度不足,真实任务需覆盖)
+5. **analyze.mjs 修正**:paired 文件为主源(metrics/judgment 在 paired 不在 run 记录);包解析多路径回退(pnpm workspace 链接在依赖者侧,根 node_modules 无 @leooday);zero-progress rounds 改为按 turn/end 逐轮累计(非当前链长度)
+6. **实验流程**:make-bench-home.sh(模板+settings)→ bench-run.sh --live(配对,seed 决定臂序)→ analyze.mjs 出报告;reports/ 已含首跑数据(run-*/paired-*/analysis-full.json)
+7. **剩余**:真实任务池(三 Gate 通过的任务,区分度验证)、reps 提升(§5.4 主效果 <20% 时)、netns 模式的模型端点部署(正式隔离环境)
+
+## 下一步(P7 收尾 / P8)
+
+扩充任务池(JS 候选:marked/dayjs/zod 等真实 issue 任务,走 prep→三 Gate→冻结流程);按 §5.4 决定 reps;正式环境(直连或 netns+模型端点)复跑;P8 收口文档(发布物 README/插件文档)。

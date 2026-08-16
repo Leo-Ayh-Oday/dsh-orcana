@@ -49,6 +49,26 @@ cat > "$PROF/cordis.patch.yml" <<YAML
   disabled: true
 YAML
 
+# Model configuration for the bench runs: the key is NEVER embedded — DSH
+# reads it from the OPENCODE_GO_API_KEY environment variable (apiKeyEnv).
+# Swap this block to change the benchmark model/provider for both arms.
+cat > "$TEMPLATE/settings.yaml" <<'YAML'
+agent-default-model:
+  provider: opencode-go
+  model: deepseek-v4-flash
+  reasoningEffort: max
+llm-pi-ai:
+  providers:
+    opencode-go:
+      apiKeyEnv: OPENCODE_GO_API_KEY
+      baseURL: https://opencode.ai/zen/go/v1
+      models:
+        - id: deepseek-v4-flash
+          name: DeepSeek V4 Flash
+          contextWindow: 1000000
+          maxTokens: 384000
+YAML
+
 (cd "$REPO_ROOT" && pnpm -r build)
 (cd "$PROF" && pnpm install)
 
