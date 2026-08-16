@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 
 export const DEFAULT_WSL_PROFILE = 'orcana'
+export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
 export const DEFAULT_WSL_BUNDLES = Object.freeze([
   '@leooday/dsh-bundle',
   '@leooday/dsh-orcana-linux-bundle',
@@ -8,8 +9,11 @@ export const DEFAULT_WSL_BUNDLES = Object.freeze([
 
 const DEFAULT_FORWARD_ENV = Object.freeze([
   'DEEPSEEK_API_KEY',
+  'DEEPSEEK_BASE_URL',
   'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'NO_PROXY',
@@ -21,17 +25,20 @@ const DEFAULT_FORWARD_ENV = Object.freeze([
 const NEVER_IMPLICITLY_FORWARD = new Set(['DSH_HOME', 'HOME', 'PATH', 'Path'])
 
 const DSH_RESOLVER_SCRIPT = [
+  'package_spec=$1',
+  'shift',
   'if command -v dsh >/dev/null 2>&1; then exec dsh "$@"; fi',
-  'if command -v npx >/dev/null 2>&1; then exec npx --yes @deepseek-ai/dsh "$@"; fi',
+  'if command -v npx >/dev/null 2>&1; then exec npx --yes "$package_spec" "$@"; fi',
   'printf "%s\\n" "dsh-orcana: neither dsh nor npx is available in this Linux execution world" >&2',
   'exit 127',
 ].join('\n')
 
 const DOCTOR_SCRIPT = [
+  'package_spec=$1',
   'fail=0',
   'printf "kernel: "; uname -sr || fail=1',
-  'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; else printf "node: MISSING\\n"; fail=1; fi',
-  'if command -v dsh >/dev/null 2>&1; then printf "dsh: "; command -v dsh; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx @deepseek-ai/dsh\\n"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
+  'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; if ! node -e '\''const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 19) || major >= 24 ? 0 : 1)'\''; then printf "node-contract: UNSUPPORTED (need ^22.19.0 || >=24.0.0)\\n"; fail=1; else printf "node-contract: OK\\n"; fi; else printf "node: MISSING\\n"; fail=1; fi',
+  'if command -v dsh >/dev/null 2>&1; then printf "dsh: "; command -v dsh; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx %s\\n" "$package_spec"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
   'for x in bwrap prlimit setsid; do if command -v "$x" >/dev/null 2>&1; then printf "%s: " "$x"; command -v "$x"; else printf "%s: MISSING\\n" "$x"; fi; done',
   'exit "$fail"',
 ].join('; ')
@@ -199,14 +206,15 @@ export function windowsWorkspaceKind(cwd: string): WindowsWorkspaceKind {
 /**
  * Build the WSL argv. A caller-supplied DSH command is executed directly.
  * Otherwise a fixed shell resolver prefers `dsh` and safely falls back to the
- * official `npx --yes @deepseek-ai/dsh` form. User DSH/task arguments are
- * positional parameters (`$@`), never interpolated into the resolver script.
+ * pinned compatible DSH npm package. User DSH/task arguments are positional
+ * parameters (`$@`), never interpolated into the resolver script.
  */
 export function buildWslDshArgs(
   linuxCwd: string,
   dshArgs: readonly string[],
   distro?: string,
   dshCommand?: string,
+  dshPackage = DEFAULT_WSL_DSH_PACKAGE,
 ): string[] {
   if (dshCommand !== undefined && dshCommand.length > 0) {
     return [
@@ -219,7 +227,7 @@ export function buildWslDshArgs(
   return [
     ...distroPrefix(distro),
     '--cd', linuxCwd,
-    '--exec', '/bin/sh', '-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana',
+    '--exec', '/bin/sh', '-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage,
     ...dshArgs,
   ]
 }
@@ -280,18 +288,23 @@ export async function launchWslBridge(
 ): Promise<number> {
   const options = parseWslBridgeArgs(rawArgs, env)
   const dshCommand = env.ORCANA_WSL_DSH_COMMAND?.trim() || undefined
+  const dshPackage = env.ORCANA_WSL_DSH_PACKAGE?.trim() || DEFAULT_WSL_DSH_PACKAGE
 
   // The same entrypoint remains useful from inside WSL/native Linux: no nested
   // WSL, just run DSH with the identical profile/install semantics.
   if (process.platform !== 'win32') {
     if (options.mode === 'doctor') {
-      return await spawnAndWait('/bin/sh', ['-lc', DOCTOR_SCRIPT], { env, cwd, relaySignals: true })
+      return await spawnAndWait('/bin/sh', ['-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage], {
+        env,
+        cwd,
+        relaySignals: true,
+      })
     }
     const dshArgs = dshArgsForBridge(options)
     if (dshCommand !== undefined) {
       return await spawnAndWait(dshCommand, dshArgs, { env, cwd, relaySignals: true })
     }
-    return await spawnAndWait('/bin/sh', ['-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', ...dshArgs], {
+    return await spawnAndWait('/bin/sh', ['-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, ...dshArgs], {
       env,
       cwd,
       relaySignals: true,
@@ -313,12 +326,12 @@ export async function launchWslBridge(
     const args = [
       ...distroPrefix(distro),
       '--cd', mapped.linuxPath,
-      '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT,
+      '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage,
     ]
     return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, relaySignals: false })
   }
 
-  const args = buildWslDshArgs(mapped.linuxPath, dshArgsForBridge(options), distro, dshCommand)
+  const args = buildWslDshArgs(mapped.linuxPath, dshArgsForBridge(options), distro, dshCommand, dshPackage)
   return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, relaySignals: false })
 }
 
