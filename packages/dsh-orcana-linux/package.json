@@ -28,6 +28,7 @@
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "bin": {
+    "dsh-orcana": "bin/dsh-orcana-wsl.mjs",
     "dsh-orcana-wsl": "bin/dsh-orcana-wsl.mjs"
   },
   "exports": {
