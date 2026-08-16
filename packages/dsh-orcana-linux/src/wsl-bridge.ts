@@ -1,4 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
+import {
+  DEFAULT_WSL_PNPM_PACKAGE,
+  buildWslInstallArgs,
+  nativeInstallShellArgs,
+} from './wsl-install.js'
 
 export const DEFAULT_WSL_PROFILE = 'orcana'
 export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
@@ -29,8 +34,9 @@ const DSH_ROOT_HELP_OR_VERSION = new Set(['-h', '--help', '-V', '--version'])
 const NODE_CONTRACT_SCRIPT = 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 19) || major >= 24 ? 0 : 1)'
 
 /**
- * Auto-discovered `dsh` is trusted only when it exactly matches the pinned npm
- * package spec. Explicit ORCANA_WSL_DSH_COMMAND is the deliberate escape hatch.
+ * Auto-discovered executables are trusted only when they exactly match the
+ * pinned package spec. Explicit command overrides are the deliberate escape
+ * hatch. The script is generic and is also reused for the pinned pnpm check.
  */
 export const DSH_VERSION_CONTRACT_SCRIPT = [
   'const [spec="",actual=""]=process.argv.slice(1)',
@@ -57,12 +63,14 @@ const DSH_RESOLVER_SCRIPT = [
 const DOCTOR_SCRIPT = [
   'package_spec=$1',
   'node_contract=$2',
-  'dsh_contract=$3',
+  'version_contract=$3',
+  'pnpm_package=$4',
   'fail=0',
   'node_ok=0',
   'printf "kernel: "; uname -sr || fail=1',
   'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; if ! node -e "$node_contract"; then printf "node-contract: UNSUPPORTED (need ^22.19.0 || >=24.0.0)\\n"; fail=1; else printf "node-contract: OK\\n"; node_ok=1; fi; else printf "node: MISSING\\n"; fail=1; fi',
-  'if command -v dsh >/dev/null 2>&1; then installed_version=$(dsh --version 2>/dev/null || true); printf "dsh: %s (%s)\\n" "$(command -v dsh)" "${installed_version:-version-unknown}"; if [ "$node_ok" -eq 1 ] && node -e "$dsh_contract" "$package_spec" "$installed_version" >/dev/null 2>&1; then printf "dsh-contract: OK\\n"; elif command -v npx >/dev/null 2>&1; then printf "dsh-contract: MISMATCH; runtime will fall back to npx %s\\n" "$package_spec"; else printf "dsh-contract: MISMATCH and npx unavailable\\n"; fail=1; fi; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx %s\\n" "$package_spec"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
+  'if command -v dsh >/dev/null 2>&1; then installed_version=$(dsh --version 2>/dev/null || true); printf "dsh: %s (%s)\\n" "$(command -v dsh)" "${installed_version:-version-unknown}"; if [ "$node_ok" -eq 1 ] && node -e "$version_contract" "$package_spec" "$installed_version" >/dev/null 2>&1; then printf "dsh-contract: OK\\n"; elif command -v npx >/dev/null 2>&1; then printf "dsh-contract: MISMATCH; runtime will fall back to npx %s\\n" "$package_spec"; else printf "dsh-contract: MISMATCH and npx unavailable\\n"; fail=1; fi; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx %s\\n" "$package_spec"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
+  'if command -v pnpm >/dev/null 2>&1; then pnpm_version=$(pnpm --version 2>/dev/null || true); printf "pnpm: %s (%s)\\n" "$(command -v pnpm)" "${pnpm_version:-version-unknown}"; if [ "$node_ok" -eq 1 ] && node -e "$version_contract" "$pnpm_package" "$pnpm_version" >/dev/null 2>&1; then printf "plugin-install-toolchain: local pinned dsh+pnpm may be used when dsh also matches\\n"; elif command -v npx >/dev/null 2>&1; then printf "plugin-install-toolchain: pnpm mismatch; --wsl-install will bootstrap %s via npx\\n" "$pnpm_package"; else printf "plugin-install-toolchain: pnpm mismatch and npx unavailable\\n"; fi; elif command -v npx >/dev/null 2>&1; then printf "pnpm: MISSING; --wsl-install will bootstrap %s via npx\\n" "$pnpm_package"; else printf "pnpm: MISSING; --wsl-install unavailable without npx\\n"; fi',
   'for x in bwrap prlimit; do if command -v "$x" >/dev/null 2>&1; then printf "%s: " "$x"; command -v "$x"; else printf "%s: MISSING\\n" "$x"; fi; done',
   'exit "$fail"',
 ].join('; ')
@@ -77,6 +85,12 @@ export interface WslBridgeOptions {
 export interface WslUncPath {
   distro: string
   linuxPath: string
+}
+
+interface DshPatchPathRef {
+  index: number
+  inline: boolean
+  value: string
 }
 
 /**
@@ -154,7 +168,6 @@ export function shouldInjectDefaultProfile(args: readonly string[]): boolean {
     }
     if (arg.startsWith('--patch=') || arg === '--dump-config' || arg === '--dump-default-config') continue
     if (DSH_ROOT_HELP_OR_VERSION.has(arg) || DSH_ROOT_PASSTHROUGH.has(arg)) return false
-    // The first token not owned by the DSH launcher starts app/task argv.
     return true
   }
   return true
@@ -199,7 +212,7 @@ export function windowsPathToWsl(
   const unc = parseWslUncPath(windowsPath)
   if (unc !== undefined) {
     if (distro !== undefined && distro.toLowerCase() !== unc.distro.toLowerCase()) {
-      throw new Error(`cwd belongs to WSL distro '${unc.distro}' but --wsl-distro selected '${distro}'`)
+      throw new Error(`path belongs to WSL distro '${unc.distro}' but --wsl-distro selected '${distro}'`)
     }
     return { distro: distro ?? unc.distro, linuxPath: unc.linuxPath }
   }
@@ -207,11 +220,12 @@ export function windowsPathToWsl(
   const result = run(
     'wsl.exe',
     [...distroPrefix(distro), '--exec', 'wslpath', '-a', '-u', windowsPath],
-    { encoding: 'utf8', windowsHide: true },
+    { encoding: 'utf8', windowsHide: true, timeout: 15_000 },
   )
   if (result.error !== undefined) {
     const code = (result.error as NodeJS.ErrnoException).code
     if (code === 'ENOENT') throw new Error('WSL is not installed or wsl.exe is not on PATH')
+    if (code === 'ETIMEDOUT') throw new Error('WSL path translation timed out')
     throw result.error
   }
   if (result.status !== 0) {
@@ -242,35 +256,12 @@ export function windowsWorkspaceKind(cwd: string): WindowsWorkspaceKind {
   return parseWslUncPath(cwd) === undefined ? 'windows-mounted' : 'wsl-native'
 }
 
-function windowsArgumentPathToWsl(
-  value: string,
-  distro?: string,
-  run: typeof spawnSync = spawnSync,
-): string {
-  if (parseWslUncPath(value) !== undefined || /^[A-Za-z]:/.test(value) || value.startsWith('\\\\')) {
-    return windowsPathToWsl(value, distro, run).linuxPath
-  }
-  // Relative Windows paths share the already-mapped cwd; only separators need
-  // normalization. Do not rewrite arbitrary task text — this helper is called
-  // only for DSH launcher fields whose schema is explicitly path-valued.
-  return value.includes('\\') ? value.replaceAll('\\', '/') : value
-}
-
-/**
- * Translate only path-valued arguments owned by the pinned DSH launcher. Today
- * that is `--patch` on the root/web command. App/task argv after the first
- * unknown token or `--` is deliberately opaque.
- */
-export function translateDshPathArgsForWsl(
-  args: readonly string[],
-  distro?: string,
-  run: typeof spawnSync = spawnSync,
-): string[] {
-  const output = [...args]
+function collectDshPatchPathRefs(args: readonly string[]): DshPatchPathRef[] {
+  const refs: DshPatchPathRef[] = []
   let mode: 'root' | 'web' = 'root'
 
-  for (let i = 0; i < output.length; i += 1) {
-    const arg = output[i]!
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
     if (arg === '--') break
 
     if (mode === 'root') {
@@ -280,36 +271,78 @@ export function translateDshPathArgsForWsl(
       }
       if (arg.startsWith('--profile=')) continue
       if (arg === '--patch') {
-        const value = output[i + 1]
-        if (value !== undefined) output[i + 1] = windowsArgumentPathToWsl(value, distro, run)
+        const value = args[i + 1]
+        if (value !== undefined) refs.push({ index: i + 1, inline: false, value })
         i += 1
         continue
       }
       if (arg.startsWith('--patch=')) {
-        output[i] = `--patch=${windowsArgumentPathToWsl(arg.slice('--patch='.length), distro, run)}`
+        refs.push({ index: i, inline: true, value: arg.slice('--patch='.length) })
         continue
       }
-      if (arg === '--dump-config' || arg === '--dump-default-config' || DSH_ROOT_HELP_OR_VERSION.has(arg)) continue
+      if (arg === '--dump-config' || arg === '--dump-default-config') continue
+      if (DSH_ROOT_HELP_OR_VERSION.has(arg)) break
       if (arg === 'web') {
         mode = 'web'
         continue
       }
-      // plugin owns pnpm argv; a task/unknown token starts opaque app argv.
       break
     }
 
     if (arg === '--patch') {
-      const value = output[i + 1]
-      if (value !== undefined) output[i + 1] = windowsArgumentPathToWsl(value, distro, run)
+      const value = args[i + 1]
+      if (value !== undefined) refs.push({ index: i + 1, inline: false, value })
       i += 1
       continue
     }
     if (arg.startsWith('--patch=')) {
-      output[i] = `--patch=${windowsArgumentPathToWsl(arg.slice('--patch='.length), distro, run)}`
+      refs.push({ index: i, inline: true, value: arg.slice('--patch='.length) })
       continue
     }
     if (arg === '--dump-config' || arg === '--dump-default-config') continue
     break
+  }
+  return refs
+}
+
+/** Infer a distro only from DSH-owned WSL UNC path fields, never task text. */
+export function inferWslDistroFromDshPathArgs(args: readonly string[]): string | undefined {
+  let inferred: string | undefined
+  for (const ref of collectDshPatchPathRefs(args)) {
+    const unc = parseWslUncPath(ref.value)
+    if (unc === undefined) continue
+    if (inferred !== undefined && inferred.toLowerCase() !== unc.distro.toLowerCase()) {
+      throw new Error(`DSH path arguments span multiple WSL distros: '${inferred}' and '${unc.distro}'`)
+    }
+    inferred = unc.distro
+  }
+  return inferred
+}
+
+function windowsArgumentPathToWsl(
+  value: string,
+  distro?: string,
+  run: typeof spawnSync = spawnSync,
+): string {
+  if (parseWslUncPath(value) !== undefined || /^[A-Za-z]:/.test(value) || value.startsWith('\\\\')) {
+    return windowsPathToWsl(value, distro, run).linuxPath
+  }
+  return value.includes('\\') ? value.replaceAll('\\', '/') : value
+}
+
+/**
+ * Translate only path-valued arguments owned by the pinned DSH launcher. Today
+ * that is `--patch` on the root/web command. App/task argv remains opaque.
+ */
+export function translateDshPathArgsForWsl(
+  args: readonly string[],
+  distro?: string,
+  run: typeof spawnSync = spawnSync,
+): string[] {
+  const output = [...args]
+  for (const ref of collectDshPatchPathRefs(args)) {
+    const translated = windowsArgumentPathToWsl(ref.value, distro, run)
+    output[ref.index] = ref.inline ? `--patch=${translated}` : translated
   }
   return output
 }
@@ -402,7 +435,7 @@ export function environmentForWsl(
       satisfied.add(key)
     }
   }
-  return { ...env, ...(merged.length > 0 ? { WSLENV: merged.join(':') } : { WSLENV: '' }) }
+  return { ...env, WSLENV: merged.join(':') }
 }
 
 function exitCodeFromSignal(signal: NodeJS.Signals | null): number {
@@ -430,15 +463,25 @@ export async function launchWslBridge(
   const options = parseWslBridgeArgs(rawArgs, env)
   const dshCommand = env.ORCANA_WSL_DSH_COMMAND?.trim() || undefined
   const dshPackage = env.ORCANA_WSL_DSH_PACKAGE?.trim() || DEFAULT_WSL_DSH_PACKAGE
+  const pnpmPackage = env.ORCANA_WSL_PNPM_PACKAGE?.trim() || DEFAULT_WSL_PNPM_PACKAGE
 
   if (process.platform !== 'win32') {
     const signalMode = nativeSignalMode()
     if (options.mode === 'doctor') {
       return await spawnAndWait('/bin/sh', [
-        '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT, DSH_VERSION_CONTRACT_SCRIPT,
+        '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT,
+        DSH_VERSION_CONTRACT_SCRIPT, pnpmPackage,
       ], { env, cwd, signalMode })
     }
     const dshArgs = dshArgsForBridge(options)
+    if (options.mode === 'install') {
+      return await spawnAndWait('/bin/sh', nativeInstallShellArgs(
+        dshArgs,
+        dshPackage,
+        DSH_VERSION_CONTRACT_SCRIPT,
+        pnpmPackage,
+      ), { env, cwd, signalMode })
+    }
     if (dshCommand !== undefined) {
       return await spawnAndWait(dshCommand, dshArgs, { env, cwd, signalMode })
     }
@@ -447,8 +490,15 @@ export async function launchWslBridge(
     ], { env, cwd, signalMode })
   }
 
-  const mapped = windowsPathToWsl(cwd, options.distro)
-  const distro = options.distro ?? mapped.distro
+  const baseDshArgs = dshArgsForBridge(options)
+  const cwdDistro = parseWslUncPath(cwd)?.distro
+  const pathDistro = inferWslDistroFromDshPathArgs(baseDshArgs)
+  if (cwdDistro !== undefined && pathDistro !== undefined && cwdDistro.toLowerCase() !== pathDistro.toLowerCase()) {
+    throw new Error(`cwd and DSH path arguments belong to different WSL distros: '${cwdDistro}' and '${pathDistro}'`)
+  }
+  const selectedDistro = options.distro ?? cwdDistro ?? pathDistro
+  const mapped = windowsPathToWsl(cwd, selectedDistro)
+  const distro = selectedDistro ?? mapped.distro
   const childEnv = environmentForWsl(env)
   const hostCwd = hostCwdForWslSpawn(cwd, env)
 
@@ -463,12 +513,24 @@ export async function launchWslBridge(
       ...distroPrefix(distro),
       '--cd', mapped.linuxPath,
       '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor',
-      dshPackage, NODE_CONTRACT_SCRIPT, DSH_VERSION_CONTRACT_SCRIPT,
+      dshPackage, NODE_CONTRACT_SCRIPT, DSH_VERSION_CONTRACT_SCRIPT, pnpmPackage,
     ]
     return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, signalMode: 'none' })
   }
 
-  const dshArgs = translateDshPathArgsForWsl(dshArgsForBridge(options), distro)
+  if (options.mode === 'install') {
+    const args = buildWslInstallArgs(
+      mapped.linuxPath,
+      baseDshArgs,
+      dshPackage,
+      DSH_VERSION_CONTRACT_SCRIPT,
+      distro,
+      pnpmPackage,
+    )
+    return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, signalMode: 'windows-wsl' })
+  }
+
+  const dshArgs = translateDshPathArgsForWsl(baseDshArgs, distro)
   const args = buildWslDshArgs(mapped.linuxPath, dshArgs, distro, dshCommand, dshPackage)
   return await spawnAndWait('wsl.exe', args, {
     env: childEnv,
@@ -512,10 +574,6 @@ async function spawnAndWait(
       if (options.signalMode === 'posix-relay') {
         try { child.kill('SIGINT') } catch { /* process already gone */ }
       }
-      // Interactive POSIX terminals already signal the foreground group.
-      // Windows broadcasts Ctrl+C to wsl.exe, whose native handler owns WSL
-      // cancellation. In both cases this parent listener only prevents an
-      // early launcher exit while the real child reports status.
     }
 
     const onSigterm = () => {
