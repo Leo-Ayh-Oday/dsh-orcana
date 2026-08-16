@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { environmentForWsl } from '../src/wsl-bridge.ts'
 import {
   WSL_HOST_PATH_ENV,
   WSL_HOST_PATH_LIST_ENV,
@@ -45,6 +46,25 @@ describe('Windows host bootstrap environment', () => {
     expect(result.DEEPSEEK_SEARCH_BASE_URL).toBe(source.DEEPSEEK_SEARCH_BASE_URL)
     expect(result.SSL_CERT_FILE).toBe(source.SSL_CERT_FILE)
     expect(source.WSLENV).toBe('EXISTING/u')
+  })
+
+  it('survives the core bridge WSLENV filter without losing path/list semantics', () => {
+    const host = augmentWslHostEnvironment({
+      DEEPSEEK_API_KEY: 'secret',
+      DEEPSEEK_SEARCH_BASE_URL: 'https://search.example.test',
+      ALL_PROXY: 'socks5://127.0.0.1:1080',
+      SSL_CERT_FILE: 'C:\\corp\\root.pem',
+      SSL_CERT_DIR: 'C:\\corp\\certs;D:\\shared\\certs',
+    })
+    const child = environmentForWsl(host)
+
+    expect(child.WSLENV?.split(':')).toEqual([
+      'DEEPSEEK_SEARCH_BASE_URL/u',
+      'ALL_PROXY/u',
+      'SSL_CERT_FILE/pu',
+      'SSL_CERT_DIR/lu',
+      'DEEPSEEK_API_KEY/u',
+    ])
   })
 
   it('normalizes inherited reverse/wrong-mode flags and removes duplicates', () => {
