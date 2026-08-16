@@ -10,6 +10,7 @@ import {
 import {
   DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
   DEFAULT_WSL_PNPM_PACKAGE,
+  DSH_HEADLESS_PACKAGE,
   DSH_WEB_APP_PACKAGE,
   buildWslCompanionInstallArgs,
   nativeCompanionInstallShellArgs,
@@ -18,6 +19,7 @@ import {
   buildWslCompanionProfileExpectation,
   buildWslProfileVerifyArgs,
   profileVerifyNodeArgs,
+  type WslProfileExpectation,
 } from './wsl-profile.js'
 
 /** Product-owned companion profile name; the upstream `web` profile is never mutated. */
@@ -87,52 +89,82 @@ async function runChild(
   })
 }
 
-function webExpectation(dshPackage: string) {
+function companionExpectation(dshPackage: string, companionName: string): WslProfileExpectation {
   return buildWslCompanionProfileExpectation(
     dshPackage,
-    DSH_WEB_APP_PACKAGE,
+    companionName,
     DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
     DEFAULT_WSL_BUNDLES,
   )
 }
 
-/**
- * Verify the Orcana Web companion profile. Missing profile is advisory for
- * doctor (same policy as the headless profile); every other mismatch is fatal.
- */
+async function verifyCompanionProfile(
+  profile: string,
+  companionName: string,
+  missingOk: boolean,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  distro?: string,
+): Promise<number> {
+  const dshPackage = env.ORCANA_WSL_DSH_PACKAGE?.trim() || DEFAULT_WSL_DSH_PACKAGE
+  let expectation: WslProfileExpectation
+  try {
+    expectation = companionExpectation(dshPackage, companionName)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[orcana-wsl] exact profile check unavailable for ${profile}: ${message}`)
+    return missingOk ? 0 : 78
+  }
+
+  let code: number
+  if (process.platform !== 'win32') {
+    code = await runChild(process.execPath, profileVerifyNodeArgs(profile, expectation), {
+      env,
+      cwd,
+      windowsWsl: false,
+    })
+  } else {
+    const hostCwd = hostCwdForWslSpawn(cwd, env)
+    const childEnv = environmentForWsl(env)
+    code = await runChild('wsl.exe', buildWslProfileVerifyArgs(profile, expectation, distro), {
+      env: childEnv,
+      cwd: hostCwd,
+      windowsWsl: true,
+    })
+  }
+
+  if (code === 2 && missingOk) return 0
+  if (code === 2) {
+    console.error(`[orcana-wsl] profile=${profile} is required for this dsh-orcana command; run dsh-orcana --wsl-install first`)
+  }
+  return code
+}
+
+export async function verifyOrcanaHeadlessProfile(
+  baseProfile: string,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd = process.cwd(),
+  distro?: string,
+  missingOk = false,
+): Promise<number> {
+  return await verifyCompanionProfile(baseProfile, DSH_HEADLESS_PACKAGE, missingOk, env, cwd, distro)
+}
+
 export async function verifyOrcanaWebProfile(
   baseProfile: string,
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
   distro?: string,
+  missingOk = true,
 ): Promise<number> {
-  const dshPackage = env.ORCANA_WSL_DSH_PACKAGE?.trim() || DEFAULT_WSL_DSH_PACKAGE
-  let expectation
-  try {
-    expectation = webExpectation(dshPackage)
-  } catch (error) {
-    console.error(`[orcana-wsl] exact Web profile check unavailable: ${error instanceof Error ? error.message : String(error)}`)
-    return 0
-  }
-  const webProfile = orcanaWebProfileName(baseProfile)
-
-  if (process.platform !== 'win32') {
-    const code = await runChild(process.execPath, profileVerifyNodeArgs(webProfile, expectation), {
-      env,
-      cwd,
-      windowsWsl: false,
-    })
-    return code === 2 ? 0 : code
-  }
-
-  const hostCwd = hostCwdForWslSpawn(cwd, env)
-  const childEnv = environmentForWsl(env)
-  const code = await runChild('wsl.exe', buildWslProfileVerifyArgs(webProfile, expectation, distro), {
-    env: childEnv,
-    cwd: hostCwd,
-    windowsWsl: true,
-  })
-  return code === 2 ? 0 : code
+  return await verifyCompanionProfile(
+    orcanaWebProfileName(baseProfile),
+    DSH_WEB_APP_PACKAGE,
+    missingOk,
+    env,
+    cwd,
+    distro,
+  )
 }
 
 /**
@@ -150,7 +182,7 @@ export async function installOrcanaWebProfile(
   const pnpmPackage = env.ORCANA_WSL_PNPM_PACKAGE?.trim() || DEFAULT_WSL_PNPM_PACKAGE
   const webProfile = orcanaWebProfileName(baseProfile)
   const installDshArgs = ['plugin', '--profile', webProfile, 'add', ...DEFAULT_WSL_BUNDLES]
-  const expectation = webExpectation(dshPackage)
+  const expectation = companionExpectation(dshPackage, DSH_WEB_APP_PACKAGE)
 
   if (process.platform !== 'win32') {
     const installCode = await runChild('/bin/sh', nativeCompanionInstallShellArgs(
