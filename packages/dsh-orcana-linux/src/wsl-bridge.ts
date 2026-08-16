@@ -15,7 +15,7 @@ export const DEFAULT_WSL_PROFILE = 'orcana'
 export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
 export const DEFAULT_WSL_BUNDLES = Object.freeze([
   '@leooday/dsh-bundle@0.1.0-rc.1',
-  '@leooday/dsh-orcana-linux-bundle@0.2.0',
+  '@leooday/dsh-orcana-linux-bundle@0.3.0',
 ] as const)
 
 const DEFAULT_FORWARD_ENV = Object.freeze([
@@ -601,7 +601,7 @@ export async function launchWslBridge(
   }
 
   const dshArgs = translateDshPathArgsForWsl(baseDshArgs, distro)
-  const args = buildWslDshArgs(mapped.linuxPath, dshArgs, distro, dshCommand, dshPackage)
+  const args = buildWslDshArgs(mapped.linuxCwd, dshArgs, distro, dshCommand, dshPackage)
   return await spawnAndWait('wsl.exe', args, {
     env: childEnv,
     cwd: hostCwd,
