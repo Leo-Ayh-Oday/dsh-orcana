@@ -544,6 +544,13 @@ gates:
 
 **遗留项复核**:M3(adapter apply() 行为级测试——仍为纯函数覆盖,非阻断)、M7(真实任务 prep 流程——非阻断 demo)。
 
+### 11.13 P7 数据侧就绪(2026-08-16,已提交)
+
+1. **analyze.mjs(离线分析)**:读 reports/ 的 run-*.json → foldPairs 按 (task, rep) 配对(缺失臂标注 + deltas 置 undefined)→ renderAnalysis 稳定格式报告(calls/tokens/wall deltas)→ 全量报告 JSON 落盘(--out)
+2. **纪律指标重放**:`--sessions` 模式用 governor-core + dsh-governor 的重放翻译从 run-home session 日志重建引擎,导出 zero-progress rounds / duplicate reads / duplicate commands(§5.8 纪律列);包不可解析时标记跳过(保持自包含)
+3. **测试**:analyze.spec 覆盖配对折叠/缺失臂/delta 计算/报告格式(50/50)
+4. **P7 剩余 = 执行侧**:live 需模型凭证(OPENCODE_GO_API_KEY 当前环境未设)+ netns 内模型端点;凭证就绪后 `scripts/bench-run.sh --live` 跑数据 → `node benchmark/runner/analyze.mjs --reports benchmark/reports --sessions benchmark` 出报告
+
 ## 下一步(P7)
 
-A/B 实验 + paired 分析:在具备模型凭证 + netns 内模型端点的环境运行 `scripts/bench-run.sh --live`;导出 session 指标(aggregate)+ judge 判定;报告 paired success/call/token/wall deltas + 纪律指标(duplicate reads/commands/zero-progress rounds)+ 全量 pin 清单(§5.8,§7)。
+A/B 实验执行 + 报告:配置模型凭证后运行 `scripts/bench-run.sh --live`(配对计划由 seed 决定),随后 `analyze.mjs` 离线出 paired deltas + 纪律指标 + pin 清单;按 §5.4 主效果相对差 <20% 加 reps;结论写入 benchmark/reports/。
