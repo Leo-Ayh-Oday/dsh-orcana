@@ -11,7 +11,9 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "smoke": "bash scripts/smoke-install.sh",
-    "test": "vitest run"
+    "smoke:wsl": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-wsl.ps1",
+    "test": "vitest run",
+    "verify:release": "node scripts/verify-release-contract.mjs"
   },
   "devDependencies": {
     "vitest": "^4.1.10"
