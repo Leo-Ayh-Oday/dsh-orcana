@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   WSL_HOST_PATH_ENV,
+  WSL_HOST_PATH_LIST_ENV,
   WSL_HOST_SCALAR_ENV,
   augmentWslHostEnvironment,
 } from '../src/wsl-host-env.ts'
 
 describe('Windows host bootstrap environment', () => {
-  it('covers DSH search/proxy scalars and trust paths that .env cannot own', () => {
+  it('covers DSH search/proxy scalars, trust paths and certificate directory lists', () => {
     expect(WSL_HOST_SCALAR_ENV).toEqual([
       'DEEPSEEK_SEARCH_BASE_URL',
       'ALL_PROXY',
@@ -15,19 +16,20 @@ describe('Windows host bootstrap environment', () => {
     expect(WSL_HOST_PATH_ENV).toEqual([
       'NODE_EXTRA_CA_CERTS',
       'SSL_CERT_FILE',
-      'SSL_CERT_DIR',
       'REQUESTS_CA_BUNDLE',
       'CURL_CA_BUNDLE',
     ])
+    expect(WSL_HOST_PATH_LIST_ENV).toEqual(['SSL_CERT_DIR'])
   })
 
-  it('adds scalar values one-way and certificate paths one-way with path translation', () => {
+  it('uses /u for scalars, /pu for paths and /lu for path lists', () => {
     const source: NodeJS.ProcessEnv = {
       WSLENV: 'EXISTING/u',
       EXISTING: 'keep',
       DEEPSEEK_SEARCH_BASE_URL: 'https://search.example.test',
       ALL_PROXY: 'socks5://127.0.0.1:1080',
       SSL_CERT_FILE: 'C:\\corp\\root.pem',
+      SSL_CERT_DIR: 'C:\\corp\\certs;D:\\shared\\certs',
       NODE_EXTRA_CA_CERTS: 'C:\\corp\\node.pem',
     }
     const result = augmentWslHostEnvironment(source)
@@ -38,21 +40,23 @@ describe('Windows host bootstrap environment', () => {
       'ALL_PROXY/u',
       'NODE_EXTRA_CA_CERTS/pu',
       'SSL_CERT_FILE/pu',
+      'SSL_CERT_DIR/lu',
     ])
     expect(result.DEEPSEEK_SEARCH_BASE_URL).toBe(source.DEEPSEEK_SEARCH_BASE_URL)
     expect(result.SSL_CERT_FILE).toBe(source.SSL_CERT_FILE)
     expect(source.WSLENV).toBe('EXISTING/u')
   })
 
-  it('normalizes inherited reverse/list flags for launcher-owned variables and removes duplicates', () => {
+  it('normalizes inherited reverse/wrong-mode flags and removes duplicates', () => {
     const result = augmentWslHostEnvironment({
-      WSLENV: 'ALL_PROXY/w:KEEP/l:SSL_CERT_FILE/lw:ALL_PROXY/lw',
+      WSLENV: 'ALL_PROXY/w:KEEP/l:SSL_CERT_FILE/lw:SSL_CERT_DIR/pw:ALL_PROXY/lw',
       ALL_PROXY: 'socks5://proxy',
       SSL_CERT_FILE: 'C:\\certs\\root.pem',
+      SSL_CERT_DIR: 'C:\\certs;D:\\corp-certs',
       KEEP: 'x;y',
     })
 
-    expect(result.WSLENV).toBe('ALL_PROXY/u:KEEP/l:SSL_CERT_FILE/pu')
+    expect(result.WSLENV).toBe('ALL_PROXY/u:KEEP/l:SSL_CERT_FILE/pu:SSL_CERT_DIR/lu')
   })
 
   it('does not invent WSLENV rows for unset host settings', () => {
