@@ -62,16 +62,19 @@ Windows Terminal / PowerShell
         ↓
     dsh-orcana
         ↓
+      wsl.exe
+        ↓
 whole DSH runtime enters WSL once
         ↓
 DSH + Orcana + sandbox + subprocess + bash/PTC/LSP
         ↓
-one Linux execution world
+one native Linux execution world
 ```
 
 This keeps the Agent/preset/task layer free of separate Windows/Linux execution
-branches. cwd, process, shell, sandbox, and background work are Linux semantics
-from the beginning of the task.
+branches. cwd, process, shell, sandbox, background work, terminal handling and
+interactive Ctrl+C remain on WSL's native execution path rather than being
+reimplemented by the bridge.
 
 After the v0.4 package is published, install the launcher once on Windows:
 
@@ -85,9 +88,13 @@ Inspect the target WSL world:
 dsh-orcana --wsl-doctor
 ```
 
-The bridge prefers an existing `dsh`; if none is installed globally, it safely
-falls back to DeepSeek Harness' official npm form,
-`npx --yes @deepseek-ai/dsh`. Install the Orcana profile from Windows:
+The bridge prefers an existing `dsh`. If none is installed globally, it falls
+back to the DSH npm package version pinned for this bridge release
+(`@deepseek-ai/dsh@0.1.0-rc.5` for v0.4.0) instead of silently following
+`latest`. Override intentionally with `ORCANA_WSL_DSH_PACKAGE` when validating
+a newer DSH release.
+
+Install the Orcana profile from Windows:
 
 ```powershell
 dsh-orcana --wsl-install
@@ -101,9 +108,10 @@ dsh-orcana "<task>"
 
 Important boundaries: Windows `DSH_HOME` is not shared with WSL; Windows cwd is
 translated by the selected distro's own `wslpath`; DSH `--` and task argv are
-preserved; model credentials cross through one-way `WSLENV` entries. Windows
-filesystem projects work directly, while WSL-native project storage is the
-fast path for Linux-heavy Git/npm/build I/O. Full details are in
+preserved; model credentials and common provider base URLs cross through
+one-way `WSLENV` entries. Windows filesystem projects work directly, while
+WSL-native project storage is the fast path for Linux-heavy Git/npm/build I/O.
+Full details are in
 [`packages/dsh-orcana-linux/README.md`](packages/dsh-orcana-linux/README.md).
 
 For interactive development from a checkout:
@@ -121,10 +129,10 @@ dsh --profile orcana "<task>"
   mutations (`sed -i`, etc.) are still invisible until git-probe receipts land.
 - The governor itself does not directly kill/cancel an agent; its strongest
   action remains bounded steering.
-- The Windows bridge now owns execution-world, cwd, argv, env, and normal exit
-  semantics. Deterministic Linux process-group Ctrl+C/timeout cancellation is
-  the next WSL-side supervisor layer; Windows `child.kill()` is not presented
-  as equivalent to POSIX signaling.
+- Interactive Ctrl+C intentionally stays under `wsl.exe`/Linux terminal
+  semantics. A separate programmatic cancel/timeout control API for Orcana is
+  not part of this bridge yet; it should be implemented at the execution-control
+  seam rather than by changing terminal process/session semantics.
 
 ## Contributing
 
