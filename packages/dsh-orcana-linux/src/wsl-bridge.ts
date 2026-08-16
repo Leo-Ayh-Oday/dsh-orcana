@@ -180,7 +180,8 @@ function wslenvName(entry: string): string {
  * Use WSLENV instead of putting secrets on the wsl.exe command line. Existing
  * WSLENV entries are preserved. DSH_HOME is intentionally excluded because a
  * Windows profile may contain Windows-native node_modules; WSL owns its own
- * DSH home and package graph.
+ * DSH home and package graph. Bridge-control `ORCANA_WSL_*` variables stay on
+ * the host unless explicitly named by a future dedicated carrier.
  */
 export function environmentForWsl(
   env: NodeJS.ProcessEnv = process.env,
@@ -190,9 +191,8 @@ export function environmentForWsl(
   const forward = new Set<string>(DEFAULT_FORWARD_ENV)
 
   for (const key of Object.keys(env)) {
-    if ((key.startsWith('DSH_') || key.startsWith('ORCANA_')) && !NEVER_IMPLICITLY_FORWARD.has(key)) {
-      forward.add(key)
-    }
+    const runtimeVar = key.startsWith('DSH_') || (key.startsWith('ORCANA_') && !key.startsWith('ORCANA_WSL_'))
+    if (runtimeVar && !NEVER_IMPLICITLY_FORWARD.has(key)) forward.add(key)
   }
   for (const key of (env.ORCANA_WSL_FORWARD_ENV ?? '').split(',').map((value) => value.trim()).filter(Boolean)) {
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !NEVER_IMPLICITLY_FORWARD.has(key)) forward.add(key)
