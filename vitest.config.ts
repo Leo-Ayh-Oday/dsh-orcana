@@ -8,6 +8,8 @@ export default defineConfig({
       '**/lib/**',
       'benchmark/tasks/**',
       'benchmark/bench-home-template/**',
+      'benchmark/ws-*/**',
+      'benchmark/run-home-*/**',
     ],
   },
 })
