@@ -108,6 +108,14 @@ function createLedgerState(maxEntries: number): NativeEvidenceLedgerState {
   return { records: [], dropped: 0, total: 0, pendingBackground: 0, maxEntries }
 }
 
+function resizeLedgerState(state: NativeEvidenceLedgerState, maxEntries: number): void {
+  state.maxEntries = maxEntries
+  while (state.records.length > maxEntries) {
+    state.records.shift()
+    state.dropped += 1
+  }
+}
+
 function pushRecord(state: NativeEvidenceLedgerState, record: NativeExecutionRecord): void {
   state.total += 1
   if (state.records.length >= state.maxEntries) {
@@ -307,6 +315,7 @@ interface ObserverPatchState {
 }
 
 const OBSERVER_PATCH_STATE = Symbol.for('orcana.dsh-orcana-linux.nativeEvidence.patchState')
+const EVIDENCE_LEDGER_STATE = Symbol.for('orcana.dsh-orcana-linux.nativeEvidence.ledgerState')
 type PatchableShell = ShellExecutor & Record<symbol, unknown> & {
   run: ShellExecutor['run']
   start: ShellExecutor['start']
@@ -333,13 +342,23 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   const raw = (shell as unknown as Record<symbol, ShellExecutor>)[symbols.original] as PatchableShell
   if (raw[OBSERVER_PATCH_STATE]) throw new DuplicateNativeEvidenceError()
 
-  const state = createLedgerState(config.ledgerMaxEntries ?? DEFAULT_NATIVE_EVIDENCE_LEDGER_MAX_ENTRIES)
+  const maxEntries = config.ledgerMaxEntries ?? DEFAULT_NATIVE_EVIDENCE_LEDGER_MAX_ENTRIES
+  let state = raw[EVIDENCE_LEDGER_STATE] as NativeEvidenceLedgerState | undefined
+  if (state === undefined) {
+    state = createLedgerState(maxEntries)
+    raw[EVIDENCE_LEDGER_STATE] = state
+  } else {
+    resizeLedgerState(state, maxEntries)
+  }
   new NativeExecutionEvidenceService(ctx, state)
 
   const originalRun = raw.run
   const originalStart = raw.start
+  let active = true
 
   const wrappedRun: ShellExecutor['run'] = async (spec: ShellExecSpec): Promise<ShellRunResult> => {
+    const observing = active
+    if (!observing) return await originalRun.call(raw, spec)
     const startedAt = Date.now()
     try {
       const result = await originalRun.call(raw, spec)
@@ -352,6 +371,8 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   }
 
   const wrappedStart: ShellExecutor['start'] = (spec: ShellExecSpec): ShellProcess => {
+    const observing = active
+    if (!observing) return originalStart.call(raw, spec)
     const startedAt = Date.now()
     let process: ShellProcess
     try {
@@ -362,6 +383,8 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
     }
     state.pendingBackground += 1
     void process.done.then(() => {
+      // A process that started while this observer was active still belongs to
+      // this evidence stream even if the observer fiber reloaded before exit.
       pushRecord(state, completedBackgroundRecord(spec, process, startedAt, Date.now()))
     }).catch((error: unknown) => {
       // DSH's ShellProcess.done contract says it never rejects. Keep the
@@ -385,10 +408,12 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   raw[OBSERVER_PATCH_STATE] = patchState
 
   ctx.effect(() => () => {
+    active = false
     if (raw[OBSERVER_PATCH_STATE] !== patchState) return
     raw[OBSERVER_PATCH_STATE] = undefined
     // Restore only methods still owned by this observer. A later wrapper is
-    // never clobbered during disposal.
+    // never clobbered during disposal; any stale observer wrapper becomes a
+    // pure pass-through because `active` is now false.
     if (raw.run === wrappedRun) raw.run = originalRun
     if (raw.start === wrappedStart) raw.start = originalStart
     ctx.logger?.info('[dsh-orcana-linux] native evidence observer disposed')
