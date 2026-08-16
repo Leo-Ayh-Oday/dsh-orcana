@@ -1,6 +1,6 @@
 {
   "name": "@leooday/dsh-governor",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0",
   "description": "DSH adapter plugin for the Orcana runtime pack: progress governor, evidence freshness, completion guard, capability router",
   "license": "MIT",
   "type": "module",
