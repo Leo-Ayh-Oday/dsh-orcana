@@ -40,6 +40,10 @@
       "types": "./lib/types/wsl-bridge.d.ts",
       "default": "./lib/wsl-bridge.js"
     },
+    "./wsl-launcher": {
+      "types": "./lib/types/wsl-launcher.d.ts",
+      "default": "./lib/wsl-launcher.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
