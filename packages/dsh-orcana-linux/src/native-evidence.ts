@@ -55,16 +55,19 @@ export const DEFAULT_NATIVE_EVIDENCE_LEDGER_MAX_ENTRIES = 1024
 
 export const Config: z<NativeEvidenceConfig> = z.object({
   ledgerMaxEntries: z.number().min(1),
+  // Schemastery gives object schemas a native {} default. These legacy-only
+  // fields must remain truly absent unless the user supplied them, otherwise
+  // an empty plugin config is misclassified as migrated hardening config.
   resourceLimits: z.object({
     memoryBytes: z.number().min(0),
     cpuQuotaUs: z.number().min(0),
     pidsMax: z.number().min(0),
-  }).default(undefined as never),
+  }).default(undefined as unknown as LegacyHardeningResourceLimits),
   network: z.union(['inherit', 'none'] as const),
   degradationPolicy: z.object({
     resourceLimits: z.union(['required', 'best-effort'] as const),
     network: z.union(['required', 'best-effort'] as const),
-  }).default(undefined as never),
+  }).default(undefined as unknown as LegacyHardeningDegradationPolicy),
   capabilities: z.any(),
 })
 
