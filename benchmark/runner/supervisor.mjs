@@ -124,14 +124,32 @@ export function outcomeOf({ budgetHit, exitCode, signal }) {
   return { outcome: OUTCOMES.INFRA_FAILURE, reason: 'spawn_failed', exitCode, signal }
 }
 
-/** Reflink copy of the template into a fresh run home (fallback: plain copy). */
-export function copyTemplate(template, dest) {
+/** Reflink copy of a directory tree into a fresh destination (fallback: plain copy). */
+export function copyTree(src, dest) {
   mkdirSync(join(dest, '..'), { recursive: true })
   try {
-    execFileSync('cp', ['-a', '--reflink=auto', template, dest], { stdio: 'ignore' })
+    execFileSync('cp', ['-a', '--reflink=auto', src, dest], { stdio: 'ignore' })
   } catch {
-    execFileSync('cp', ['-a', template, dest], { stdio: 'ignore' })
+    execFileSync('cp', ['-a', src, dest], { stdio: 'ignore' })
   }
+}
+
+/** Reflink copy of the template into a fresh run home. */
+export function copyTemplate(template, dest) {
+  copyTree(template, dest)
+}
+
+/**
+ * Stage a per-run workspace: reflink copy of the task workspace, then mirror
+ * the hidden reproducer files into it (PLAN 5.1 "Hidden Reproducer" — the
+ * agent never sees the reproducer before it exists in its workspace). The
+ * agent AND the judge run on this copy, so runs never mutate the task
+ * workspace and arms stay pairwise-isolated.
+ */
+export function stageWorkspace(workspace, hiddenDir, dest) {
+  copyTree(workspace, dest)
+  if (hiddenDir === undefined || !existsSync(hiddenDir)) return
+  execFileSync('cp', ['-a', `${hiddenDir}/.`, dest], { stdio: 'ignore' })
 }
 
 /**
@@ -159,7 +177,10 @@ export function countAssistantMessages(home) {
 
 /**
  * Cumulative input+output+cacheRead tokens across a run home's session
- * logs — the cost-fuse counter (PLAN 5.3). 0 when the fuse is off.
+ * logs — the cost-fuse counter (PLAN 5.3). Parses each line as JSON (the
+ * same way aggregate.mjs folds metrics), so field order inside `usage`
+ * never matters and counts agree with the reported metrics. 0 when the fuse
+ * is off.
  */
 export function countSessionTokens(home) {
   const sessions = join(home, 'sessions')
@@ -173,9 +194,16 @@ export function countSessionTokens(home) {
       if (!existsSync(log)) continue
       const text = execFileSync('zstd', ['-dc', log], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       for (const line of text.split('\n')) {
-        const usage = /"usage":\{"inputTokens":(\d+)(,"outputTokens":(\d+))?(,"cacheReadTokens":(\d+))?/.exec(line)
-        if (usage === null) continue
-        tokens += Number(usage[1] ?? 0) + Number(usage[3] ?? 0) + Number(usage[5] ?? 0)
+        let event
+        try {
+          event = JSON.parse(line.trim())
+        } catch {
+          continue
+        }
+        if (event?.type !== 'assistant/message') continue
+        const usage = event.data?.usage
+        if (usage === undefined || typeof usage !== 'object') continue
+        tokens += (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) + (usage.cacheReadTokens ?? 0)
       }
     }
   }
@@ -295,15 +323,21 @@ export async function runOne({
     }
   } catch (error) {
     const verdict = { outcome: OUTCOMES.INFRA_FAILURE, reason: 'supervisor_error', error: String(error) }
-    return recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr })
+    return recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr, reportsDir, fullEnv, pins })
   }
 
   const verdict = outcomeOf({ budgetHit, exitCode, signal })
   return recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr, reportsDir, fullEnv, pins })
 }
 
-function recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr, reportsDir, fullEnv, pins }) {
-  const record = {
+/** Proxy presence in the run env, for the recorded env pin. */
+function proxyState(env, key) {
+  if (env === undefined) return 'unknown'
+  const lower = Object.keys(env).find(k => k.toLowerCase() === key.toLowerCase())
+  return lower === undefined ? 'unset' : 'set'
+}
+
+function recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr, reportsDir, fullEnv, pins }) {  const record = {
     task_id: manifest.task_id,
     arm,
     started_at: startedAt,
@@ -317,6 +351,8 @@ function recordRun({ runHome, startedAt, verdict, arm, manifest, stdout, stderr,
       DSH_PERMISSION_MODE: fullEnv?.DSH_PERMISSION_MODE,
       telemetry: fullEnv !== undefined && !('DSH_TELEMETRY_MODE' in fullEnv) ? 'unset' : 'leaked',
       tools_mode: fullEnv !== undefined && !('DSH_TOOLS_MODE' in fullEnv) ? 'unset' : 'leaked',
+      http_proxy: proxyState(fullEnv, 'HTTP_PROXY'),
+      https_proxy: proxyState(fullEnv, 'HTTPS_PROXY'),
     },
     stdout_tail: stdout.slice(-4000),
     stderr_tail: stderr.slice(-2000),
@@ -347,8 +383,10 @@ export async function runLive(plan, manifests, { template, reportsDir, budgets =
       console.error(`  manifest not found for task ${run.task}`)
       continue
     }
-    const workspace = join(import.meta.dirname, '..', manifest.workspace ?? `tasks/${run.task}/repo`)
-    const base = { manifest, arm: run.arm, workspace, template, reportsDir, budgets, dsh, env }
+    const baseWorkspace = join(import.meta.dirname, '..', manifest.workspace ?? `tasks/${run.task}/repo`)
+    const runWorkspace = join(template, '..', `ws-${run.arm}-${run.task}-${Date.now()}`)
+    stageWorkspace(baseWorkspace, manifest.hidden !== undefined ? join(import.meta.dirname, '..', manifest.hidden) : undefined, runWorkspace)
+    const base = { manifest, arm: run.arm, workspace: runWorkspace, template, reportsDir, budgets, dsh, env }
     let record = await runOne(base)
     if (record.verdict.outcome === OUTCOMES.INFRA_FAILURE) {
       console.log(`  infra failure, retrying once: ${run.task} [${run.arm}]`)
@@ -357,13 +395,14 @@ export async function runLive(plan, manifests, { template, reportsDir, budgets =
         console.log('  retry also failed; recording infra-failure outcome')
       }
     }
+    record.workspace = runWorkspace
     const sessions = join(record.home, 'sessions')
     const metrics = aggregateSessions(sessions)
     const claimed = claimedCompletion(lastClaimText(sessions))
-    const acceptance = await runAcceptance(manifest.verification.acceptance, workspace)
+    const acceptance = await runAcceptance(manifest.verification.acceptance, runWorkspace)
     const judgment = judgeVerdict(acceptance, claimed)
     const wallMs = (Date.parse(record.finished_at) - Date.parse(record.started_at))
-    rows.push({ task: run.task, arm: run.arm, record, metrics, judgment, wallMs })
+    rows.push({ task: run.task, arm: run.arm, rep: run.rep, record, metrics, judgment, wallMs })
     console.log(renderMetricsRow(metrics, {
       task_id: run.task,
       arm: run.arm,
@@ -393,20 +432,22 @@ function describeRow(row) {
 }
 
 /**
- * The paired report: per task, control vs treatment, with the paired deltas
- * (calls / tokens / wall). Pure, deterministic — tested.
+ * The paired report: per (task, rep), control vs treatment, with the paired
+ * deltas (calls / tokens / wall). Pure, deterministic — tested.
  */
 export function renderPairedReport(rows) {
   const lines = ['Paired report:']
-  const byTask = new Map()
+  const byPair = new Map()
   for (const row of rows) {
-    if (!byTask.has(row.task)) byTask.set(row.task, [])
-    byTask.get(row.task).push(row)
+    const key = `${row.task}#${row.rep ?? 0}`
+    if (!byPair.has(key)) byPair.set(key, [])
+    byPair.get(key).push(row)
   }
-  for (const [task, pair] of [...byTask.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const [key, pair] of [...byPair.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const [task, rep] = key.split('#')
     const control = pair.find(row => row.arm === ARMS.CONTROL)
     const treatment = pair.find(row => row.arm === ARMS.TREATMENT)
-    lines.push(`  ${task}:`)
+    lines.push(`  ${task} (rep ${rep}):`)
     lines.push(`    control:   ${describeRow(control)}`)
     lines.push(`    treatment: ${describeRow(treatment)}`)
     if (control !== undefined && treatment !== undefined) {

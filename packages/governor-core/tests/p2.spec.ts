@@ -78,6 +78,35 @@ describe('turn aggregation (endTurn)', () => {
     expect(engine.endTurn()).toMatchObject({ zeroProgress: true, chainLength: 1 })
   })
 
+  it('a mutation whose observation classifies as repeated still counts as progress', () => {
+    // The one path where the mutation flag is load-bearing: the SAME
+    // fingerprint was observed WITHOUT the flag first (no gen advance), so
+    // the later mutation observation classifies as repeated — significant is
+    // never set, and only turn.mutation carries the round.
+    const engine = new ProgressFactEngine()
+    const writeNoMutation = event({
+      tool: 'write',
+      canonicalArgs: '{"path":"a","content":"x"}',
+      resultHash: 'w1',
+    })
+    engine.applyEvent(writeNoMutation)
+    engine.endTurn() // round 1: first look (progress)
+    const writeMutation = event({
+      tool: 'write',
+      canonicalArgs: '{"path":"a","content":"x"}',
+      resultHash: 'w1',
+      mutation: true,
+    })
+    expect(engine.applyEvent(writeMutation)).toEqual({ kind: 'repeated-observation' })
+    expect(engine.endTurn()).toMatchObject({ zeroProgress: false, chainLength: 0 })
+    // Without the flag the identical round is zero-progress.
+    const twin = new ProgressFactEngine()
+    twin.applyEvent(writeNoMutation)
+    twin.endTurn()
+    twin.applyEvent(writeNoMutation)
+    expect(twin.endTurn()).toMatchObject({ zeroProgress: true, chainLength: 1 })
+  })
+
   it('new evidence (changed result) makes the round progress', () => {
     const engine = new ProgressFactEngine()
     engine.applyEvent(READ_A)

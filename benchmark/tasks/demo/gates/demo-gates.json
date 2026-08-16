@@ -1,12 +1,12 @@
 {
   "task": "demo",
-  "verified_at": "2026-08-16T00:44:30Z",
+  "verified_at": "2026-08-16T01:10:38Z",
   "gates": {
     "baseline": {
       "existing_suite": true
     },
     "reproducer": {
-      "base": true
+      "base": "FAIL"
     },
     "official_fix": {
       "existing_suite": true,

@@ -4,18 +4,22 @@
  */
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   ARMS,
   OUTCOMES,
   armOrder,
+  collectPins,
   countAssistantMessages,
+  countSessionTokens,
+  fileDigest,
   mulberry32,
   outcomeOf,
   planRuns,
   renderPairedReport,
+  stageWorkspace,
 } from '../supervisor.mjs'
 
 describe('armOrder (paired, deterministic)', () => {
@@ -109,7 +113,7 @@ describe('renderPairedReport', () => {
       row('demo', 'control', 'completed', 'success', 12, 90_000),
       row('demo', 'treatment', 'completed', 'false-completion', 9, 70_000),
     ])
-    expect(report).toContain('  demo:')
+    expect(report).toContain('  demo (rep 0):')
     expect(report).toContain('control:   completed:success calls=12 wall=90s')
     expect(report).toContain('treatment: completed:false-completion calls=9 wall=70s')
     expect(report).toContain('delta: calls=-3 tokens=0 wall_ms=-20000')
@@ -121,6 +125,89 @@ describe('renderPairedReport', () => {
       row('a', 'treatment', 'completed', 'failed', 2, 2000),
     ]
     expect(renderPairedReport(rows)).toBe(renderPairedReport([...rows].reverse()))
+  })
+})
+
+describe('countSessionTokens', () => {
+  function writeSessions(home, linesPerSession = 1, sessions = 1) {
+    for (let s = 0; s < sessions; s += 1) {
+      mkdirSync(join(home, 'sessions', '--ns--', `session-${s}`), { recursive: true })
+      const raw = join(home, 'sessions', '--ns--', `session-${s}`, 'session.jsonl')
+      writeFileSync(raw, linesPerSession === 1
+        ? '{"type":"assistant/message","data":{"usage":{"inputTokens":100,"outputTokens":20,"cacheReadTokens":30}}}\n'
+        : linesPerSession)
+      execFileSync('zstd', ['-f', '-o', `${raw}.zstd`, raw], { stdio: 'ignore' })
+    }
+  }
+
+  it('accumulates input+output+cacheRead tokens across sessions', () => {
+    const home = join(tmpdir(), `bench-tokens-${Date.now()}`)
+    writeSessions(home, undefined, 2)
+    expect(countSessionTokens(home)).toBe(300)
+  })
+
+  it('is field-order independent (JSON parse, not regex)', () => {
+    const home = join(tmpdir(), `bench-tokens-${Date.now()}`)
+    writeSessions(home, '{"type":"assistant/message","data":{"usage":{"outputTokens":20,"cacheReadTokens":30,"inputTokens":100}}}\n')
+    expect(countSessionTokens(home)).toBe(150)
+  })
+
+  it('ignores non-assistant lines and nested usage literals', () => {
+    const home = join(tmpdir(), `bench-tokens-${Date.now()}`)
+    writeSessions(home, [
+      '{"type":"tool/result","data":{"message":{"content":[{"type":"text","text":"\\"usage\\":{\\"inputTokens\\":999}"}]}}}',
+      '{"type":"assistant/message","data":{"usage":{"inputTokens":7}}}',
+    ].join('\n'))
+    expect(countSessionTokens(home)).toBe(7)
+  })
+
+  it('is 0 without a sessions directory', () => {
+    expect(countSessionTokens(join(tmpdir(), 'missing-bench-tokens'))).toBe(0)
+  })
+})
+
+describe('stageWorkspace', () => {
+  it('copies the workspace and mirrors the hidden files into it', () => {
+    const work = join(tmpdir(), `bench-stage-${Date.now()}`)
+    const src = join(work, 'src')
+    const hidden = join(work, 'hidden')
+    const dest = join(work, 'run-ws')
+    mkdirSync(join(src, 'src'), { recursive: true })
+    mkdirSync(join(hidden, 'deep'), { recursive: true })
+    writeFileSync(join(src, 'src', 'format.js'), 'base')
+    writeFileSync(join(hidden, 'reproducer.js'), 'hidden-file')
+    writeFileSync(join(hidden, 'deep', 'x.txt'), 'nested')
+    stageWorkspace(src, hidden, dest)
+    expect(readFileSync(join(dest, 'src', 'format.js'), 'utf8')).toBe('base')
+    expect(readFileSync(join(dest, 'reproducer.js'), 'utf8')).toBe('hidden-file')
+    expect(readFileSync(join(dest, 'deep', 'x.txt'), 'utf8')).toBe('nested')
+    // The staged copy must not mutate the source.
+    expect(readdirSync(src)).toEqual(['src'])
+  })
+
+  it('skips silently without a hidden dir', () => {
+    const work = join(tmpdir(), `bench-stage-${Date.now()}`)
+    const src = join(work, 'src')
+    const dest = join(work, 'run-ws')
+    mkdirSync(src, { recursive: true })
+    writeFileSync(join(src, 'a.txt'), 'a')
+    stageWorkspace(src, undefined, dest)
+    expect(readFileSync(join(dest, 'a.txt'), 'utf8')).toBe('a')
+  })
+})
+
+describe('collectPins / fileDigest', () => {
+  it('collects runtime pins and file digests', () => {
+    const pins = collectPins({ dsh: 'definitely-not-a-dsh-bin' })
+    expect(pins.node).toBe(process.version)
+    expect(pins.dsh).toBeUndefined() // unparseable binary: pin omitted, not thrown
+    expect(pins.platform).toBe(process.platform)
+    const work = join(tmpdir(), `bench-digest-${Date.now()}`)
+    mkdirSync(work, { recursive: true })
+    const file = join(work, 'cordis.patch.yml')
+    writeFileSync(file, '- id: x\n')
+    expect(fileDigest(file)).toMatch(/^[0-9a-f]{64}$/)
+    expect(fileDigest(join(work, 'missing'))).toBeUndefined()
   })
 })
 

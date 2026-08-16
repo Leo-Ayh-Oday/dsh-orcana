@@ -3,6 +3,6 @@ lib/
 dist/
 *.tgz
 benchmark/bench-home-template/
-benchmark/runs/
+benchmark/ws-*/
 benchmark/run-home-*/
 benchmark/reports/

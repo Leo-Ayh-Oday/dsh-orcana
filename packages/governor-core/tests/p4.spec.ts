@@ -132,6 +132,18 @@ describe('completionViolations — rule 3 (unsupported claim, opt-in)', () => {
       { rule: 3, kind: 'unsupported-claim', token: 'test' },
     ])
   })
+
+  it('rule 3 violations are ordered by token ascending regardless of text order', () => {
+    // Text names "tests" before "build", but the violation list is ascending.
+    expect(completionViolations(
+      state(1, [receipt('npm run lint', 'pass', 1)]),
+      'All tests pass and the build pass too. Task complete.',
+      OPTIONS,
+    )).toEqual([
+      { rule: 3, kind: 'unsupported-claim', token: 'build' },
+      { rule: 3, kind: 'unsupported-claim', token: 'test' },
+    ])
+  })
 })
 
 describe('claimedTokens', () => {

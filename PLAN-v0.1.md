@@ -515,6 +515,26 @@ gates:
 
 **遗留(单列,非本批次)**:H1 resume 重放接线(adapter 无 session 重建监听,库层机制齐备)、H2 OS 层网络隔离(缺 bench-run.sh wrapper)、M3 adapter apply() 行为级测试、M7 真实任务 prep 流程(origin 移除/fix 排除/allowlist)、R1-M3 重放多 block 假设(DSH ToolResultMessage 类型契约为单 block,低疑)。
 
+### 11.11 再审结论(修复复核,2026-08-16,已修)
+
+对 be7a593 修复的三路复核 + 修复本身再验证:
+
+1. **阻断级:runLive workspace 污染(已修)**:agent 直接在 git 跟踪的 tasks/demo/repo 上跑——两臂共享目录(后臂从前臂状态起步,破坏 §5.4 配对与 §10.6 唯一变量)、judge 在污染目录判定、git status 弄脏。修复:`stageWorkspace` per-run 副本(reflink/plain,复用 copyTree),agent 与 judge 都跑副本;hidden reproducer 镜像进副本(顺带落实 N1);record 记录 workspace 路径
+2. **N1 hidden reproducer 落实(已修)**:reproducer.js 移出 repo/ 到 `tasks/demo/hidden/`(manifest 加 `hidden` 字段,demo digest → v3);agent 工作区不再含期望值;verify-task-gates.sh Gate B 前镜像 hidden 进临时副本(与 judge 同语义)
+3. **M4 cost fuse 正则脆弱(已修)**:countSessionTokens 改为 JSON.parse 逐行解析(与 aggregate 同源),字段序无关、消息正文内嵌 usage 字面串不误计;补 4 个测试(字段序/嵌套字面串/跨 session/缺失)
+4. **verify-task-gates.sh(已修)**:manifest 缺失 → hard fail(不再静默 fallback 默认命令);gates JSON 语义修正——`reproducer.base: "FAIL"`(§5.5 编码,原 true 语义倒置);demo-gates.json 重新生成
+5. **M1 测试真正锁定(已修)**:补区分性测试——同指纹先 mutation:false 观察、后 mutation:true 重放(判 repeated 且 significant 不置位)→ 仅 turn.mutation 兜底;删除 flag 该轮即零进展
+6. **L3 可观测性质(已修)**:补 `snapshot().ring` 在 mutation 后为空的断言(清理唯一可观测性质)
+7. **rule3 升序直接断言(已修)**:多 token 文本(tests 先于 build)断言 violation 按 build→test 升序
+8. **reps>1 报告(已修)**:renderPairedReport 按 (task, rep) 分组,reps>1 不再丢对;行带 rep
+9. **env_pin 假阳性(已修)**:catch 路径传 fullEnv/pins,不再记录 'leaked';新增 proxy 状态记录(HTTP(S)_PROXY set/unset)
+10. **新增路径测试(已修)**:countSessionTokens/stageWorkspace/collectPins/fileDigest 全部补断言(45/45)
+11. **文档(已修)**:architecture.md 标注 H1 待接线(不再过度声称);.gitignore 加 benchmark/ws-*/、删死条目 benchmark/runs/
+
+**遗留项复核(状态未变,与 §11.10 声明一致)**:H1 resume 接线(非阻断 P7——headless 单次运行流内无 resume;交互 resume 时引擎从零起步,有 maxForced 兜底)、H2 OS 层网络隔离(仍为 P7 live 前置,methodology 表述诚实)、M3 adapter 行为级测试(纯函数覆盖,非阻断)、M7 真实任务 prep(非阻断 demo)。
+
+**结论**:全量审核两轮后,阻断级问题清零;runner 38→45 测试,governor-core 70→72;剩余遗留项均已评估并单列。
+
 ## 下一步(P7)
 
-A/B 实验 + paired 分析:补 bench-run.sh(OS 层网络隔离)与 resume 接线后,在具备模型凭证的环境运行 `supervisor.mjs --live`;导出 session 指标(aggregate)+ judge 判定;报告 paired success/call/token/wall deltas + 纪律指标(duplicate reads/commands/zero-progress rounds)+ 全量 pin 清单(§5.8,§7)。
+A/B 实验 + paired 分析:补 bench-run.sh(OS 层网络隔离,含 proxy 剥离)与 H1 resume 接线后,在具备模型凭证的环境运行 `supervisor.mjs --live`;导出 session 指标(aggregate)+ judge 判定;报告 paired success/call/token/wall deltas + 纪律指标(duplicate reads/commands/zero-progress rounds)+ 全量 pin 清单(§5.8,§7)。

@@ -116,8 +116,11 @@ describe('ProgressFactEngine.applyEvent (engine behavior)', () => {
     engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":2}' }))
     engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":3}' }))
     engine.applyEvent(event({ tool: 'write', canonicalArgs: '{"p":1}', mutation: true }))
-    // gen 1: every pre-mutation entry was cleared; the old calls replay as
-    // first-observation (never repeated) — and the window is not polluted.
+    // gen 1: every pre-mutation entry was cleared — the ring itself is empty
+    // (the only observable property of the cleanup).
+    expect(engine.snapshot().ring).toEqual([])
+    // Old calls replay as first-observation (never repeated), and the window
+    // is not polluted.
     expect(engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":1}' }))).toEqual({ kind: 'first-observation' })
     engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":2}' }))
     engine.applyEvent(event({ tool: 'read', canonicalArgs: '{"p":3}' }))

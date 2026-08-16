@@ -9,7 +9,7 @@ without external dependencies or network.
 toward negative infinity drops the sign (`formatMoney(-1.5)` → `$-2.50`
 instead of `-$1.50`). The existing suite only covers positive amounts.
 
-## Three gates (verified 2026-08-16)
+## Three gates (verified 2026-08-16, re-runnable via scripts/verify-task-gates.sh)
 
 | Gate | Command | Result |
 |---|---|---|
@@ -17,10 +17,14 @@ instead of `-$1.50`). The existing suite only covers positive amounts.
 | B (reproducer red at base) | `node reproducer.js` | FAIL (2 cases) |
 | C (official fix green) | `npm test && node reproducer.js` | PASS |
 
-Fix shape: handle the sign before flooring (`Math.floor(abs / 100)`).
+Dated record: `gates/demo-gates.json`. Fix shape: handle the sign before
+flooring (`Math.floor(abs / 100)`); official fix in `gates/fix/src/format.js`.
 
 ## Layout
 
-- `repo/` — the task workspace (base = buggy)
-- `reproducer.js` — hidden reproducer (Gate B / judge input)
+- `repo/` — the task workspace (base = buggy); the agent NEVER sees
+  `hidden/` — the runner stages a per-run copy and mirrors the hidden
+  reproducer into it only when the judge would (PLAN 5.1 Hidden Reproducer)
+- `hidden/reproducer.js` — hidden reproducer (Gate B / judge input)
+- `gates/` — dated gate records + official fix
 - `../manifests/demo-format-money.json` — frozen manifest (digest pinned)

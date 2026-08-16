@@ -22,18 +22,13 @@ OUT="$TASK_DIR/gates/$NAME-gates.json"
 command -v jq >/dev/null || { echo "error: jq required" >&2; exit 1; }
 [ -d "$REPO" ] || { echo "error: $REPO missing" >&2; exit 1; }
 
-# The verification commands come from the frozen manifest.
+# The verification commands come from the frozen manifest — REQUIRED.
 MANIFEST="${2:-$(cd "$(dirname "$TASK_DIR")/.." && pwd)/manifests/$NAME.json}"
-if [ -f "$MANIFEST" ]; then
-  BASELINE="$(jq -r '.verification.baseline_command' "$MANIFEST")"
-  REPRODUCER="$(jq -r '.verification.reproducer' "$MANIFEST")"
-  ACCEPTANCE="$(jq -r '.verification.acceptance' "$MANIFEST")"
-else
-  echo "warning: no manifest at $MANIFEST; using defaults" >&2
-  BASELINE="npm test"
-  REPRODUCER="node reproducer.js"
-  ACCEPTANCE="npm test && node reproducer.js"
-fi
+[ -f "$MANIFEST" ] || { echo "error: manifest not found at $MANIFEST (pass it explicitly)" >&2; exit 1; }
+BASELINE="$(jq -r '.verification.baseline_command' "$MANIFEST")"
+REPRODUCER="$(jq -r '.verification.reproducer' "$MANIFEST")"
+ACCEPTANCE="$(jq -r '.verification.acceptance' "$MANIFEST")"
+HIDDEN_DIR="$(cd "$(dirname "$TASK_DIR")" && pwd)/$NAME/hidden"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -54,6 +49,10 @@ run_cmd() { # name, expect-pass, command...
 pushd "$WORK" >/dev/null
 GATE_A=false; GATE_B=false; GATE_C_AB=false; GATE_C_RB=false; GATE_C_AC=false
 run_cmd "Gate A ($BASELINE)" pass "$BASELINE" && GATE_A=true
+if [ -d "$HIDDEN_DIR" ]; then
+  # The hidden reproducer joins the workspace exactly as the judge sees it.
+  cp -a "$HIDDEN_DIR/." "$WORK/"
+fi
 run_cmd "Gate B ($REPRODUCER)" fail "$REPRODUCER" && GATE_B=true
 if [ -d "$FIX_DIR" ]; then
   while IFS= read -r fix; do
@@ -68,14 +67,16 @@ run_cmd "Gate C acceptance ($ACCEPTANCE)" pass "$ACCEPTANCE" && GATE_C_AC=true
 popd >/dev/null
 
 mkdir -p "$(dirname "$OUT")"
+# Gate semantics follow the manifest (§5.5): baseline existing suite PASS,
+# reproducer on the BASE is expected FAIL, official fix PASS on both.
 jq -n \
   --arg task "$NAME" \
   --argjson baseline "$GATE_A" \
-  --argjson reproducer "$GATE_B" \
+  --arg reproducer_base "$([ "$GATE_B" = true ] && echo FAIL || echo 'UNEXPECTED-PASS')" \
   --argjson fix_baseline "$GATE_C_AB" \
   --argjson fix_reproducer "$GATE_C_RB" \
   --argjson fix_acceptance "$GATE_C_AC" \
-  '{task: $task, verified_at: (now | todate), gates: {baseline: {existing_suite: $baseline}, reproducer: {base: $reproducer}, official_fix: {existing_suite: $fix_baseline, reproducer: $fix_reproducer, acceptance: $fix_acceptance}}}' \
+  '{task: $task, verified_at: (now | todate), gates: {baseline: {existing_suite: $baseline}, reproducer: {base: $reproducer_base}, official_fix: {existing_suite: $fix_baseline, reproducer: $fix_reproducer, acceptance: $fix_acceptance}}}' \
   > "$OUT"
 echo "gates recorded at $OUT"
 [ "$GATE_A" = true ] && [ "$GATE_B" = true ] && [ "$GATE_C_AB" = true ] && [ "$GATE_C_RB" = true ] && [ "$GATE_C_AC" = true ]
