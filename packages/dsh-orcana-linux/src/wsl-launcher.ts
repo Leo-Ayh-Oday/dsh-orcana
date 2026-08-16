@@ -3,6 +3,7 @@ import { augmentWslHostEnvironment } from './wsl-host-env.js'
 import {
   launchWslBridge,
   parseWslBridgeArgs,
+  parseWslUncPath,
   windowsPathToWsl,
   type WslBridgeOptions,
 } from './wsl-bridge.js'
@@ -50,6 +51,20 @@ function pluginPnpmArgsStart(args: readonly string[], pluginIndex: number): numb
     return undefined
   }
   return i
+}
+
+/**
+ * Choose the WSL distro before any absolute-path translation. A WSL UNC cwd
+ * owns its distro; an explicit selector may agree with it but may not silently
+ * redirect that workspace into another Linux world.
+ */
+export function distroForWindowsWorkspace(cwd: string, configured?: string): string | undefined {
+  const unc = parseWslUncPath(cwd)
+  if (unc === undefined) return configured
+  if (configured !== undefined && configured.toLowerCase() !== unc.distro.toLowerCase()) {
+    throw new Error(`cwd belongs to WSL distro '${unc.distro}' but --wsl-distro selected '${configured}'`)
+  }
+  return configured ?? unc.distro
 }
 
 /**
@@ -119,13 +134,19 @@ export async function launchDshOrcana(
 
   const effectiveEnv = augmentWslHostEnvironment(env)
   const parsed = parseWslBridgeArgs(rawArgs, effectiveEnv)
-  if (parsed.mode !== 'run') {
-    return await launchWslBridge(canonicalBridgeArgs(parsed, parsed.dshArgs), effectiveEnv, cwd)
+  const selectedDistro = distroForWindowsWorkspace(cwd, parsed.distro)
+  const baseOptions: WslBridgeOptions = {
+    ...parsed,
+    ...(selectedDistro === undefined ? {} : { distro: selectedDistro }),
   }
 
-  const plugin = translateDshPluginPathSpecsForWsl(parsed.dshArgs, parsed.distro)
+  if (parsed.mode !== 'run') {
+    return await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
+  }
+
+  const plugin = translateDshPluginPathSpecsForWsl(parsed.dshArgs, selectedDistro)
   const effectiveOptions: WslBridgeOptions = {
-    ...parsed,
+    ...baseOptions,
     ...(plugin.distro === undefined ? {} : { distro: plugin.distro }),
     dshArgs: plugin.args,
   }
