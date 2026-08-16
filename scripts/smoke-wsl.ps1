@@ -9,6 +9,14 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Get-BridgePrefix {
+  $bridgeArgs = @()
+  if ($Distro -ne "") {
+    $bridgeArgs += @("--wsl-distro", $Distro)
+  }
+  return $bridgeArgs
+}
+
 function Invoke-Orcana {
   param(
     [Parameter(Mandatory = $true)]
@@ -17,10 +25,7 @@ function Invoke-Orcana {
     [string]$Label
   )
 
-  $bridgeArgs = @()
-  if ($Distro -ne "") {
-    $bridgeArgs += @("--wsl-distro", $Distro)
-  }
+  $bridgeArgs = @(Get-BridgePrefix)
   $bridgeArgs += $Arguments
 
   Write-Host ""
@@ -31,6 +36,42 @@ function Invoke-Orcana {
   if ($LASTEXITCODE -ne 0) {
     throw "$Label failed with exit code $LASTEXITCODE"
   }
+}
+
+function Assert-NativeEvidenceComposition {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments,
+    [Parameter(Mandatory = $true)]
+    [string]$Label
+  )
+
+  $bridgeArgs = @(Get-BridgePrefix)
+  $bridgeArgs += $Arguments
+
+  Write-Host ""
+  Write-Host "==> $Label"
+  Write-Host ("dsh-orcana " + (($bridgeArgs | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join " "))
+
+  $config = (& dsh-orcana @bridgeArgs 2>&1 | Out-String)
+  $code = $LASTEXITCODE
+  if ($code -ne 0) {
+    Write-Host $config
+    throw "$Label failed with exit code $code"
+  }
+
+  $native = "name: '@leooday/dsh-orcana-linux/native-evidence'"
+  $legacy = "name: '@leooday/dsh-orcana-linux'"
+  if (-not $config.Contains($native)) {
+    Write-Host $config
+    throw "$Label did not compose the native-evidence runtime row"
+  }
+  if ($config.Contains($legacy)) {
+    Write-Host $config
+    throw "$Label still composes the legacy argv-hardening root row"
+  }
+
+  Write-Host "PASS: native-evidence row present; legacy hardening row absent"
 }
 
 if ($env:OS -ne "Windows_NT") {
@@ -71,22 +112,21 @@ if (-not $SkipInstall) {
 
   # Re-run doctor after installation. The second pass verifies exact manifests,
   # real ESM imports/peer fallback, WSL Web localhost relay, proxy reachability,
-  # and workspace/Git execution readiness without making a model request.
+  # workspace/Git execution readiness, and cross-OS parity without a model call.
   Invoke-Orcana -Label "Post-install product verification" -Arguments @(
     "--wsl-profile", $Profile,
     "--wsl-doctor"
   )
 }
 
-Invoke-Orcana -Label "Headless Orcana profile composition" -Arguments @(
+Assert-NativeEvidenceComposition -Label "Headless Orcana native-evidence composition" -Arguments @(
   "--profile", $Profile,
   "--dump-config"
 )
 
-# Proves the product alias itself: `web` must be rewritten to <profile>-web and
-# must pass the strict Orcana profile gate. --dump-config does not open a server,
-# browser, or model session.
-Invoke-Orcana -Label "Orcana Web alias composition" -Arguments @(
+# Proves the product alias itself: `web` must be rewritten to <profile>-web,
+# pass the strict Orcana profile gate, and mount the same native-evidence row.
+Assert-NativeEvidenceComposition -Label "Orcana Web native-evidence composition" -Arguments @(
   "--wsl-profile", $Profile,
   "web",
   "--dump-config"
