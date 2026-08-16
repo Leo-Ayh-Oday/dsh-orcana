@@ -20,6 +20,22 @@ const DEFAULT_FORWARD_ENV = Object.freeze([
 
 const NEVER_IMPLICITLY_FORWARD = new Set(['DSH_HOME', 'HOME', 'PATH', 'Path'])
 
+const DSH_RESOLVER_SCRIPT = [
+  'if command -v dsh >/dev/null 2>&1; then exec dsh "$@"; fi',
+  'if command -v npx >/dev/null 2>&1; then exec npx --yes @deepseek-ai/dsh "$@"; fi',
+  'printf "%s\\n" "dsh-orcana: neither dsh nor npx is available in this Linux execution world" >&2',
+  'exit 127',
+].join('\n')
+
+const DOCTOR_SCRIPT = [
+  'fail=0',
+  'printf "kernel: "; uname -sr || fail=1',
+  'if command -v node >/dev/null 2>&1; then printf "node: "; node --version; else printf "node: MISSING\\n"; fail=1; fi',
+  'if command -v dsh >/dev/null 2>&1; then printf "dsh: "; command -v dsh; elif command -v npx >/dev/null 2>&1; then printf "dsh: fallback via npx @deepseek-ai/dsh\\n"; else printf "dsh: MISSING (and npx unavailable)\\n"; fail=1; fi',
+  'for x in bwrap prlimit setsid; do if command -v "$x" >/dev/null 2>&1; then printf "%s: " "$x"; command -v "$x"; else printf "%s: MISSING\\n" "$x"; fi; done',
+  'exit "$fail"',
+].join('; ')
+
 export interface WslBridgeOptions {
   distro?: string
   profile: string
@@ -33,8 +49,8 @@ export interface WslUncPath {
 }
 
 /**
- * Parse only bridge-owned `--wsl-*` flags. Every other argument is preserved
- * byte-for-byte for DSH, so new DSH CLI flags do not require bridge updates.
+ * Parse only bridge-owned `--wsl-*` flags before the first `--`. The sentinel
+ * itself and every argument after it are preserved byte-for-byte for DSH.
  */
 export function parseWslBridgeArgs(
   args: readonly string[],
@@ -53,6 +69,7 @@ export function parseWslBridgeArgs(
       continue
     }
     if (arg === '--') {
+      dshArgs.push(arg)
       passthrough = true
       continue
     }
@@ -91,10 +108,14 @@ export function parseWslBridgeArgs(
 }
 
 export function hasDshProfileArg(args: readonly string[]): boolean {
-  return args.some((arg) => arg === '--profile' || arg.startsWith('--profile='))
+  for (const arg of args) {
+    if (arg === '--') return false
+    if (arg === '--profile' || arg.startsWith('--profile=')) return true
+  }
+  return false
 }
 
-/** Final DSH argv after bridge defaults. Explicit DSH --profile always wins. */
+/** Final DSH argv after bridge defaults. Explicit pre-sentinel DSH --profile wins. */
 export function dshArgsForBridge(options: WslBridgeOptions): string[] {
   if (options.mode === 'install') {
     return ['plugin', '--profile', options.profile, 'add', ...DEFAULT_WSL_BUNDLES]
@@ -169,17 +190,36 @@ export function hostCwdForWslSpawn(
   return env.USERPROFILE ?? env.SystemRoot ?? env.SYSTEMROOT ?? 'C:\\'
 }
 
-/** Build wsl.exe argv without shell interpolation. */
+export type WindowsWorkspaceKind = 'wsl-native' | 'windows-mounted'
+
+export function windowsWorkspaceKind(cwd: string): WindowsWorkspaceKind {
+  return parseWslUncPath(cwd) === undefined ? 'windows-mounted' : 'wsl-native'
+}
+
+/**
+ * Build the WSL argv. A caller-supplied DSH command is executed directly.
+ * Otherwise a fixed shell resolver prefers `dsh` and safely falls back to the
+ * official `npx --yes @deepseek-ai/dsh` form. User DSH/task arguments are
+ * positional parameters (`$@`), never interpolated into the resolver script.
+ */
 export function buildWslDshArgs(
   linuxCwd: string,
   dshArgs: readonly string[],
   distro?: string,
-  dshCommand = 'dsh',
+  dshCommand?: string,
 ): string[] {
+  if (dshCommand !== undefined && dshCommand.length > 0) {
+    return [
+      ...distroPrefix(distro),
+      '--cd', linuxCwd,
+      '--exec', dshCommand,
+      ...dshArgs,
+    ]
+  }
   return [
     ...distroPrefix(distro),
     '--cd', linuxCwd,
-    '--exec', dshCommand,
+    '--exec', '/bin/sh', '-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana',
     ...dshArgs,
   ]
 }
@@ -222,13 +262,6 @@ export function environmentForWsl(
   return { ...env, ...(merged.length > 0 ? { WSLENV: merged.join(':') } : {}) }
 }
 
-const DOCTOR_SCRIPT = [
-  'printf "kernel: "; uname -sr',
-  'for x in node dsh bwrap prlimit; do',
-  '  if command -v "$x" >/dev/null 2>&1; then printf "%s: " "$x"; command -v "$x"; else printf "%s: MISSING\\n" "$x"; fi',
-  'done',
-].join('; ')
-
 function exitCodeFromSignal(signal: NodeJS.Signals | null): number {
   if (signal === 'SIGINT') return 130
   if (signal === 'SIGTERM') return 143
@@ -237,7 +270,8 @@ function exitCodeFromSignal(signal: NodeJS.Signals | null): number {
 
 /**
  * Launch the complete DSH process in one Linux execution world. No task
- * command is shell-quoted or re-parsed: wsl.exe receives DSH argv directly.
+ * command is shell-quoted or re-parsed: wsl.exe receives DSH argv directly or
+ * through the fixed resolver whose user-controlled values live only in `$@`.
  */
 export async function launchWslBridge(
   rawArgs: readonly string[],
@@ -245,16 +279,23 @@ export async function launchWslBridge(
   cwd = process.cwd(),
 ): Promise<number> {
   const options = parseWslBridgeArgs(rawArgs, env)
-  const dshCommand = env.ORCANA_WSL_DSH_COMMAND?.trim() || 'dsh'
+  const dshCommand = env.ORCANA_WSL_DSH_COMMAND?.trim() || undefined
 
   // The same entrypoint remains useful from inside WSL/native Linux: no nested
   // WSL, just run DSH with the identical profile/install semantics.
   if (process.platform !== 'win32') {
-    const args = options.mode === 'doctor'
-      ? ['-lc', DOCTOR_SCRIPT]
-      : dshArgsForBridge(options)
-    const command = options.mode === 'doctor' ? '/bin/sh' : dshCommand
-    return await spawnAndWait(command, args, { env, cwd, relaySignals: true })
+    if (options.mode === 'doctor') {
+      return await spawnAndWait('/bin/sh', ['-lc', DOCTOR_SCRIPT], { env, cwd, relaySignals: true })
+    }
+    const dshArgs = dshArgsForBridge(options)
+    if (dshCommand !== undefined) {
+      return await spawnAndWait(dshCommand, dshArgs, { env, cwd, relaySignals: true })
+    }
+    return await spawnAndWait('/bin/sh', ['-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', ...dshArgs], {
+      env,
+      cwd,
+      relaySignals: true,
+    })
   }
 
   const mapped = windowsPathToWsl(cwd, options.distro)
@@ -263,6 +304,12 @@ export async function launchWslBridge(
   const hostCwd = hostCwdForWslSpawn(cwd, env)
 
   if (options.mode === 'doctor') {
+    const kind = windowsWorkspaceKind(cwd)
+    if (kind === 'wsl-native') {
+      console.error('[orcana-wsl] workspace: WSL-native filesystem (fast path)')
+    } else {
+      console.error('[orcana-wsl] workspace: Windows filesystem mounted into WSL (compatible; WSL-native project storage is faster for Linux-heavy I/O)')
+    }
     const args = [
       ...distroPrefix(distro),
       '--cd', mapped.linuxPath,
