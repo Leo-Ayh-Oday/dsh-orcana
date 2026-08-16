@@ -1,0 +1,194 @@
+import { spawn } from 'node:child_process'
+import {
+  DEFAULT_WSL_BUNDLES,
+  DEFAULT_WSL_DSH_PACKAGE,
+  DSH_VERSION_CONTRACT_SCRIPT,
+  environmentForWsl,
+  hostCwdForWslSpawn,
+  windowsPathToWsl,
+} from './wsl-bridge.js'
+import {
+  DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
+  DEFAULT_WSL_PNPM_PACKAGE,
+  DSH_WEB_APP_PACKAGE,
+  buildWslCompanionInstallArgs,
+  nativeCompanionInstallShellArgs,
+} from './wsl-install.js'
+import {
+  buildWslCompanionProfileExpectation,
+  buildWslProfileVerifyArgs,
+  profileVerifyNodeArgs,
+} from './wsl-profile.js'
+
+/** Product-owned companion profile name; the upstream `web` profile is never mutated. */
+export function orcanaWebProfileName(baseProfile: string): string {
+  return `${baseProfile}-web`
+}
+
+/**
+ * Turn DSH's `web` alias into an explicit Orcana Web profile invocation.
+ * Alias-owned flags keep their order, so `web --patch x --host ...` becomes
+ * `--profile <base>-web --patch x --host ...` and DSH retains the same
+ * launcher/app argument boundary.
+ */
+export function rewriteOrcanaWebInvocation(
+  dshArgs: readonly string[],
+  baseProfile: string,
+): string[] {
+  if (dshArgs[0] !== 'web') return [...dshArgs]
+  return ['--profile', orcanaWebProfileName(baseProfile), ...dshArgs.slice(1)]
+}
+
+function exitCodeFromSignal(signal: NodeJS.Signals | null): number {
+  if (signal === 'SIGINT') return 130
+  if (signal === 'SIGTERM') return 143
+  return signal === null ? 1 : 128
+}
+
+async function runChild(
+  command: string,
+  args: readonly string[],
+  options: { env: NodeJS.ProcessEnv; cwd: string; windowsWsl: boolean },
+): Promise<number> {
+  return await new Promise<number>((resolve) => {
+    const child = spawn(command, [...args], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: 'inherit',
+      windowsHide: false,
+    })
+    let settled = false
+    const onSigint = () => {
+      // On Windows the console event already reaches wsl.exe. The listener
+      // merely keeps this Node launcher alive long enough to return its code.
+    }
+    const onSigbreak = () => {
+      // Same ownership rule as Ctrl+C.
+    }
+    const finish = (code: number) => {
+      if (settled) return
+      settled = true
+      if (options.windowsWsl) {
+        process.off('SIGINT', onSigint)
+        process.off('SIGBREAK', onSigbreak)
+      }
+      resolve(code)
+    }
+    if (options.windowsWsl) {
+      process.on('SIGINT', onSigint)
+      process.on('SIGBREAK', onSigbreak)
+    }
+    child.once('error', (error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') console.error(`${command} was not found`)
+      else console.error(error instanceof Error ? error.message : String(error))
+      finish(127)
+    })
+    child.once('close', (code, signal) => finish(code ?? exitCodeFromSignal(signal)))
+  })
+}
+
+function webExpectation(dshPackage: string) {
+  return buildWslCompanionProfileExpectation(
+    dshPackage,
+    DSH_WEB_APP_PACKAGE,
+    DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
+    DEFAULT_WSL_BUNDLES,
+  )
+}
+
+/**
+ * Verify the Orcana Web companion profile. Missing profile is advisory for
+ * doctor (same policy as the headless profile); every other mismatch is fatal.
+ */
+export async function verifyOrcanaWebProfile(
+  baseProfile: string,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd = process.cwd(),
+  distro?: string,
+): Promise<number> {
+  const dshPackage = env.ORCANA_WSL_DSH_PACKAGE?.trim() || DEFAULT_WSL_DSH_PACKAGE
+  let expectation
+  try {
+    expectation = webExpectation(dshPackage)
+  } catch (error) {
+    console.error(`[orcana-wsl] exact Web profile check unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    return 0
+  }
+  const webProfile = orcanaWebProfileName(baseProfile)
+
+  if (process.platform !== 'win32') {
+    const code = await runChild(process.execPath, profileVerifyNodeArgs(webProfile, expectation), {
+      env,
+      cwd,
+      windowsWsl: false,
+    })
+    return code === 2 ? 0 : code
+  }
+
+  const hostCwd = hostCwdForWslSpawn(cwd, env)
+  const childEnv = environmentForWsl(env)
+  const code = await runChild('wsl.exe', buildWslProfileVerifyArgs(webProfile, expectation, distro), {
+    env: childEnv,
+    cwd: hostCwd,
+    windowsWsl: true,
+  })
+  return code === 2 ? 0 : code
+}
+
+/**
+ * Install and strictly verify the Orcana Web profile using the same pinned
+ * DSH/pnpm/Orcana closure as headless, replacing only the DSH companion bundle
+ * with `@deepseek-ai/dsh-web-app` at the exact CLI version.
+ */
+export async function installOrcanaWebProfile(
+  baseProfile: string,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd = process.cwd(),
+  distro?: string,
+): Promise<number> {
+  const dshPackage = env.ORCANA_WSL_DSH_PACKAGE?.trim() || DEFAULT_WSL_DSH_PACKAGE
+  const pnpmPackage = env.ORCANA_WSL_PNPM_PACKAGE?.trim() || DEFAULT_WSL_PNPM_PACKAGE
+  const webProfile = orcanaWebProfileName(baseProfile)
+  const installDshArgs = ['plugin', '--profile', webProfile, 'add', ...DEFAULT_WSL_BUNDLES]
+  const expectation = webExpectation(dshPackage)
+
+  if (process.platform !== 'win32') {
+    const installCode = await runChild('/bin/sh', nativeCompanionInstallShellArgs(
+      installDshArgs,
+      dshPackage,
+      DSH_WEB_APP_PACKAGE,
+      DSH_VERSION_CONTRACT_SCRIPT,
+      pnpmPackage,
+    ), { env, cwd, windowsWsl: false })
+    if (installCode !== 0) return installCode
+    return await runChild(process.execPath, profileVerifyNodeArgs(webProfile, expectation), {
+      env,
+      cwd,
+      windowsWsl: false,
+    })
+  }
+
+  const mapped = windowsPathToWsl(cwd, distro)
+  const selectedDistro = distro ?? mapped.distro
+  const hostCwd = hostCwdForWslSpawn(cwd, env)
+  const childEnv = environmentForWsl(env)
+  const installCode = await runChild('wsl.exe', buildWslCompanionInstallArgs(
+    mapped.linuxPath,
+    installDshArgs,
+    dshPackage,
+    DSH_WEB_APP_PACKAGE,
+    DSH_VERSION_CONTRACT_SCRIPT,
+    selectedDistro,
+    pnpmPackage,
+  ), {
+    env: childEnv,
+    cwd: hostCwd,
+    windowsWsl: true,
+  })
+  if (installCode !== 0) return installCode
+  return await runChild('wsl.exe', buildWslProfileVerifyArgs(webProfile, expectation, selectedDistro), {
+    env: childEnv,
+    cwd: hostCwd,
+    windowsWsl: true,
+  })
+}
