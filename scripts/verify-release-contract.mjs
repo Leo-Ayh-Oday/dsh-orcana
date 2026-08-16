@@ -100,6 +100,8 @@ const linux = readJson('packages/dsh-orcana-linux/package.json')
 const linuxBundle = readJson('packages/dsh-orcana-linux-bundle/package.json')
 const linuxBundlePatch = readFileSync(resolve(root, 'packages/dsh-orcana-linux-bundle/cordis.patch.yml'), 'utf8')
 const profileVerifier = readFileSync(resolve(root, 'packages/dsh-orcana-linux/src/wsl-profile.ts'), 'utf8')
+const nativeEvidence = readFileSync(resolve(root, 'packages/dsh-orcana-linux/src/native-evidence.ts'), 'utf8')
+const nativeCorrelation = readFileSync(resolve(root, 'packages/dsh-orcana-linux/src/native-tool-correlation.ts'), 'utf8')
 const lock = readFileSync(resolve(root, 'pnpm-lock.yaml'), 'utf8')
 
 if (rootManifest.packageManager !== 'pnpm@11.7.0') {
@@ -116,9 +118,8 @@ for (const manifest of publicPackages) {
   }
 }
 
-// Product architecture gate: DSH owns native enforcement. The default bundle
-// must observe DSH receipts and must never regress to the legacy argv-hardening
-// package root.
+// DSH is the sole native enforcement owner. The default bundle must consume
+// DSH receipts and must never regress to the legacy argv-hardening package root.
 const nativeEvidenceRow = "name: '@leooday/dsh-orcana-linux/native-evidence'"
 const legacyRootRow = "name: '@leooday/dsh-orcana-linux'"
 if (!linuxBundlePatch.includes(nativeEvidenceRow)) {
@@ -137,11 +138,19 @@ if (typeof nativeExport !== 'object' || nativeExport === null
   || nativeExport.types !== './lib/types/native-evidence.d.ts') {
   fail('@leooday/dsh-orcana-linux must publish the ./native-evidence JS/types export pair')
 }
-if (linux.peerDependencies?.['@deepseek-ai/dsh-shell'] !== '0.1.0-rc.5') {
-  fail(`Linux native-evidence ABI must pin @deepseek-ai/dsh-shell@0.1.0-rc.5, found ${JSON.stringify(linux.peerDependencies?.['@deepseek-ai/dsh-shell'])}`)
+for (const dependency of ['@deepseek-ai/dsh-shell', '@deepseek-ai/dsh-tools']) {
+  if (linux.peerDependencies?.[dependency] !== '0.1.0-rc.5') {
+    fail(`Linux native-evidence ABI must pin ${dependency}@0.1.0-rc.5, found ${JSON.stringify(linux.peerDependencies?.[dependency])}`)
+  }
 }
 if (!profileVerifier.includes("'@leooday/dsh-orcana-linux/native-evidence'")) {
   fail('WSL profile verifier does not probe the actual native-evidence runtime subpath')
+}
+if (!nativeEvidence.includes('currentNativeToolCorrelation()') || !nativeEvidence.includes('installNativeToolCorrelation(ctx)')) {
+  fail('native-evidence is not wired to exact DSH tool/session correlation')
+}
+if (!nativeCorrelation.includes("ctx.on('tools/execute'") || !nativeCorrelation.includes('AsyncLocalStorage')) {
+  fail('native tool correlation must use the official tools/execute seam plus AsyncLocalStorage')
 }
 
 if (lock.includes('@orcana/')) {
@@ -165,6 +174,7 @@ for (const [packageName, expected] of [
   ['@deepseek-ai/cordis', '4.0.1'],
   ['@deepseek-ai/dsh-sandbox', '0.1.0-rc.5'],
   ['@deepseek-ai/dsh-shell', '0.1.0-rc.5'],
+  ['@deepseek-ai/dsh-tools', '0.1.0-rc.5'],
 ]) {
   requireSpecifierInAnySection(
     lock,
@@ -183,6 +193,7 @@ for (const packageName of [
   '@deepseek-ai/dsh-shell',
   '@deepseek-ai/dsh-subprocess',
   '@deepseek-ai/dsh-subprocess-local',
+  '@deepseek-ai/dsh-tools',
 ]) {
   requireSpecifier(lock, 'packages/dsh-orcana-linux', 'devDependencies', packageName, '0.1.0-rc.5')
 }
