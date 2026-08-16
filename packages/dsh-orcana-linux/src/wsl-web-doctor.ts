@@ -71,6 +71,28 @@ async function hostReceivesToken(port: number, token: string): Promise<boolean> 
   })
 }
 
+async function reapRelayProbe(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await new Promise<void>((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      // This process exists only for a localhost doctor probe. If its own
+      // five-second lease failed to close it, terminating wsl.exe is safer than
+      // leaving an unowned diagnostics process behind.
+      try { child.kill() } catch { /* already gone */ }
+      finish()
+    }, 6000)
+    child.once('close', finish)
+    child.once('error', finish)
+  })
+}
+
 /**
  * Prove that a service bound to WSL 127.0.0.1 is reachable through Windows
  * 127.0.0.1. This is the exact transport DSH Web uses by default. No model,
@@ -93,8 +115,9 @@ export async function probeWslWebLocalhostRelay(
   })
 
   const port = await waitForPort(child)
-  if (port === undefined) return false
-  return await hostReceivesToken(port, token)
+  const reachable = port !== undefined && await hostReceivesToken(port, token)
+  await reapRelayProbe(child)
+  return reachable
 }
 
 export async function reportWslWebDoctor(
