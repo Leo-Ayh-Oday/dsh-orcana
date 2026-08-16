@@ -2,166 +2,365 @@
 
 [English](README.md) | 中文
 
-**Orcana 受限执行加固 for DeepSeek Harness (DSH)。**
+**Orcana 的 DSH 原生执行证据层 + Windows → WSL 单一 Linux 执行世界桥。**
 
-作为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件，
-在**官方** sandbox 契约之上提供原生加固层（无需 fork）。本包加固经过
-`ctx.sandbox` 的 DSH 执行 —— 它是兼容/加固层，**不是**完整的 Orcana Execution
-Fabric（cgroup v2 权限、pidfd 所有权、`ctx.subprocess` / `ctx.codeRuntime`
-拦截属于未来工作；见 R1 报告的 DEFERRED-01…06）。
+这个包现在承担两个明确职责：
 
-- **资源限制** — `memoryBytes` / `pidsMax` 在 Linux 上以 `prlimit` argv 前缀
-  执行（`--as` = RLIMIT_AS **地址空间近似**，不是 cgroup 内存上限；
-  `--nproc` = **PER-UID** 活跃任务上限，不是 per-cell PID 权限）。
-  `cpuQuotaUs` 需要 cgroup v2 权限，超出本包范围 —— 它总是降级。
-- **出网策略** — `network: 'none'` 拒绝全部网络：向 bwrap argv 注入
-  `--unshare-net`（全新网络命名空间，无路由），向 Seatbelt profile 追加
-  `(deny network*)`。
-- **默认 fail-closed** — 主机无法表达的请求层抛 `HARDENING_UNAVAILABLE`，
-  而不是无加固运行。设 `degradationPolicy` 为 `best-effort` 则改为记录并继续。
-- **执行证据** — 每次受限执行都记录进**有界**审计台账（`ctx.hardening`）：
-  请求事实、已应用层、结构化降级、失败记录、dropped/total 计数器。降级从不
-  静默。
+1. **Linux / WSL 治理证据** —— DSH 是唯一的 sandbox policy 与原生 enforcement
+   owner；Orcana 读取 DSH 真正产生的 shell result / `SandboxReceipt`，不再重复
+   套第二层资源限制或网络 namespace。
+2. **Windows → WSL 执行后端** —— `dsh-orcana` 把 Windows 只当启动面；任务开始
+   前，整个 DSH + Orcana runtime 已经进入同一个 WSL Linux execution world。
 
-## 保证（Guarantees）
-
-```
-✓ 经 ctx.sandbox 的受限执行（read-only / workspace-write）
-✓ 支持 runner 上的 network-none（bwrap / Seatbelt）
-✓ RLIMIT_AS / RLIMIT_NPROC 回退（地址空间 / PER-UID 语义）
-✓ 逐层可配置的 fail-closed（required | best-effort）
-✓ 有界审计台账（默认 1024 条，暴露 dropped/total）
-✓ 生命周期正确的 patch：dispose 精确恢复原始 confine
-✓ 重复活跃实例 fail loud（DUPLICATE_HARDENING_INSTANCE）
-✓ 每次插件挂载最多探测一次主机能力
-```
-
-## 不保证（Non-guarantees）
-
-```
-✗ danger-full-access 执行（它们绕过 ctx.sandbox —— 见下文）
-✗ cgroup v2 memory / pids / cpu 权限
-✗ per-cell PID 权限
-✗ CPU 配额（cpuQuotaUs 降级 / fail-closed）
-✗ 进程所有权 / 崩溃恢复
-✗ 服务生命周期（ctx.subprocess / ctx.codeRuntime / PTC worker 隔离）
+```text
+Windows Terminal / PowerShell
+        │
+        ▼
+    dsh-orcana
+        │  cwd / argv / env bridge
+        ▼
+       WSL
+        │
+        ▼
+       DSH
+  sandbox-policy
+        │
+        ▼
+ sandbox-local          ← 唯一原生 enforcement owner
+ cgroup / prlimit
+ network isolation
+        │
+        ▼
+      ctx.shell
+        │
+        ▼
+ SandboxReceipt
+        │
+        ▼
+@leooday/dsh-orcana-linux/native-evidence
+        │
+        ▼
+ ctx.orcanaLinuxEvidence
 ```
 
-## 范围：`danger-full-access`
+## 权限边界
 
-DSH 的 `danger-full-access` 模式完全绕过受限 sandbox 接缝（官方 bash executor
-运行 `super.run()`，从不调用 `ctx.sandbox.confine`）。该模式下的执行因此
-**在本包的执行权限之外**。`ctx.hardening.scope` 诚实报告这一点：
-`{ confinedModes: true, dangerFullAccess: false }`。加固 `danger-full-access`
-需要拦截 `ctx.subprocess` / shell 路径 —— 未来工作（DEFERRED-02）。
+### DSH 负责真正执行限制
+
+当前 DSH 的 `sandbox-policy` 已经正式拥有：
+
+- `mode`
+- `workspaceRoot`
+- `resourceLimits.memoryBytes`
+- `resourceLimits.cpuQuotaUs`
+- `resourceLimits.pidsMax`
+- `network: inherit | none`
+
+DSH 原生 sandbox provider 自己选择实际机制，例如 cgroup v2 或其明确记录语义
+差异的 `prlimit` fallback；它负责进程 attach/detach、cleanup，并最终生成真实的
+`SandboxReceipt`。
+
+**Orcana 不应再重复执行这一层。** 因此当前组合包加载的是：
+
+```text
+@leooday/dsh-orcana-linux/native-evidence
+```
+
+而不是旧包根入口。
+
+### Orcana 负责证据与治理
+
+`native-evidence` 观察 DSH 公共 `ctx.shell` 结果边界：
+
+- 不修改 `ShellExecSpec`、sandbox policy、argv、lifecycle、result object 或
+  process handle；
+- 前台任务在 `shell.run()` 真正完成后结算证据；
+- 后台任务等待原样返回的 `ShellProcess.done` 完成后再记录；
+- observer reload/HMR 后，已经启动的后台任务证据仍会归入同一**进程内共享
+  ledger**；这个性质不代表跨 DSH 进程重启持久化；
+- 记录 DSH 真 receipt：实际 layers、degraded、limits mechanism、cgroup path、
+  memory/CPU/PID peak、cleanup verification、live usage；
+- `danger-full-access` 只记录真实 sandbox facts，不伪造不存在的 native receipt；
+- 不保存原始 command，只保存 SHA-256 fingerprint 与 UTF-8 byte length，降低
+  command 中 token/secret 落入治理台账的风险；
+- ledger 有界，暴露 total / dropped / pending-background；
+- 记录在入账时递归冻结，调用方不能通过拿到 ledger 引用反向篡改审计事实；
+- DSH 原始 `ShellRunResult` / `SandboxReceipt` 保持调用方所有权，不会被 Orcana
+  freeze 或改写。
+
+服务入口：
+
+```ts
+ctx.orcanaLinuxEvidence
+```
+
+并明确声明自己的 authority：
+
+```ts
+{
+  enforcementOwner: 'dsh',
+  observationSeam: 'shell',
+  mutatesExecution: false,
+  dangerFullAccessObserved: true,
+}
+```
+
+### 因果查询
+
+正常 DSH ToolRuntime 调用会通过 `tools/execute` 上下文关联到：
+
+```text
+sessionId
+callId
+rootCallId
+toolName
+```
+
+并发 tool chain 与嵌套 Code Mode dispatch 使用 AsyncLocalStorage 隔离；直接程序化
+调用 `ctx.shell` 时则诚实保留为无 correlation 的执行证据。
+
+治理层可以直接按当前有界窗口查询，不必自己反复扫并解释 identity：
+
+```ts
+const bySession = ctx.orcanaLinuxEvidence.find({ sessionId })
+const byRootCall = ctx.orcanaLinuxEvidence.find({ rootCallId })
+const exact = ctx.orcanaLinuxEvidence.latest({ sessionId, callId })
+```
+
+多个条件是 AND；空查询会拒绝，调用方如果明确需要整个当前窗口就读取
+`ctx.orcanaLinuxEvidence.ledger`。
+
+### 当前 durability 边界
+
+当前 native evidence 是**进程内证据**：它能跨 observer reload/HMR 和正在运行的
+后台任务结算，但 DSH 进程重启后不会自动恢复。
+
+我们没有直接把新的 `orcana/native-execution` 事件塞进 Session log。原因是当前
+DSH 虽然允许 `SessionEventMap` 被插件扩展，并定义了 `ignorable?: true` 兼容标记，
+但公开 `Session.append()` 还没有让插件 writer 设置这个 marker 的入口。现在直接
+追加一个未知、非 ignorable 的新事件，会让旧 runtime 按协议拒绝恢复这个 session。
+
+因此在 DSH 提供安全的 ignorable plugin-event append seam 之前，**不能把当前内存
+ledger 当成跨进程 durable proof**。未来 Completion Authority 如果要求跨重启证据，
+必须显式检查持久化等级，而不是默认把当前 ledger 当成 Session 持久事实。
 
 ## 安装
 
-发布后，官方 DSH 组合包安装：
+推荐把 governor + Linux evidence 放在同一个 Orcana profile：
+
+```sh
+dsh plugin --profile orcana add \
+  @leooday/dsh-bundle \
+  @leooday/dsh-orcana-linux-bundle
+```
+
+只装 Linux evidence：
 
 ```sh
 dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 ```
 
-`dsh plugin add` 安装组合包，并自动以**中立默认值**激活加固行为 profile 层；
-通过该行的 config 启用加固层（见
-[bundle README](../dsh-orcana-linux-bundle/README.zh.md)）。发布前，使用
-[`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh)
-指向本地 tarball。
+组合包默认**不改变执行策略**。安装只建立观察/证据层，不会偷偷打开新的网络
+限制或资源上限。
 
-如需程序化嵌入（不走 profile 路径），直接安装包并在 harness 启动中加载插件：
+### 从旧加固配置升级
+
+Bundle `0.3.0` 保留 `dsh-orcana-linux` row id，但默认目标已经切换到
+`/native-evidence`。如果已有 profile 仍然给这个行提供旧字段：
+
+```text
+network
+resourceLimits
+degradationPolicy
+capabilities
+```
+
+新版会抛稳定错误：
+
+```text
+LEGACY_HARDENING_CONFIG_MOVED
+```
+
+而不是让 Schemastery 把字段静默剥掉、导致原来的限制升级后悄悄消失。
+`network/resourceLimits` 应迁到 DSH `sandbox-policy`；另外两个旧 Orcana knob 不做
+一一映射，真实 applied/degraded 状态以后由 DSH `SandboxReceipt` 提供。
+
+### 原生资源/网络限制要配 DSH
+
+通过后续 profile/user patch 修改 DSH 已有的 `sandbox-policy` 行。DSH patch 会替换
+该行整个 `config`，所以增加限制时要保留当前 mode 与 workspace root：
+
+```yaml
+- id: sandbox-policy
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.cwd()
+    network: none
+    resourceLimits:
+      memoryBytes: 536870912
+      pidsMax: 64
+      cpuQuotaUs: 50000
+```
+
+之后 Orcana 消费的是 DSH 真正执行后产生的 receipt，而不是第二份平行的
+“Orcana 估算加固结果”。
+
+### 程序化使用证据适配器
 
 ```sh
 npm i @leooday/dsh-orcana-linux
 ```
 
 ```ts
-import { Context } from '@deepseek-ai/cordis'
-import { apply as hardening } from '@leooday/dsh-orcana-linux'
+import nativeEvidence from '@leooday/dsh-orcana-linux/native-evidence'
 
-// 在 harness 启动中，ctx.plugin(LocalSandboxProvider, {...}) 之后：
-ctx.plugin(hardening, {
-  network: 'none',                                   // 拒绝出网
-  resourceLimits: { memoryBytes: 512 * 1024 * 1024 }, // RLIMIT_AS 近似
+ctx.plugin(nativeEvidence, {
+  ledgerMaxEntries: 1024,
 })
 ```
 
-## 配置
+## Windows → WSL：同一条命令、同一个 Linux 世界
 
-| 字段 | 类型 | 默认 | 含义 |
-|---|---|---|---|
-| `resourceLimits.memoryBytes` | number | — | `prlimit --as` 字节（**地址空间近似**，不是 "N MB RAM"） |
-| `resourceLimits.pidsMax` | number | — | `prlimit --nproc` 活跃任务上限（**PER-UID** —— 限制调用用户的所有进程） |
-| `resourceLimits.cpuQuotaUs` | number | — | 每 100ms 的 cgroup v2 cpu 配额 —— **本包永远不支持**；降级 / fail-closed |
-| `network` | `'inherit' \| 'none'` | — | `'none'` 时拒绝全部出网 |
-| `degradationPolicy.resourceLimits` | `'required' \| 'best-effort'` | `required` | fail-closed（抛 `HARDENING_UNAVAILABLE`）vs 记录并继续 |
-| `degradationPolicy.network` | `'required' \| 'best-effort'` | `required` | 同上，针对出网层 |
-| `ledgerMaxEntries` | number | 1024 | 有界审计窗口；更早的记录被丢弃并计入 `droppedCount` |
+Windows 安装一次 launcher：
 
-### 每次调用覆盖（Per-call overrides）
-
-调用方可以把 `resourceLimits` / `network` 附加到传给 `confine` 的 sandbox
-policy 对象上（例如 bash spec 的 `sandboxPolicy` 覆盖）；每次调用值优先于
-部署配置：
-
-```ts
-const spec = shell.resolve({ command: 'make build' })
-spec.sandboxPolicy = {
-  ...spec.sandboxPolicy!,
-  resourceLimits: { memoryBytes: 512 * 1024 * 1024, pidsMax: 32 },
-  network: 'none',
-}
+```powershell
+npm install -g @leooday/dsh-orcana-linux@^0.4.0
 ```
 
-降级策略与台账大小保持部署级。
+然后：
 
-> **安全说明（降级方向）：** 每次调用 carrier 只能*收窄或放宽*部署配置，
-> 绝不会静默收紧。任何调用方只要传 `sandboxPolicy` 带 `network: 'inherit'`
-> （或空的 `resourceLimits: {}`），就会覆盖部署级 `none` / 限制 —— 审计会
-> 记录每一次这样的调用（`requested`），但没有响亮信号。若你的部署把出网
-> 隔离视为强制，钉死 `degradationPolicy.network: 'required'` 并监控台账，
-> 而不是依赖每次调用的纪律。
+```powershell
+dsh-orcana --wsl-doctor
+dsh-orcana --wsl-install
+dsh-orcana "修复失败的测试"
+```
 
-> **`runnerCommand` 说明：** 当 sandbox provider 配置了自定义 `runnerCommand`
-> （操作者断言）时，runner 以 `argv[0]` 字符串精确相等识别 ——
-> `/usr/bin/bwrap` 或包装脚本**不**匹配 `'bwrap'`，因此 `network: 'none'`
-> 会降级（在默认 `required` 策略下 fail-closed）。这是响亮而非静默的，
-> 但可能让操作者意外：使用 argv[0] 恰好为 `bwrap` 的 runnerCommand
-> （或刻意设置 `degradationPolicy.network: 'best-effort'`）。
+Linux / WSL 里日常任务也是同一条：
 
-## 工作原理
+```sh
+dsh-orcana "修复失败的测试"
+```
 
-cordis 4.0.1 拒绝跨 fiber 替换服务，因此插件**patch 解析出的 `ctx.sandbox`
-provider 实例的 `confine` 方法**，而不是替换服务：
+目标 WSL 的 Node 必须满足当前 pinned DSH 契约：
 
-1. 内层 provider 照常限制文件效果（`bwrap` / Landlock / Seatbelt / Windows ACL），
-2. 插件对返回的 argv 施加各层（`prlimit` 前缀、`--unshare-net` /
-   `(deny network*)` 注入），`required` 层无法表达时 fail-closed，
-3. 台账记录请求了什么、应用了什么、降级了什么。
+```text
+^22.19.0 || >=24.0.0
+```
 
-patch 生命周期正确：原始 `confine` 在挂载时捕获、dispose 时**精确**恢复
-（有守卫，绝不误伤其他插件的 patch）；同一 provider 上的第二个活跃实例
-fail loud（`DUPLICATE_HARDENING_INSTANCE`），而不是静默忽略其配置。
-主机能力（`prlimit` 可用性）每次插件挂载探测一次，绝不按次执行探测。
+不强制全局安装 `dsh`。launcher 会先验证现有 `dsh` 是否与固定版本匹配；不匹配
+或不存在时才走 pinned npm fallback。v0.4 默认：
 
-## 平台矩阵
+```text
+@deepseek-ai/dsh@0.1.0-rc.5
+pnpm@11.7.0
+```
 
-| 层 | Linux | macOS | Windows |
-|---|---|---|---|
-| `resourceLimits` | `prlimit` argv 前缀 | 降级（无 prlimit） | 降级 |
-| `network: 'none'` | bwrap `--unshare-net` | Seatbelt `(deny network*)` | 降级 |
-| 证据台账 | 是 | 是（结构化降级） | 是 |
+### Bridge 不变量
 
-## 开发
+1. **只有一个执行世界。** Windows 不先跑 DSH 再把每个工具调用送进 WSL；整个
+   runtime 在任务开始前就进入 Linux。
+2. **cwd 由 WSL 自己映射。** 不硬编码 `/mnt/c`；直接识别
+   `\\wsl.localhost\Distro\...` 与 `\\wsl$\Distro\...`。
+3. **argv 保持位置参数语义。** 中文、emoji、单双引号、反斜杠、换行、shell
+   metacharacter 和 DSH 的 `--` 哨兵不会被重新当成用户可控 shell 字符串解析。
+4. **只翻译 DSH 自己拥有的路径字段。** launcher 的 `--patch` 与
+   `dsh plugin` 的本地 filesystem spec 会映射；task/app argv 保持 opaque。
+5. **环境变量单向、选择性传递。** 常见模型 key、base URL、代理、DSH
+   bootstrap-only 网络变量、证书路径通过 `WSLENV` 传入；值不会拼到任务 argv。
+6. **Windows runtime home 与 WSL 隔离。** 不复用 Windows `DSH_HOME`、`HOME`、
+   `PATH`、原生 `node_modules`，避免 ABI/可执行文件污染。
+7. **终端控制走 WSL 原生链。** stdio 和 Windows console cancellation 继续由
+   `wsl.exe` 承担，不用 Windows `child.kill()` 假装 POSIX signal。
+8. **版本漂移显式失败。** 安装链 pin DSH、pnpm、Orcana runtime packages 与
+   bundles，并在安装后做 profile composition + 真实 module/peer import probe。
+
+## `--wsl-doctor` 现在检查什么
+
+它已经不是简单的“WSL 在不在”：
+
+- WSL2 / kernel 与 Node runtime；
+- pinned DSH / pnpm toolchain；
+- Orcana headless + web profile manifest/module；
+- Windows ↔ WSL localhost Web relay；
+- loopback proxy 可达性，同时不打印凭据；
+- cwd 映射与 WSL-native / Windows-mounted storage；
+- Git worktree 与 user identity；
+- HTTPS credential helper / 可见 credential manager；
+- SSH agent / 默认 key 能力，但不打印 key 文件名；
+- Windows 与 WSL `settings.yaml` / `.credentials.yaml` 的 managed-config parity：
+  只比较 present/absent/hash 状态，**不打印 hash、secret 或文件内容**；
+- WSL `.credentials.yaml` 出现 group/other 权限位时 fail loud（正常目标是 0600）；
+- TTY、UTF-8 locale、路径 roundtrip、文件系统/mount 语义、WSL interop；
+- Windows 挂载目录缺少 DrvFS metadata 时提示 chmod/chown/POSIX 权限差异。
+
+Config parity 的 `host-only` / `different` 默认只是提示：Windows 与 WSL 故意保留
+独立 DSH home，launcher 不会把 managed credentials 偷偷转成环境变量或自动覆盖
+Linux 配置。Parity warning 也只解释“不像原生 Linux”的原因，不会偷偷修改 Git、
+WSL、mount 或凭据配置。
+
+Git/npm/build I/O 很重的项目仍建议放在 WSL Linux filesystem，这是性能与 Linux
+语义最接近原生的路径。
+
+## 当前证据覆盖范围
+
+Orcana 自己管理的 `orcana`（headless）和 `orcana-web` 产品 profile 使用 DSH
+普通 shell 执行链，因此前台/后台 shell 都能获得上面的 native evidence。
+
+自定义 DSH profile 还可能挂其他 execution capability。当前 DSH 的 persistent
+terminal/PTTY 实现会 confine argv，但没有通过 shell result seam 暴露同等级
+lifecycle receipt。因此 `native-evidence` **暂不宣称 custom terminal/PTTY receipt
+等价**，也不会为了“看起来全覆盖”去伪造证据。
+
+这不是当前 Orcana 默认 headless/web profile 的阻断项；默认产品 closure 并不挂
+persistent terminal-bash。
+
+## 旧兼容入口
+
+包根入口：
+
+```text
+@leooday/dsh-orcana-linux
+```
+
+暂时保留早期 argv-hardening plugin，避免直接打断已有程序化用户。这个 legacy
+入口会 patch `ctx.sandbox.confine`，**当前 bundle 已经不再加载它**。
+
+新的 DSH 集成应使用：
+
+```text
+@leooday/dsh-orcana-linux/native-evidence
+```
+
+资源/网络 policy 归 DSH `sandbox-policy` 所有。
+
+## 已发布 subpath
+
+```text
+@leooday/dsh-orcana-linux
+@leooday/dsh-orcana-linux/native-evidence
+@leooday/dsh-orcana-linux/wsl-bridge
+@leooday/dsh-orcana-linux/wsl-launcher
+```
+
+`wsl-launcher` 是产品级推荐 API；`wsl-bridge` 是更底层的 transport primitive。
+
+## 开发 / 发布
 
 ```sh
 pnpm install
 pnpm --filter @leooday/dsh-orcana-linux typecheck
-pnpm --filter @leooday/dsh-orcana-linux test   # 37 tests: 纯单元 + 真实 provider 集成
+pnpm --filter @leooday/dsh-orcana-linux test
 pnpm --filter @leooday/dsh-orcana-linux build
+pnpm --filter @leooday/dsh-orcana-linux pack
 ```
 
-主机无 bwrap / prlimit 时集成测试自动跳过。
+`prepack` 会跑 typecheck + tests + build。Profile verifier 现在探测的是真实运行
+模块，包括 `@leooday/dsh-orcana-linux/native-evidence`，因此 export map 或
+DSH/Cordis peer 链坏掉时，不会因为 legacy 根入口还能 import 就假通过。
+
+仓库 release contract 也会故意阻断 stale lockfile。当前 `pnpm-lock.yaml` 仍需在
+具备 registry 网络的环境中用仓库固定的 pnpm 重新生成；不要手工把 rc.6 dependency
+snapshot 改成 rc.5 伪造一致性。
 
 ## License
 

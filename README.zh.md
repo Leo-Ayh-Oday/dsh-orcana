@@ -6,83 +6,126 @@
 
 **同一个模型。同一个 DSH。一次运行时干预。**
 
-- 进度感知的活性检测（Progress Governor）
-- 以代际（generation）为界的验证证据（Evidence Freshness）
-- 证据感知的完成判定（Completion Claim Guard）
-- 任务级配置能力披露（Capability Router）
+- 进度感知活性检测（Progress Governor）
+- 以 generation 为界的验证证据（Evidence Freshness）
+- 证据感知完成判定（Completion Claim Guard）
+- 任务级能力披露（Capability Router）
+- DSH 原生 Linux 执行证据
+- Windows → WSL 单一 Linux 执行世界入口
 
-状态：v0.1 实验性 —— 范围与冻结的 benchmark 不变量见
-[PLAN-v0.1.md](PLAN-v0.1.md)，细节见 [docs/architecture.md](docs/architecture.md)
-和 [docs/methodology.md](docs/methodology.md)。
+v0.1 governor 范围仍由 [PLAN-v0.1.md](PLAN-v0.1.md) 冻结。Linux/WSL 线独立演进，
+现在采用明确的 authority 分工：
+
+```text
+DSH                         Orcana
+├ sandbox-policy            ├ Progress / Completion 治理
+├ sandbox-local             ├ Native Execution Evidence
+├ cgroup / prlimit          └ Windows → WSL 执行适配
+└ SandboxReceipt
+      │
+      └──────────────► Orcana 消费事实，不重复执行限制
+```
+
+详细设计见 [docs/architecture.md](docs/architecture.md)、
+[docs/methodology.md](docs/methodology.md) 与
+[Linux/WSL 包文档](packages/dsh-orcana-linux/README.zh.md)。
 
 ## 目录结构
 
 | 路径 | 角色 |
 |---|---|
-| `packages/governor-core` | 框架无关的进度事实引擎（零 Cordis 依赖） |
-| `packages/dsh-governor` | DSH 适配插件（函数插件，挂载 DSH 扩展点） |
-| `packages/dsh-bundle` | Profile 组合包（`dsh.bundle.patch` 契约） |
-| `packages/dsh-orcana-linux` | dsh-orcana Linux 版：官方 sandbox 契约之上的原生加固层 |
-| `packages/dsh-orcana-linux-bundle` | Linux 版的 Profile 组合包（`dsh.bundle.patch` 契约） |
-| `benchmark/` | A/B 测试：任务清单、patch、运行器、报告 |
-| `scripts/` | dev-install / smoke / bench-run |
+| `packages/governor-core` | 与框架无关的进度事实引擎 |
+| `packages/dsh-governor` | DSH 治理适配器 |
+| `packages/dsh-bundle` | Governor Profile 组合包 |
+| `packages/dsh-orcana-linux` | DSH 原生证据适配器 + 跨平台 `dsh-orcana`；旧 root API 暂作兼容 |
+| `packages/dsh-orcana-linux-bundle` | 中立组合包，默认加载 `@leooday/dsh-orcana-linux/native-evidence` |
+| `benchmark/` | A/B 测试 |
+| `scripts/` | 安装、smoke、release gate |
 
 ## 安装
 
-发布后，官方 DSH 组合包安装（`@leooday/*` 包发布后可用）：
+npm scope 为 `@leooday`：
 
 ```sh
-# 一个 profile 一条命令装全部（governor + Linux 加固）：
-dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
-# 或分开两个 profile：
-dsh plugin --profile orcana add @leooday/dsh-bundle
-dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add \
+  @leooday/dsh-bundle \
+  @leooday/dsh-orcana-linux-bundle
+
 dsh --profile orcana "<task>"
 ```
 
-`dsh plugin add` 会安装组合包并自动激活为 profile 层（包里的
-`dsh.bundle.patch` 声明使其加入层栈）。组合包默认值是**中立的** —— 安装绝不
-改变 DSH 的执行语义；启用加固需编辑 `~/.dsh/profiles/<name>/cordis.patch.yml`
-中该行的 config，或用 `--patch` overlay。
+安装默认**不改变执行策略**。Orcana 负责观察执行事实；资源/网络限制配置在 DSH
+已有的 `sandbox-policy` 行，DSH 最终产生的 `SandboxReceipt` 才是 Orcana 的证据源。
 
-在包发布之前，通过 profile 的 `pnpm-workspace.yaml` override 安装本地构建的
-tarball（见 [`scripts/install-orcana-linux.sh`](scripts/install-orcana-linux.sh)
-和 smoke 套件）—— 没有 registry 的 checkout 中，`dsh plugin add` 的
-`file:`/`link:` 方式无法解析组合包的 workspace 依赖。
+程序化使用新证据入口：
 
-从 checkout 做交互式开发：
-
-```sh
-pnpm install && pnpm build
-bash scripts/dev-install.sh              # 安装 governor profile 到 ~/.dsh/profiles/orcana
-bash scripts/install-orcana-linux.sh     # 安装加固 profile 到 ~/.dsh/profiles/orcana-linux
-dsh --profile orcana "<task>"
+```ts
+import nativeEvidence from '@leooday/dsh-orcana-linux/native-evidence'
+ctx.plugin(nativeEvidence)
 ```
 
-## 实测效果（初步）
+## Windows / WSL：同一个执行入口
 
-配对 A/B：同一模型（deepseek-v4-flash），control vs treatment（governor
-激活），由独立 acceptance 命令判定。完整装置与原始数据：
-[benchmark/](benchmark/README.md)、`benchmark/reports/`。
+设计不是“Windows 上运行 DSH，再把单个工具调用扔进 WSL”。Windows 只负责启动：
 
-| 任务 | n | treatment 相对 control（tokens，treatment − control） |
-|---|---|---|
-| demo-format-money（合成 verification trap） | 2 | **-871 / -2695**（均为负） |
-| marked-blank-tab（真实 issue markedjs#4007） | 6 | -4079 / +4082 / -29107 / -12181 / +48428 / -8850 —— 4/6 为负，中位数约 -6.5k |
-| dayjs-updatelocale（真实 issue dayjs#1118） | 3 | +2459 / -1841 / -731 —— 2/3 为负，中位数约 -0.7k |
+```text
+Windows Terminal / PowerShell
+        ↓
+    dsh-orcana
+        ↓
+      wsl.exe
+        ↓
+整个 DSH + Orcana runtime 进入 WSL
+        ↓
+同一个原生 Linux execution world
+```
 
-合计 11 对中 **8 对 treatment tokens 更少**（每个任务中位数均为负；均值被
-marked 的一个大正异常值拉高）。真实任务的 calls 维度被预算截断（两臂顶格）。
-诚实说明：样本仍小，可靠交付物是整套实验装置，效果大小需要更多 reps 与任务。
+Windows 安装 launcher：
+
+```powershell
+npm install -g @leooday/dsh-orcana-linux@^0.4.0
+```
+
+然后：
+
+```powershell
+dsh-orcana --wsl-doctor
+dsh-orcana --wsl-install
+dsh-orcana "修复失败的测试"
+```
+
+Bridge 保持 cwd/argv 边界，Windows 与 WSL 使用独立 DSH home，通过 WSLENV
+选择性单向传递启动/运行环境，并固定 DSH/pnpm 兼容契约。`--wsl-install` 在安装后
+不仅检查 profile composition，还会真实 resolve/import 实际运行模块与 peer 链，
+包括 `@leooday/dsh-orcana-linux/native-evidence`。
+
+`--wsl-doctor` 还会检查 Web localhost relay、代理可达性、工作区文件系统语义、
+Git identity/credential 能力、TTY/UTF-8/path parity、DrvFS metadata 等，但不会
+偷偷修改 Windows/WSL/Git 全局配置。
+
+完整契约见
+[`packages/dsh-orcana-linux/README.zh.md`](packages/dsh-orcana-linux/README.zh.md)。
+
+## 当前 authority 边界
+
+- **DSH 负责原生 enforcement。** 当前 DSH 已正式拥有 `resourceLimits` / `network`
+  policy、cgroup-v2 / prlimit 机制、进程 lifecycle、cleanup 与 `SandboxReceipt`。
+- **Orcana 负责治理与证据。** 默认 Linux bundle 观察 `ctx.shell` 的前台/后台执行，
+  记录 DSH 真正产生的 receipt。
+- **旧 package-root argv-hardening 只是兼容入口。** 当前 bundle 已经不再加载它。
+- **自定义 persistent-terminal/PTTY profile 暂不宣称 receipt 等价。** Orcana 自己的
+  headless/web 产品 profile 默认并不挂这个 capability。
 
 ## 已知限制
 
-- 工作区代际只观察 mutation 类型的工具调用；shell 命令内的变更
-  （`sed -i` 等）对代际计数器不可见（v0.2：git-probe receipts）。
-- v0.1 从不杀死或取消代理；最强动作是被 `maxForcedContinuations`
-  限制的 steer 提醒。
+- Workspace generation 仍只观察 mutation 类型工具；shell 内部 mutation 需要未来
+  git-probe receipt 链。
+- Governor 不直接拥有 Agent kill/cancel authority，当前 steering 有明确上限。
+- 交互式 Ctrl+C 有意继续走 `wsl.exe` / Linux 终端原生语义。未来程序化
+  timeout/cancel 应属于 execution control plane，而不是伪造 Windows POSIX signal。
+- `pnpm-lock.yaml` 仍必须在有 registry 网络的环境中使用仓库固定 pnpm 真正重新生成；
+  release contract 会阻止手工伪造 rc.5 dependency snapshot。
 
 ## 贡献
 
-见 [CONTRIBUTING.md](CONTRIBUTING.md) —— PR 携带恰好一个 kind/* 和至少一个
-area/* 标签，与上游贡献约定一致。
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。

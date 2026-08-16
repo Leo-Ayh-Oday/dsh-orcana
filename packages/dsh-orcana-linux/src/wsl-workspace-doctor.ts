@@ -1,0 +1,75 @@
+import { spawnSync } from 'node:child_process'
+
+export const WSL_WORKSPACE_DOCTOR_SCRIPT = [
+  'fail=0',
+  'mark_fail() { if [ "$fail" -eq 0 ]; then fail=$1; fi; }',
+  'printf "workspace-fs: "; if command -v stat >/dev/null 2>&1; then stat -f -c %T . 2>/dev/null || printf "UNKNOWN\\n"; else printf "UNKNOWN (stat missing)\\n"; fi',
+  'if command -v wslinfo >/dev/null 2>&1; then wsl_mode=$(wslinfo --networking-mode 2>/dev/null || true); [ -n "$wsl_mode" ] || wsl_mode=unknown; printf "wsl-networking: %s\\n" "$wsl_mode"; if [ "$wsl_mode" = wsl1 ]; then printf "wsl-runtime: UNSUPPORTED (Windows Bridge requires WSL2 execution semantics)\\n"; mark_fail 71; fi; else printf "wsl-networking: UNKNOWN (wslinfo missing)\\n"; fi',
+  'repo_hint=0',
+  'probe=$PWD',
+  'while [ -n "$probe" ] && [ "$probe" != "/" ]; do if [ -e "$probe/.git" ]; then repo_hint=1; break; fi; probe=${probe%/*}; [ -n "$probe" ] || probe=/; done',
+  'if ! command -v git >/dev/null 2>&1; then printf "git: MISSING\\n"; if [ "$repo_hint" -eq 1 ]; then printf "git-worktree: UNUSABLE (repository metadata exists but git is missing)\\n"; mark_fail 70; fi; exit "$fail"; fi',
+  'printf "git: "; git --version',
+  'if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then',
+  '  printf "git-worktree: OK\\n"',
+  '  if [ -n "$(git config --get user.name 2>/dev/null || true)" ] && [ -n "$(git config --get user.email 2>/dev/null || true)" ]; then printf "git-identity: configured\\n"; else printf "git-identity: MISSING (commits may fail until WSL Git identity is configured)\\n"; fi',
+  '  origin=$(git remote get-url origin 2>/dev/null || true)',
+  '  case "$origin" in git@*|ssh://*) auth=ssh;; http://*|https://*) auth=https;; "") auth=none;; *) auth=other;; esac',
+  '  printf "git-origin-auth: %s\\n" "$auth"',
+  '  if [ "$auth" = https ]; then',
+  '    if git config --get-all credential.helper >/dev/null 2>&1; then',
+  '      printf "git-https-credentials: helper-configured\\n"',
+  '    elif command -v git-credential-manager >/dev/null 2>&1 || command -v git-credential-manager-core >/dev/null 2>&1 || command -v git-credential-manager.exe >/dev/null 2>&1; then',
+  '      printf "git-https-credentials: helper-available-not-configured (a credential manager is visible from WSL, but this WSL Git config does not use it)\\n"',
+  '    else',
+  '      printf "git-https-credentials: NO-HELPER (interactive/token auth may still work)\\n"',
+  '    fi',
+  '  fi',
+  '  if [ "$auth" = ssh ]; then',
+  '    if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then',
+  '      printf "git-ssh-auth: agent-available\\n"',
+  '    else',
+  '      local_key=0',
+  '      if [ -n "${HOME:-}" ] && [ -d "$HOME/.ssh" ]; then for candidate in "$HOME"/.ssh/id_*; do [ -f "$candidate" ] || continue; case "$candidate" in *.pub) continue;; esac; local_key=1; break; done; fi',
+  '      if [ "$local_key" -eq 1 ]; then printf "git-ssh-auth: local-key-present-no-agent\\n"; else printf "git-ssh-auth: NO-AGENT-NO-DEFAULT-KEY (Windows ssh-agent is not copied automatically)\\n"; fi',
+  '    fi',
+  '  fi',
+  'elif [ "$repo_hint" -eq 1 ]; then',
+  '  printf "git-worktree: UNUSABLE (check safe.directory, ownership, permissions, or repository metadata)\\n"',
+  '  mark_fail 70',
+  'else',
+  '  printf "git-worktree: not-a-repository\\n"',
+  'fi',
+  'exit "$fail"',
+].join('\n')
+
+function distroPrefix(distro?: string): string[] {
+  return distro === undefined ? [] : ['--distribution', distro]
+}
+
+export function buildWslWorkspaceDoctorArgs(linuxCwd: string, distro?: string): string[] {
+  return [
+    ...distroPrefix(distro),
+    '--cd', linuxCwd,
+    '--exec', '/bin/sh', '-c', WSL_WORKSPACE_DOCTOR_SCRIPT,
+  ]
+}
+
+export function runWslWorkspaceDoctor(
+  linuxCwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  distro?: string,
+  run: typeof spawnSync = spawnSync,
+): number {
+  const result = run('wsl.exe', buildWslWorkspaceDoctorArgs(linuxCwd, distro), {
+    env,
+    stdio: 'inherit',
+    windowsHide: false,
+    timeout: 15_000,
+  })
+  if (result.error !== undefined || result.status === null) {
+    console.error('[orcana-wsl] workspace doctor could not complete; core WSL doctor remains authoritative')
+    return 0
+  }
+  return result.status
+}

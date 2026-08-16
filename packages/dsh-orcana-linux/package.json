@@ -1,7 +1,7 @@
 {
   "name": "@leooday/dsh-orcana-linux",
-  "version": "0.3.0",
-  "description": "dsh-orcana Linux edition — native hardening layers (resource limits, egress policy, execution evidence) as a DSH plugin over the official sandbox contract",
+  "version": "0.4.0",
+  "description": "dsh-orcana Linux edition — DSH-native execution evidence plus a Windows-to-WSL bridge for one Linux execution world",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -12,12 +12,15 @@
     "deepseek-harness",
     "sandbox",
     "hardening",
+    "evidence",
     "resource-limits",
     "egress",
+    "cgroup",
     "prlimit",
     "bwrap",
-    "seccomp",
-    "linux"
+    "linux",
+    "wsl",
+    "windows"
   ],
   "publishConfig": {
     "access": "public"
@@ -25,15 +28,32 @@
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
+  "bin": {
+    "dsh-orcana": "bin/dsh-orcana-wsl.mjs",
+    "dsh-orcana-wsl": "bin/dsh-orcana-wsl.mjs"
+  },
   "exports": {
     ".": {
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./native-evidence": {
+      "types": "./lib/types/native-evidence.d.ts",
+      "default": "./lib/native-evidence.js"
+    },
+    "./wsl-bridge": {
+      "types": "./lib/types/wsl-bridge.d.ts",
+      "default": "./lib/wsl-bridge.js"
+    },
+    "./wsl-launcher": {
+      "types": "./lib/types/wsl-launcher.d.ts",
+      "default": "./lib/wsl-launcher.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
+    "bin/*.mjs",
+    "lib/*.js",
     "lib/types/**/*.d.ts"
   ],
   "engines": {
@@ -42,23 +62,43 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-sandbox": "^0.1.0-rc.6"
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-sandbox": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-shell": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-sandbox": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-shell": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-bash-local": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-bash-sandbox": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-sandbox-local": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-sandbox-policy": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-shell": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-subprocess": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-subprocess-local": "0.1.0-rc.6",
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-sandbox": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-bash-local": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-bash-sandbox": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-sandbox-local": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-sandbox-policy": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-shell": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-subprocess": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.5",
     "@types/node": "^24.0.0",
     "typescript": "^5.7.0"
   }

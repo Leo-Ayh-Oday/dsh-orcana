@@ -1,5 +1,5 @@
 /**
- * @leooday/dsh-orcana-linux — confined-execution hardening for DSH (Linux edition).
+ * @orcana/dsh-orcana-linux — confined-execution hardening for DSH (Linux edition).
  *
  * Hardens executions that traverse DSH's official `ctx.sandbox` seam (no fork
  * required). cordis 4.0.1 refuses service replacement across fibers, so the
@@ -37,7 +37,7 @@
  * This is the compatibility/hardening layer — NOT the full Orcana Execution
  * Fabric (cgroup v2 authority, pidfd ownership, execd, `ctx.subprocess` /
  * `ctx.codeRuntime` interception are future work, see DEFERRED-01..06).
- * @module @leooday/dsh-orcana-linux
+ * @module @orcana/dsh-orcana-linux
  */
 
 import { spawnSync } from 'node:child_process'

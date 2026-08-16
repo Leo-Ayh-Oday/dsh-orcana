@@ -2,181 +2,312 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-**Orcana confined-execution hardening for DeepSeek Harness (DSH).**
+**DSH-native execution evidence + a Windows → WSL execution bridge for Orcana.**
 
-Native hardening layers as a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-plugin, over the **official** sandbox contract (no fork required). This package
-hardens DSH executions that traverse `ctx.sandbox` — it is the
-compatibility/hardening layer, **not** the full Orcana Execution Fabric
-(cgroup v2 authority, pidfd ownership, `ctx.subprocess` / `ctx.codeRuntime`
-interception are future work; see DEFERRED-01…06 in the R1 report).
+The package has two product responsibilities:
 
-- **Resource limits** — `memoryBytes` / `pidsMax` enforced as a `prlimit` argv
-  prefix on Linux (`--as` = RLIMIT_AS **address-space approximation**, not a
-  cgroup memory cap; `--nproc` = **PER-UID** live-task cap, not per-cell PID
-  authority). `cpuQuotaUs` needs cgroup v2 authority, out of this package's
-  scope — it always degrades.
-- **Egress policy** — `network: 'none'` denies all network: `--unshare-net`
-  injected into a bwrap argv (fresh netns, no routes), `(deny network*)`
-  appended to a Seatbelt profile.
-- **Fail-closed by default** — a requested layer this host cannot express
-  throws `HARDENING_UNAVAILABLE` instead of running unenforced. Set
-  `degradationPolicy` to `best-effort` to record-and-continue instead.
-- **Execution evidence** — every confinement is recorded in a **bounded**
-  audit ledger (`ctx.hardening`): requested facts, layers applied, structured
-  degradations, failure records, dropped/total counters. Degradation is never
-  silent.
+1. **Linux / WSL governance evidence** — DeepSeek Harness remains the sole owner
+   of sandbox policy and native enforcement. Orcana observes the actual DSH
+   shell result and `SandboxReceipt`; it does not add a second resource limiter
+   or network namespace.
+2. **Windows → WSL execution transport** — `dsh-orcana` treats Windows as the
+   launch surface and starts the whole DSH + Orcana runtime inside one WSL
+   Linux execution world before task execution begins.
 
-## Guarantees
-
-```
-✓ confined executions (read-only / workspace-write) through ctx.sandbox
-✓ network-none on supported runner (bwrap / Seatbelt)
-✓ RLIMIT_AS / RLIMIT_NPROC fallback (address-space / per-UID semantics)
-✓ fail-closed configurable per layer (required | best-effort)
-✓ bounded audit ledger (default 1024 entries, dropped/total exposed)
-✓ lifecycle-correct patch: dispose restores the exact original confine
-✓ duplicate live instances fail loud (DUPLICATE_HARDENING_INSTANCE)
-✓ host capability probe at most once per plugin mount
-```
-
-## Non-guarantees
-
-```
-✗ danger-full-access executions (they bypass ctx.sandbox — see below)
-✗ cgroup v2 memory / pids / cpu authority
-✗ per-cell PID authority
-✗ CPU quota (cpuQuotaUs degrades / fails closed)
-✗ process ownership / crash recovery
-✗ service lifecycle (ctx.subprocess / ctx.codeRuntime / PTC worker isolation)
+```text
+Windows Terminal / PowerShell
+        │
+        ▼
+    dsh-orcana
+        │  cwd / argv / env bridge
+        ▼
+       WSL
+        │
+        ▼
+       DSH
+  sandbox-policy
+        │
+        ▼
+ sandbox-local          ← sole native enforcement owner
+ cgroup / prlimit
+ network isolation
+        │
+        ▼
+      ctx.shell
+        │
+        ▼
+ SandboxReceipt
+        │
+        ▼
+@leooday/dsh-orcana-linux/native-evidence
+        │
+        ▼
+ ctx.orcanaLinuxEvidence
 ```
 
-## Scope: `danger-full-access`
+## Authority model
 
-DSH's `danger-full-access` mode bypasses the confined sandbox seam entirely
-(the official bash executor runs `super.run()` and never calls
-`ctx.sandbox.confine`). Executions under that mode are therefore **outside
-this package's enforcement authority**. `ctx.hardening.scope` reports this
-honestly: `{ confinedModes: true, dangerFullAccess: false }`. Hardening
-`danger-full-access` requires intercepting `ctx.subprocess` / the shell path
-— future work (DEFERRED-02).
+### DSH owns enforcement
+
+Current DSH already owns these policy fields on its `sandbox-policy` row:
+
+- `mode`
+- `workspaceRoot`
+- `resourceLimits.memoryBytes`
+- `resourceLimits.cpuQuotaUs`
+- `resourceLimits.pidsMax`
+- `network: inherit | none`
+
+Its native sandbox provider chooses the real mechanism (for example cgroup v2
+or its documented `prlimit` fallback), owns process attach/detach, performs
+cleanup, and produces the final `SandboxReceipt`.
+
+**Orcana must not duplicate that enforcement.** The default bundle therefore
+loads:
+
+```text
+@leooday/dsh-orcana-linux/native-evidence
+```
+
+not the legacy package root.
+
+### Orcana owns evidence/governance
+
+`native-evidence` observes DSH's public `ctx.shell` result seam. It:
+
+- leaves `ShellExecSpec`, sandbox policy, argv, lifecycle, result objects and
+  process handles unchanged;
+- records foreground results after `shell.run()` settles;
+- records background results after the exact returned `ShellProcess.done`
+  settles;
+- preserves pending background evidence across observer reloads;
+- records DSH's real receipt fields: applied layers, degradations, limit
+  mechanism, cgroup path, peak memory/CPU/PID facts and cleanup verification;
+- records `danger-full-access` honestly as sandbox facts without fabricating a
+  native receipt;
+- stores only a SHA-256 command fingerprint and byte length — raw command text
+  is not retained in the evidence ledger;
+- keeps a bounded ledger with total/dropped/pending-background counters.
+
+The service is exposed as:
+
+```ts
+ctx.orcanaLinuxEvidence
+```
+
+and declares its authority explicitly:
+
+```ts
+{
+  enforcementOwner: 'dsh',
+  observationSeam: 'shell',
+  mutatesExecution: false,
+  dangerFullAccessObserved: true,
+}
+```
 
 ## Install
 
-Official DSH bundle install (once the `@leooday/*` packages are published):
+Recommended combined Orcana profile:
+
+```sh
+dsh plugin --profile orcana add \
+  @leooday/dsh-bundle \
+  @leooday/dsh-orcana-linux-bundle
+```
+
+Linux evidence only:
 
 ```sh
 dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 ```
 
-`dsh plugin add` installs the bundle and auto-activates the hardening row as a
-profile layer with NEUTRAL defaults; enforce layers via the row's config (see
-the [bundle README](../dsh-orcana-linux-bundle/README.md)). Before publishing,
-use [`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh)
-against the local tarballs.
+Installation is **policy-neutral**. The bundle observes native execution facts;
+it does not silently enable new network or resource restrictions.
 
-For programmatic embedding (not the profile path), install the package
-directly and load the plugin in your harness bootstrap:
+### Configure native limits through DSH
+
+Use a later profile/user patch targeting DSH's existing `sandbox-policy` row.
+A DSH row patch replaces that row's whole `config`, so preserve the standing
+mode/root when adding limits:
+
+```yaml
+- id: sandbox-policy
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.cwd()
+    network: none
+    resourceLimits:
+      memoryBytes: 536870912
+      pidsMax: 64
+      cpuQuotaUs: 50000
+```
+
+The resulting DSH receipt — not a parallel Orcana approximation — becomes the
+governance evidence.
+
+### Programmatic evidence adapter
 
 ```sh
 npm i @leooday/dsh-orcana-linux
 ```
 
 ```ts
-import { Context } from '@deepseek-ai/cordis'
-import { apply as hardening } from '@leooday/dsh-orcana-linux'
+import nativeEvidence from '@leooday/dsh-orcana-linux/native-evidence'
 
-// in your harness bootstrap, after ctx.plugin(LocalSandboxProvider, {...}):
-ctx.plugin(hardening, {
-  network: 'none',                                  // deny egress
-  resourceLimits: { memoryBytes: 512 * 1024 * 1024 }, // RLIMIT_AS approximation
+ctx.plugin(nativeEvidence, {
+  ledgerMaxEntries: 1024,
 })
 ```
 
-## Configuration
+## Windows → WSL: same command, one Linux execution world
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `resourceLimits.memoryBytes` | number | — | `prlimit --as` bytes (**address-space approximation**, not "N MB RAM") |
-| `resourceLimits.pidsMax` | number | — | `prlimit --nproc` live-task cap (**PER-UID** — caps every process of the calling user) |
-| `resourceLimits.cpuQuotaUs` | number | — | cgroup v2 cpu quota per 100 ms — **always unsupported here**; degrades / fails closed |
-| `network` | `'inherit' \| 'none'` | — | deny all egress when `'none'` |
-| `degradationPolicy.resourceLimits` | `'required' \| 'best-effort'` | `required` | fail closed (throw `HARDENING_UNAVAILABLE`) vs record-and-continue |
-| `degradationPolicy.network` | `'required' \| 'best-effort'` | `required` | same, for the egress layer |
-| `ledgerMaxEntries` | number | 1024 | bounded audit window; older records drop and count toward `droppedCount` |
+Install the launcher on Windows:
 
-### Per-call overrides
-
-A caller can attach `resourceLimits` / `network` to the sandbox policy object
-it passes to `confine` (e.g. a bash spec's `sandboxPolicy` override); the
-per-call values win over the deployment config:
-
-```ts
-const spec = shell.resolve({ command: 'make build' })
-spec.sandboxPolicy = {
-  ...spec.sandboxPolicy!,
-  resourceLimits: { memoryBytes: 512 * 1024 * 1024, pidsMax: 32 },
-  network: 'none',
-}
+```powershell
+npm install -g @leooday/dsh-orcana-linux@^0.4.0
 ```
 
-Degradation policy and ledger size stay deployment-level.
+Then:
 
-> **Security note (degradation direction):** a per-call carrier can only
-> *narrow or widen* the deployment config, never tighten it silently. Any
-> caller that passes a `sandboxPolicy` with `network: 'inherit'` (or an empty
-> `resourceLimits: {}`) overrides the deployment-level `none` / limits for
-> that one call — audit trails every such call (`requested`), but there is no
-> loud signal. If your deployment treats egress isolation as mandatory, pin
-> `degradationPolicy.network: 'required'` and monitor the ledger rather than
-> relying on per-call discipline.
+```powershell
+dsh-orcana --wsl-doctor
+dsh-orcana --wsl-install
+dsh-orcana "fix the failing tests"
+```
 
-> **`runnerCommand` note:** when the sandbox provider is configured with a
-> custom `runnerCommand` (an operator assertion), the runner is identified by
-> exact `argv[0]` string equality — `/usr/bin/bwrap` or a wrapper script does
-> NOT match `'bwrap'`, so `network: 'none'` degrades (and under the default
-> `required` policy fails closed). This is loud, never silent, but may
-> surprise operator assertions: use a runnerCommand whose argv[0] is exactly
-> `bwrap` (or set `degradationPolicy.network: 'best-effort'` deliberately).
+Linux / WSL uses the same task command:
 
-## How it works
+```sh
+dsh-orcana "fix the failing tests"
+```
 
-cordis 4.0.1 refuses service replacement across fibers, so the plugin
-**patches the resolved `ctx.sandbox` provider instance's `confine` method**
-instead of replacing the service:
+The target WSL distro must satisfy the pinned DSH Node contract:
 
-1. the inner provider confines file effects as usual (`bwrap` / Landlock /
-   Seatbelt / Windows ACL),
-2. the plugin applies its layers to the returned argv (`prlimit` prefix,
-   `--unshare-net` / `(deny network*)` injection), failing closed when a
-   `required` layer cannot be expressed,
-3. the ledger records what was requested, what applied, and what degraded.
+```text
+^22.19.0 || >=24.0.0
+```
 
-The patch is lifecycle-correct: the original `confine` is captured at mount
-and restored **exactly** at dispose (guarded so other plugins' patches are
-never clobbered); a second live instance against the same provider fails loud
-(`DUPLICATE_HARDENING_INSTANCE`) instead of silently ignoring its
-configuration. Host capabilities (`prlimit` availability) are probed once per
-plugin mount, never per confinement.
+A global `dsh` install is optional. The launcher verifies an installed DSH
+before using it and otherwise falls back to its pinned compatible npm release.
+The v0.4 bridge default is:
 
-## Platform matrix
+```text
+@deepseek-ai/dsh@0.1.0-rc.5
+pnpm@11.7.0
+```
 
-| Layer | Linux | macOS | Windows |
-|---|---|---|---|
-| `resourceLimits` | `prlimit` argv prefix | degraded (no prlimit) | degraded |
-| `network: 'none'` | bwrap `--unshare-net` | Seatbelt `(deny network*)` | degraded |
-| evidence ledger | yes | yes (structured degradation) | yes |
+### Bridge invariants
 
-## Development
+1. **One execution world** — Windows does not run DSH and bounce individual
+   tools into WSL. The whole runtime enters WSL first.
+2. **cwd is translated by WSL itself** — no hard-coded `/mnt/c` assumption;
+   `\\wsl.localhost\Distro\...` and `\\wsl$\Distro\...` are recognized.
+3. **argv stays positional** — Chinese, emoji, quotes, backslashes, newlines,
+   shell metacharacters and the DSH `--` sentinel are not reinterpreted as a
+   user-controlled shell string.
+4. **DSH-owned paths are translated narrowly** — launcher `--patch` paths and
+   local filesystem specs owned by `dsh plugin` are mapped; task/app argv stays
+   opaque.
+5. **Environment forwarding is selective and one-way** — common provider keys,
+   base URLs, proxies, bootstrap-only network settings and certificate paths are
+   bridged through `WSLENV`; values are not injected into task argv.
+6. **Windows runtime home is isolated** — Windows `DSH_HOME`, `HOME`, `PATH` and
+   native `node_modules` are not reused inside WSL.
+7. **Terminal ownership stays native** — stdio and Windows console cancellation
+   remain on the normal `wsl.exe` path; the bridge does not fake POSIX signals
+   with Windows `child.kill()`.
+8. **Version drift fails visibly** — the install path pins DSH, pnpm, Orcana
+   runtime packages and bundles, then performs profile composition plus real
+   module/peer import probes.
+
+## `--wsl-doctor`
+
+The doctor checks more than “does WSL exist?” It currently covers:
+
+- WSL2 / kernel and Node runtime compatibility;
+- pinned DSH and pnpm toolchain availability;
+- Orcana headless + web profile manifest/module verification;
+- Windows ↔ WSL localhost web reachability;
+- loopback proxy reachability without printing credentials;
+- current workspace path mapping and WSL-native vs Windows-mounted storage;
+- Git worktree usability and identity;
+- HTTPS credential-helper / visible credential-manager capability;
+- SSH agent/default-key capability without printing key names;
+- TTY, UTF-8 locale, path round-trip, filesystem/mount semantics and WSL
+  interop;
+- DrvFS metadata warnings when Windows-mounted workspaces cannot provide native
+  Linux permission semantics.
+
+Parity warnings explain semantic drift but do not silently rewrite Git, WSL,
+mount or credential configuration.
+
+For Git/npm/build-heavy workloads, storing the project on the WSL Linux
+filesystem remains the fast and closest-to-native path.
+
+## Current evidence scope
+
+The product-owned `orcana` (headless) and `orcana-web` profiles use the ordinary
+DSH shell execution path, so foreground/background shell executions receive the
+native evidence described above.
+
+A custom DSH profile may add other execution capabilities. In particular, the
+current DSH persistent-terminal/PTY implementation confines its argv but does
+not yet expose the same lifecycle receipt through the shell result seam.
+`native-evidence` therefore **does not claim terminal/PTTY receipt parity** for
+such custom profiles. It will not fabricate evidence to hide that gap.
+
+## Legacy compatibility entrypoint
+
+The package root:
+
+```text
+@leooday/dsh-orcana-linux
+```
+
+still exposes the earlier argv-hardening plugin for compatibility with existing
+programmatic consumers. That legacy path patches `ctx.sandbox.confine` and is
+**not mounted by the current bundle**.
+
+New DSH integrations should use:
+
+```text
+@leooday/dsh-orcana-linux/native-evidence
+```
+
+Native resource/network policy belongs to DSH `sandbox-policy`.
+
+## Published subpaths
+
+```text
+@leooday/dsh-orcana-linux
+@leooday/dsh-orcana-linux/native-evidence
+@leooday/dsh-orcana-linux/wsl-bridge
+@leooday/dsh-orcana-linux/wsl-launcher
+```
+
+`wsl-launcher` is the preferred product API; `wsl-bridge` is the lower-level
+transport primitive.
+
+## Development / release
 
 ```sh
 pnpm install
 pnpm --filter @leooday/dsh-orcana-linux typecheck
-pnpm --filter @leooday/dsh-orcana-linux test   # 32 tests: pure units + real-provider integration
+pnpm --filter @leooday/dsh-orcana-linux test
 pnpm --filter @leooday/dsh-orcana-linux build
+pnpm --filter @leooday/dsh-orcana-linux pack
 ```
 
-Integration tests self-skip when bwrap / prlimit are unavailable on the host.
+`prepack` runs typecheck + tests + build. The profile verifier probes the actual
+runtime modules, including `@leooday/dsh-orcana-linux/native-evidence`, so a
+broken export map or DSH/Cordis peer chain cannot pass merely because the
+legacy package root imports successfully.
+
+The repository release contract also intentionally blocks a stale workspace
+lockfile. Regenerate `pnpm-lock.yaml` with the repository-pinned pnpm in a
+registry-connected environment before release; do not hand-edit DSH dependency
+snapshots.
 
 ## License
 
