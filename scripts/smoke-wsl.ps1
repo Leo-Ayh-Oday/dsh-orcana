@@ -48,6 +48,7 @@ if (-not (Get-Command dsh-orcana -ErrorAction SilentlyContinue)) {
 Write-Host "dsh-orcana Windows -> WSL acceptance smoke"
 Write-Host "workspace: $((Get-Location).Path)"
 Write-Host "profile:   $Profile"
+Write-Host "web:       $Profile-web"
 if ($Distro -ne "") {
   Write-Host "distro:    $Distro"
 } else {
@@ -60,22 +61,34 @@ Invoke-Orcana -Label "WSL environment/profile doctor" -Arguments @(
 )
 
 if (-not $SkipInstall) {
-  Invoke-Orcana -Label "Pinned Orcana profile installation" -Arguments @(
+  # One product install prepares both exact companion profiles:
+  #   <profile>     = DSH headless + Orcana
+  #   <profile>-web = DSH web-app + Orcana
+  Invoke-Orcana -Label "Pinned Orcana headless + Web profile installation" -Arguments @(
     "--wsl-profile", $Profile,
     "--wsl-install"
   )
 
-  # Re-run doctor after installation. The second pass verifies the exact
-  # profile manifest plus real ESM imports from the WSL profile anchor, so a
-  # broken Cordis/DSH peer fallback is caught before the first Agent task.
-  Invoke-Orcana -Label "Post-install profile/module verification" -Arguments @(
+  # Re-run doctor after installation. The second pass verifies exact manifests,
+  # real ESM imports/peer fallback, WSL Web localhost relay, proxy reachability,
+  # and workspace/Git execution readiness without making a model request.
+  Invoke-Orcana -Label "Post-install product verification" -Arguments @(
     "--wsl-profile", $Profile,
     "--wsl-doctor"
   )
 }
 
-Invoke-Orcana -Label "DSH profile composition" -Arguments @(
+Invoke-Orcana -Label "Headless Orcana profile composition" -Arguments @(
   "--profile", $Profile,
+  "--dump-config"
+)
+
+# Proves the product alias itself: `web` must be rewritten to <profile>-web and
+# must pass the strict Orcana profile gate. --dump-config does not open a server,
+# browser, or model session.
+Invoke-Orcana -Label "Orcana Web alias composition" -Arguments @(
+  "--wsl-profile", $Profile,
+  "web",
   "--dump-config"
 )
 
@@ -83,7 +96,7 @@ if ($Task -ne "") {
   Write-Host ""
   Write-Host "A real Agent task was requested. This may use your configured model/provider and incur API cost."
   Invoke-Orcana -Label "Real Agent task" -Arguments @(
-    "--profile", $Profile,
+    "--wsl-profile", $Profile,
     $Task
   )
 } else {
