@@ -1,7 +1,7 @@
 {
   "name": "@leooday/dsh-orcana-linux",
   "version": "0.3.0",
-  "description": "dsh-orcana Linux edition — native hardening layers (resource limits, egress policy, execution evidence) as a DSH plugin over the official sandbox contract",
+  "description": "dsh-orcana Linux edition — native hardening plus a Windows-to-WSL bridge for one Linux execution world",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,7 +17,9 @@
     "prlimit",
     "bwrap",
     "seccomp",
-    "linux"
+    "linux",
+    "wsl",
+    "windows"
   ],
   "publishConfig": {
     "access": "public"
@@ -25,15 +27,23 @@
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
+  "bin": {
+    "dsh-orcana-wsl": "bin/dsh-orcana-wsl.mjs"
+  },
   "exports": {
     ".": {
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./wsl-bridge": {
+      "types": "./lib/types/wsl-bridge.d.ts",
+      "default": "./lib/wsl-bridge.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
+    "bin/*.mjs",
+    "lib/*.js",
     "lib/types/**/*.d.ts"
   ],
   "engines": {
@@ -42,7 +52,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "pnpm build"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"
