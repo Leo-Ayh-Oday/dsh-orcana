@@ -79,10 +79,10 @@ export const INSTALL_RESOLVER_SCRIPT = [
   '  smoke_status=$?',
   'fi',
   'if [ "$smoke_status" -ne 0 ]; then',
-  '  printf "%s\\n" "dsh-orcana: profile install completed but composition smoke failed for profile '$profile'" >&2',
+  '  printf "%s\\n" "dsh-orcana: profile install completed but composition smoke failed for profile=$profile" >&2',
   '  exit "$smoke_status"',
   'fi',
-  'printf "%s\\n" "dsh-orcana: profile '$profile' installed and composition smoke passed" >&2',
+  'printf "%s\\n" "dsh-orcana: profile=$profile installed and composition smoke passed" >&2',
   'exit 0',
 ].join('\n')
 
