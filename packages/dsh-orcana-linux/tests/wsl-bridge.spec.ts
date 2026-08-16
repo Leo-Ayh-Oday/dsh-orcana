@@ -75,7 +75,7 @@ describe('WSL path contract', () => {
     const fake = ((command: string, args: readonly string[]) => {
       calls.push({ command, args })
       return { status: 0, stdout: '/custom/c/work/repo\n', stderr: '', error: undefined }
-    }) as typeof import('node:child_process').spawnSync
+    }) as unknown as typeof import('node:child_process').spawnSync
 
     expect(windowsPathToWsl('C:\\work\\repo', 'Ubuntu', fake)).toEqual({
       distro: 'Ubuntu',
@@ -101,6 +101,7 @@ describe('WSL environment contract', () => {
       DSH_TRACE: '1',
       DSH_HOME: 'C:\\Users\\leo\\.dsh',
       ORCANA_MODE: 'warn-steer',
+      ORCANA_WSL_DISTRO: 'Ubuntu',
       PATH: 'C:\\Windows',
     })
     expect(result.WSLENV?.split(':')).toEqual([
@@ -110,16 +111,17 @@ describe('WSL environment contract', () => {
       'ORCANA_MODE',
     ])
     expect(result.WSLENV).not.toContain('DSH_HOME')
+    expect(result.WSLENV).not.toContain('ORCANA_WSL_DISTRO')
     expect(result.WSLENV).not.toContain('PATH')
   })
 
-  it('supports an explicit extra forward allowlist without leaking invalid names', () => {
+  it('supports an explicit extra forward allowlist without leaking invalid names or Windows DSH_HOME', () => {
     const result = environmentForWsl({
       ORCANA_WSL_FORWARD_ENV: 'MY_FLAG,INVALID-NAME,DSH_HOME',
       MY_FLAG: 'yes',
       'INVALID-NAME': 'no',
       DSH_HOME: 'no',
     })
-    expect(result.WSLENV).toBe('ORCANA_WSL_FORWARD_ENV:MY_FLAG')
+    expect(result.WSLENV).toBe('MY_FLAG')
   })
 })
