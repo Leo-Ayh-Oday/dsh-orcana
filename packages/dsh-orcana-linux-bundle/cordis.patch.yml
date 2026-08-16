@@ -1,8 +1,14 @@
-# dsh-orcana Linux edition bundle patch. Inserts the hardening row with
-# NEUTRAL defaults: installing the profile must not change DSH's execution
-# semantics. Enforce layers by configuring the row (e.g. `network: none` or
-# `resourceLimits`) or via a later --patch overlay keyed by row id.
+# dsh-orcana Linux edition bundle patch.
+#
+# DSH is the sole execution-enforcement owner: its `sandbox-policy` row carries
+# resourceLimits/network and its sandbox provider produces the native receipt.
+# Orcana observes those real shell results; it must not add a second prlimit,
+# network namespace, or parallel enforcement ledger.
+#
+# Defaults remain NEUTRAL: installing this bundle changes no sandbox policy.
+# Deployments that want resource/network constraints configure the existing
+# DSH `sandbox-policy` row in a later profile/user patch.
 - insert:
     - id: dsh-orcana-linux
-      name: '@leooday/dsh-orcana-linux'
+      name: '@leooday/dsh-orcana-linux/native-evidence'
       config: {}
