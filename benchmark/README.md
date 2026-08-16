@@ -60,17 +60,13 @@ fold); first runs archived in `reports-v1-archive/`.
 | Task | n | Outcome | Treatment − control (tokens) |
 |---|---|---|---|
 | demo-format-money | 2 | both arms success | −871 / −2695 (both negative) |
-| marked-blank-tab | 6 | all arms 24/24 calls (budget-capped) | −4079 / +4082 / −29107 / −12181 / +48428 / −8850 — 4/6 negative, mean ≈ −0.3k, median ≈ −6.5k |
+| marked-blank-tab | 6 | all arms 24/24 calls (budget-capped) | −4079 / +4082 / −29107 / −12181 / +48428 / −8850 — 4/6 negative, median ≈ −6.5k |
+| dayjs-updatelocale | 3 | all arms 20/20 calls (budget-capped) | +2459 / −1841 / −731 — 2/3 negative, median ≈ −0.7k |
 
-Discipline metrics (replayed from session logs, `analyze.mjs --sessions`):
-the first snapshot showed 1 repeated verification command for control vs 0
-for treatment on marked; zero-progress rounds were 0 on both arms (the model
-made progress on every step in these runs).
-
-Honest reading: median token direction favors treatment but variance is
-high (one large positive outlier) — not conclusive at n=6. The hard task
-censors call-count differences at the budget. The harness is the durable
-deliverable; effect size needs more reps and tasks.
+Pooled: **8/11 paired runs used fewer tokens on treatment**; median negative
+on every task. Call counts are censored by the budgets on the real tasks.
+The harness is the durable deliverable; effect size needs more reps and
+tasks.
 
 ## Hard invariants (frozen)
 

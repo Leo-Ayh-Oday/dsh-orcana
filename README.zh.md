@@ -68,13 +68,12 @@ dsh --profile orcana "<task>"
 | 任务 | n | treatment 相对 control（tokens，treatment − control） |
 |---|---|---|
 | demo-format-money（合成 verification trap） | 2 | **-871 / -2695**（均为负） |
-| marked-blank-tab（真实 issue markedjs#4007） | 6 | -4079 / +4082 / -29107 / -12181 / +48428 / -8850 —— 4/6 为负，均值约 -0.3k，中位数约 -6.5k |
+| marked-blank-tab（真实 issue markedjs#4007） | 6 | -4079 / +4082 / -29107 / -12181 / +48428 / -8850 —— 4/6 为负，中位数约 -6.5k |
+| dayjs-updatelocale（真实 issue dayjs#1118） | 3 | +2459 / -1841 / -731 —— 2/3 为负，中位数约 -0.7k |
 
-诚实解读：真实任务上 token 方向中位数偏负但方差大（含一个大正异常值），
-n=6 统计上不显著；合成任务 2/2 偏向 treatment。calls 维度被 24-call 预算
-截断（两臂都顶格）；重放纪律指标中 treatment 的重复验证命令更少
-（首轮快照 1 vs 0）。**可靠交付物是整套实验装置本身**——效果大小需要
-更多 reps 与任务才能下统计结论。
+合计 11 对中 **8 对 treatment tokens 更少**（每个任务中位数均为负；均值被
+marked 的一个大正异常值拉高）。真实任务的 calls 维度被预算截断（两臂顶格）。
+诚实说明：样本仍小，可靠交付物是整套实验装置，效果大小需要更多 reps 与任务。
 
 ## 已知限制
 

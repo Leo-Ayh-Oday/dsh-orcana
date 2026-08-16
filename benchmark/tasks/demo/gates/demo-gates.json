@@ -1,6 +1,6 @@
 {
   "task": "demo",
-  "verified_at": "2026-08-16T01:10:38Z",
+  "verified_at": "2026-08-16T13:18:59Z",
   "gates": {
     "baseline": {
       "existing_suite": true

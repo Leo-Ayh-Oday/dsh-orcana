@@ -62,8 +62,10 @@ if [ -d "$FIX_DIR" ]; then
   done < <(find "$FIX_DIR" -type f)
 fi
 run_cmd "Gate C baseline ($BASELINE)" pass "$BASELINE" && GATE_C_AB=true
-run_cmd "Gate C reproducer ($REPRODUCER)" pass "$REPRODUCER" && GATE_C_RB=true
+# Acceptance first: it may rebuild artifacts the reproducer reads (tasks whose
+# reproducer runs against built output need the fix compiled before it passes).
 run_cmd "Gate C acceptance ($ACCEPTANCE)" pass "$ACCEPTANCE" && GATE_C_AC=true
+run_cmd "Gate C reproducer ($REPRODUCER)" pass "$REPRODUCER" && GATE_C_RB=true
 popd >/dev/null
 
 mkdir -p "$(dirname "$OUT")"

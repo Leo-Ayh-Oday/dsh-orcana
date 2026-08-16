@@ -1,0 +1,37 @@
+{
+  "task_id": "dayjs-updatelocale",
+  "source": {
+    "issue": "dayjs#1118 / PR #3012: updateLocale must merge nested objects instead of replacing",
+    "snapshot_at": "2026-08-16T00:00:00Z",
+    "prompt_sha256": "97fd1472df78359a431c460152ec6578bd518dd7277c745aee17292f3f2ffc5a"
+  },
+  "prompt": "修复 dayjs 的 updateLocale 插件的一个 bug：当用部分嵌套对象更新 locale 时（例如只更新 formats.L 一个键），更新应合并进现有对象而不是整体替换整个对象——未包含的键（如 formats.LT）必须保留。数组和非对象值仍应整体替换。修复源码后重新构建（npm run build），并确认现有测试套件仍然通过。",
+  "repository": {
+    "repo": "iamkun/dayjs",
+    "base_sha": "99691c5f3bd1371d3b763d5f9dfaed9a1945a477^",
+    "fix_sha": "99691c5f3bd1371d3b763d5f9dfaed9a1945a477",
+    "verifier_sha": "99691c5f3bd1371d3b763d5f9dfaed9a1945a477"
+  },
+  "verification": {
+    "baseline_command": "npx jest --coverage=false",
+    "reproducer": "node reproducer.js",
+    "acceptance": "NODE_OPTIONS=--openssl-legacy-provider npm run build && npx jest --coverage=false && node reproducer.js"
+  },
+  "environment": {
+    "node": ">=20",
+    "install_command": "npm install",
+    "network": "deny"
+  },
+  "workspace": "tasks/dayjs-updatelocale/repo",
+  "hidden": "tasks/dayjs-updatelocale/hidden",
+  "calibration": {
+    "install_seconds": 30,
+    "test_seconds": 12
+  },
+  "gates": {
+    "baseline": { "existing_suite": "PASS" },
+    "reproducer": { "base": "FAIL" },
+    "official_fix": { "existing_suite": "PASS", "reproducer": "PASS" }
+  },
+  "digest": "dayjs-updatelocale-v1"
+}

@@ -1,6 +1,6 @@
 {
-  "task": "marked-blank-tab",
-  "verified_at": "2026-08-16T13:18:56Z",
+  "task": "dayjs-updatelocale",
+  "verified_at": "2026-08-16T13:18:28Z",
   "gates": {
     "baseline": {
       "existing_suite": true

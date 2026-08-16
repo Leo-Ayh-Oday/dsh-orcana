@@ -70,16 +70,14 @@ and raw data: [benchmark/](benchmark/README.md), `benchmark/reports/`.
 | Task | n | Treatment vs control (tokens, treatment − control) |
 |---|---|---|
 | demo-format-money (synthetic verification trap) | 2 | **−871 / −2695** (both negative) |
-| marked-blank-tab (real issue markedjs#4007) | 6 | −4079 / +4082 / −29107 / −12181 / +48428 / −8850 — 4/6 negative, mean ≈ −0.3k, median ≈ −6.5k |
+| marked-blank-tab (real issue markedjs#4007) | 6 | −4079 / +4082 / −29107 / −12181 / +48428 / −8850 — 4/6 negative, median ≈ −6.5k |
+| dayjs-updatelocale (real issue dayjs#1118) | 3 | +2459 / −1841 / −731 — 2/3 negative, median ≈ −0.7k |
 
-Honest reading: on the real task the token direction is consistently
-negative in the median but the variance is high (one large positive
-outlier), so the effect is not statistically conclusive at n=6. On the
-synthetic task both pairs favored treatment. Call counts are censored by the
-24-call budget on the hard task (every arm hits it); duplicate verification
-commands were lower for treatment in the replayed discipline metrics (1 vs 0
-in the first snapshot). The harness itself is the reliable deliverable —
-sample sizes need more reps and tasks for a conclusive effect size.
+All tasks pooled: **8 of 11 paired runs used fewer tokens on treatment**
+(median direction negative on every task; means are dragged by one large
+positive outlier on marked). Call counts are censored by the budgets on the
+real tasks (both arms hit them). Honest caveats: small samples, the harness
+is the reliable deliverable, effect size needs more reps and tasks.
 
 ## Known Limitations
 
