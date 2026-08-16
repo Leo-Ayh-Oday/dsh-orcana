@@ -42,9 +42,9 @@ dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 dsh --profile orcana "<task>"
 ```
 
-`dsh plugin add` 会安装组合包并自动激活为 profile 层（包里的
-`dsh.bundle.patch` 声明使其加入层栈）。组合包默认值是**中立的** —— 安装绝不
-自动开启更强的资源/网络约束；需要的加固由 profile config 或 `--patch` 明确配置。
+`dsh plugin add` 会安装组合包并激活为 profile 层。组合包默认值是**中立的** ——
+安装本身不会偷偷开启更强的资源/网络限制；需要的加固由 profile config 或
+`--patch` 明确配置。
 
 如果需要程序化嵌入，也可以直接使用同一 scope 下的实现包，包括
 `@leooday/dsh-governor`、`@leooday/governor-core` 和
@@ -52,22 +52,26 @@ dsh --profile orcana "<task>"
 
 ## Windows / WSL：同一个执行入口
 
-v0.4 的核心原则不是“Windows DSH 每次工具调用再跳 WSL”，而是：
+v0.4 的核心原则不是“Windows DSH 每次工具调用再跳 WSL”，而是让 Windows
+只承担启动入口：
 
 ```text
 Windows Terminal / PowerShell
         ↓
     dsh-orcana
         ↓
+      wsl.exe
+        ↓
 整个 DSH runtime 一次性进入 WSL
         ↓
 DSH + Orcana + sandbox + subprocess + bash/PTC/LSP
         ↓
-同一个 Linux execution world
+同一个原生 Linux execution world
 ```
 
-这样上层 Agent、preset 和任务无需维护 Windows/Linux 两套执行逻辑；路径、
-进程、shell、sandbox 和后台任务从任务开始起就处在 Linux 语义里。
+这样上层 Agent、preset 和任务无需维护 Windows/Linux 两套执行逻辑；cwd、
+进程、shell、sandbox、后台任务以及交互式 Ctrl+C 都继续走 WSL 自己的原生
+终端/取消路径，而不是由 Bridge 重新发明一套进程语义。
 
 v0.4 发布后，Windows 侧安装一次统一入口：
 
@@ -81,9 +85,12 @@ npm install -g @leooday/dsh-orcana-linux@^0.4.0
 dsh-orcana --wsl-doctor
 ```
 
-Bridge 会优先使用 WSL 中已有的 `dsh`；没有全局 `dsh` 时自动回退到 DSH
-官方的 `npx --yes @deepseek-ai/dsh` 运行方式。然后可以从 Windows Terminal
-直接把 Orcana profile 装进 WSL：
+Bridge 会优先使用 WSL 中已有的 `dsh`。没有全局 `dsh` 时不会静默跟随 npm
+`latest`，而是回退到当前 Bridge 明确兼容并固定的 DSH 包版本：
+`@deepseek-ai/dsh@0.1.0-rc.5`。以后验证新 DSH 时可以显式设置
+`ORCANA_WSL_DSH_PACKAGE`，确认兼容后再升级默认值。
+
+然后可以直接从 Windows Terminal 把 Orcana profile 装进 WSL：
 
 ```powershell
 dsh-orcana --wsl-install
@@ -96,10 +103,10 @@ dsh-orcana "<task>"
 ```
 
 关键边界：Windows `DSH_HOME` 不与 WSL 共用；Windows cwd 由目标发行版自己的
-`wslpath` 映射；`--` 与任务 argv 原样透传；模型密钥等通过单向 `WSLENV`
-进入 WSL。Windows 文件系统项目可以直接运行，但 Git/npm/build I/O 很重时，
-项目放在 WSL Linux 文件系统中是性能快路径。完整契约见
-[`packages/dsh-orcana-linux/README.zh.md`](packages/dsh-orcana-linux/README.zh.md)。
+`wslpath` 映射；`--` 与任务 argv 原样透传；模型密钥和常见 provider base URL
+通过单向 `WSLENV` 进入 WSL。Windows 文件系统项目可以直接运行，但
+Git/npm/build I/O 很重时，项目放在 WSL Linux 文件系统中是性能快路径。完整
+契约见 [`packages/dsh-orcana-linux/README.zh.md`](packages/dsh-orcana-linux/README.zh.md)。
 
 从 checkout 做交互式开发：
 
@@ -116,9 +123,9 @@ dsh --profile orcana "<task>"
   （`sed -i` 等）对代际计数器不可见（后续 git-probe receipts）。
 - governor 当前不会直接 kill/cancel Agent；最强动作仍受
   `maxForcedContinuations` 限制。
-- Windows Bridge 已保证执行世界、cwd、argv、env 和正常退出码边界；
-  **确定性的 Linux 进程组 Ctrl+C/timeout 取消**仍应由下一阶段 WSL-side
-  supervisor 完成，而不是用 Windows `child.kill()` 冒充 POSIX signal。
+- 交互式 Ctrl+C 有意继续交给 `wsl.exe` / Linux 终端语义。Orcana 后续若需要
+  **程序化 timeout/cancel**，应在执行控制面增加独立能力，而不是为了控制 API
+  改变正常终端任务的 session/process-group 语义。
 
 ## 贡献
 
