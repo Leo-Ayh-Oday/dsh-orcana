@@ -4,6 +4,7 @@ import {
   buildWslDshArgs,
   dshArgsForBridge,
   environmentForWsl,
+  hostCwdForWslSpawn,
   parseWslBridgeArgs,
   parseWslUncPath,
   windowsPathToWsl,
@@ -90,10 +91,18 @@ describe('WSL path contract', () => {
   it('fails loud when a WSL UNC cwd conflicts with the selected distro', () => {
     expect(() => windowsPathToWsl('\\\\wsl$\\Ubuntu\\home\\leo', 'Debian')).toThrow(/belongs to WSL distro/)
   })
+
+  it('does not use a WSL UNC path as the Win32 CreateProcess cwd', () => {
+    expect(hostCwdForWslSpawn('C:\\repo', { USERPROFILE: 'C:\\Users\\leo' })).toBe('C:\\repo')
+    expect(hostCwdForWslSpawn('\\\\wsl.localhost\\Ubuntu\\home\\leo\\repo', {
+      USERPROFILE: 'C:\\Users\\leo',
+    })).toBe('C:\\Users\\leo')
+    expect(hostCwdForWslSpawn('\\\\wsl$\\Ubuntu\\home\\leo\\repo', {})).toBe('C:\\')
+  })
 })
 
 describe('WSL environment contract', () => {
-  it('forwards explicit runtime/provider variables through WSLENV without sharing Windows DSH_HOME', () => {
+  it('forwards runtime/provider variables one-way into WSL without sharing Windows DSH_HOME', () => {
     const result = environmentForWsl({
       WSLENV: 'EXISTING/u',
       EXISTING: 'x',
@@ -106,9 +115,9 @@ describe('WSL environment contract', () => {
     })
     expect(result.WSLENV?.split(':')).toEqual([
       'EXISTING/u',
-      'DEEPSEEK_API_KEY',
-      'DSH_TRACE',
-      'ORCANA_MODE',
+      'DEEPSEEK_API_KEY/u',
+      'DSH_TRACE/u',
+      'ORCANA_MODE/u',
     ])
     expect(result.WSLENV).not.toContain('DSH_HOME')
     expect(result.WSLENV).not.toContain('ORCANA_WSL_DISTRO')
@@ -122,6 +131,6 @@ describe('WSL environment contract', () => {
       'INVALID-NAME': 'no',
       DSH_HOME: 'no',
     })
-    expect(result.WSLENV).toBe('MY_FLAG')
+    expect(result.WSLENV).toBe('MY_FLAG/u')
   })
 })
