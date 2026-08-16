@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { augmentWslHostEnvironment } from './wsl-host-env.js'
+import { reportWslLoopbackProxyDoctor } from './wsl-proxy-doctor.js'
 import {
   launchWslBridge,
   parseWslBridgeArgs,
@@ -100,10 +101,11 @@ function canonicalBridgeArgs(options: WslBridgeOptions, dshArgs: readonly string
 /**
  * Preferred cross-platform launcher API.
  *
- * Windows composition does two host-only normalizations before entering the
- * core bridge: DSH bootstrap proxy/search/certificate environment and local
- * filesystem package specs passed to `dsh plugin`. Native Linux/WSL runs keep
- * argv/environment unchanged.
+ * Windows composition normalizes DSH bootstrap proxy/search/certificate
+ * environment, local filesystem package specs passed to `dsh plugin`, and WSL
+ * distro ownership before entering the core bridge. Doctor additionally probes
+ * explicit loopback proxy endpoints from inside WSL; it never guesses or
+ * rewrites a Windows loopback address into a NAT gateway.
  */
 export async function launchDshOrcana(
   rawArgs: readonly string[],
@@ -121,7 +123,13 @@ export async function launchDshOrcana(
     ...(selectedDistro === undefined ? {} : { distro: selectedDistro }),
   }
 
-  if (parsed.mode !== 'run') {
+  if (parsed.mode === 'doctor') {
+    const bridgeStatus = await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
+    if (bridgeStatus !== 0) return bridgeStatus
+    return reportWslLoopbackProxyDoctor(effectiveEnv, selectedDistro)
+  }
+
+  if (parsed.mode === 'install') {
     return await launchWslBridge(canonicalBridgeArgs(baseOptions, parsed.dshArgs), effectiveEnv, cwd)
   }
 
