@@ -17,20 +17,61 @@ function importerBlock(lock, importer) {
   const start = lock.indexOf(marker)
   if (start === -1) return undefined
   const bodyStart = start + marker.length
-  const nextImporter = lock.indexOf('\n  ', bodyStart)
-  const packagesSection = lock.indexOf('\npackages:', bodyStart)
-  let end = lock.length
-  if (nextImporter !== -1) end = Math.min(end, nextImporter)
-  if (packagesSection !== -1) end = Math.min(end, packagesSection)
-  return lock.slice(start, end)
+  const rest = lock.slice(bodyStart)
+  const nextImporter = /\n  [^\s][^\n]*:\n/.exec(rest)
+  const packagesSection = rest.indexOf('\npackages:')
+  let relativeEnd = rest.length
+  if (nextImporter !== null) relativeEnd = Math.min(relativeEnd, nextImporter.index)
+  if (packagesSection !== -1) relativeEnd = Math.min(relativeEnd, packagesSection)
+  return rest.slice(0, relativeEnd)
 }
 
-function requireText(block, needle, label) {
-  if (block === undefined) {
-    fail(`${label}: importer is missing from pnpm-lock.yaml`)
+function unquoteYamlKey(value) {
+  const trimmed = value.trim()
+  if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function importerSpecifiers(lock, importer) {
+  const block = importerBlock(lock, importer)
+  if (block === undefined) return undefined
+  const specifiers = new Map()
+  let section
+  let packageName
+
+  for (const line of block.split('\n')) {
+    const sectionMatch = /^    ([A-Za-z][A-Za-z0-9]*):$/.exec(line)
+    if (sectionMatch !== null) {
+      section = sectionMatch[1]
+      packageName = undefined
+      continue
+    }
+    const packageMatch = /^      (.+):$/.exec(line)
+    if (packageMatch !== null) {
+      packageName = unquoteYamlKey(packageMatch[1])
+      continue
+    }
+    const specifierMatch = /^        specifier: (.+)$/.exec(line)
+    if (specifierMatch !== null && section !== undefined && packageName !== undefined) {
+      specifiers.set(`${section}:${packageName}`, specifierMatch[1].trim())
+    }
+  }
+  return specifiers
+}
+
+function requireSpecifier(lock, importer, section, packageName, expected) {
+  const specifiers = importerSpecifiers(lock, importer)
+  if (specifiers === undefined) {
+    fail(`${importer}: importer is missing from pnpm-lock.yaml`)
     return
   }
-  if (!block.includes(needle)) fail(`${label}: expected ${JSON.stringify(needle)} in pnpm-lock.yaml importer`)
+  const key = `${section}:${packageName}`
+  const actual = specifiers.get(key)
+  if (actual !== expected) {
+    fail(`${importer}: ${section}.${packageName} expected specifier ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}`)
+  }
 }
 
 const rootManifest = readJson('package.json')
@@ -59,22 +100,35 @@ if (lock.includes('@orcana/')) {
   fail('pnpm-lock.yaml still contains the retired @orcana scope; regenerate it with pnpm 11.7.0 before release')
 }
 
-const dshBundleBlock = importerBlock(lock, 'packages/dsh-bundle')
-requireText(dshBundleBlock, "'@leooday/dsh-governor':", 'packages/dsh-bundle')
-requireText(dshBundleBlock, "'@leooday/governor-core':", 'packages/dsh-bundle')
+requireSpecifier(lock, 'packages/dsh-bundle', 'dependencies', '@leooday/dsh-governor', 'workspace:^')
+requireSpecifier(lock, 'packages/dsh-bundle', 'dependencies', '@leooday/governor-core', 'workspace:^')
+requireSpecifier(lock, 'packages/dsh-governor', 'dependencies', '@leooday/governor-core', 'workspace:^')
 
-const governorBlock = importerBlock(lock, 'packages/dsh-governor')
-requireText(governorBlock, "'@leooday/governor-core':", 'packages/dsh-governor')
-requireText(governorBlock, 'specifier: ^0.1.0-rc.5', 'packages/dsh-governor DSH rc.5 ABI')
+for (const packageName of [
+  '@deepseek-ai/dsh-agent',
+  '@deepseek-ai/dsh-llm',
+  '@deepseek-ai/dsh-session',
+  '@deepseek-ai/dsh-tools',
+]) {
+  requireSpecifier(lock, 'packages/dsh-governor', 'devDependencies', packageName, '^0.1.0-rc.5')
+}
 
-const linuxBlock = importerBlock(lock, 'packages/dsh-orcana-linux')
-requireText(linuxBlock, "'@deepseek-ai/cordis':", 'packages/dsh-orcana-linux')
-requireText(linuxBlock, 'specifier: 4.0.1', 'packages/dsh-orcana-linux Cordis ABI')
-requireText(linuxBlock, "'@deepseek-ai/dsh-sandbox':", 'packages/dsh-orcana-linux')
-requireText(linuxBlock, 'specifier: 0.1.0-rc.5', 'packages/dsh-orcana-linux DSH rc.5 ABI')
+requireSpecifier(lock, 'packages/dsh-orcana-linux', 'dependencies', '@deepseek-ai/cordis', '4.0.1')
+requireSpecifier(lock, 'packages/dsh-orcana-linux', 'dependencies', '@deepseek-ai/dsh-sandbox', '0.1.0-rc.5')
 
-const linuxBundleBlock = importerBlock(lock, 'packages/dsh-orcana-linux-bundle')
-requireText(linuxBundleBlock, "'@leooday/dsh-orcana-linux':", 'packages/dsh-orcana-linux-bundle')
+for (const packageName of [
+  '@deepseek-ai/dsh-bash-local',
+  '@deepseek-ai/dsh-bash-sandbox',
+  '@deepseek-ai/dsh-sandbox-local',
+  '@deepseek-ai/dsh-sandbox-policy',
+  '@deepseek-ai/dsh-shell',
+  '@deepseek-ai/dsh-subprocess',
+  '@deepseek-ai/dsh-subprocess-local',
+]) {
+  requireSpecifier(lock, 'packages/dsh-orcana-linux', 'devDependencies', packageName, '0.1.0-rc.5')
+}
+
+requireSpecifier(lock, 'packages/dsh-orcana-linux-bundle', 'dependencies', '@leooday/dsh-orcana-linux', 'workspace:^')
 
 if (process.exitCode === 1) {
   console.error('release-contract: FAILED')
