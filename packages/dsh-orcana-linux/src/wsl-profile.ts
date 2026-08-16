@@ -1,4 +1,8 @@
-import { dshHeadlessPackage, parseExactPackageSpec } from './wsl-install.js'
+import {
+  DSH_HEADLESS_PACKAGE,
+  dshCompanionPackage,
+  parseExactPackageSpec,
+} from './wsl-install.js'
 
 export interface WslProfileExpectation {
   dependencies: Record<string, string>
@@ -8,13 +12,15 @@ export interface WslProfileExpectation {
   importPackages: string[]
 }
 
-export function buildWslProfileExpectation(
+export function buildWslCompanionProfileExpectation(
   dshPackage: string,
+  companionName: string,
   orcanaRuntimePackages: readonly string[],
   orcanaBundlePackages: readonly string[],
 ): WslProfileExpectation {
+  const companion = dshCompanionPackage(dshPackage, companionName)
   const allDependencies = [
-    dshHeadlessPackage(dshPackage),
+    companion,
     ...orcanaRuntimePackages,
     ...orcanaBundlePackages,
   ]
@@ -29,11 +35,25 @@ export function buildWslProfileExpectation(
     dependencies,
     bundles: [
       '@deepseek-ai/dsh-base',
-      '@deepseek-ai/dsh-headless',
+      companionName,
       ...bundleNames,
     ],
     importPackages,
   }
+}
+
+/** Back-compatible headless profile expectation. */
+export function buildWslProfileExpectation(
+  dshPackage: string,
+  orcanaRuntimePackages: readonly string[],
+  orcanaBundlePackages: readonly string[],
+): WslProfileExpectation {
+  return buildWslCompanionProfileExpectation(
+    dshPackage,
+    DSH_HEADLESS_PACKAGE,
+    orcanaRuntimePackages,
+    orcanaBundlePackages,
+  )
 }
 
 /**
