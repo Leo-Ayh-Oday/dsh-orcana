@@ -156,6 +156,19 @@ export function windowsPathToWsl(
   return { ...(distro !== undefined ? { distro } : {}), linuxPath }
 }
 
+/**
+ * Windows' host-side CreateProcess cwd is independent from WSL's `--cd`.
+ * Avoid using a WSL UNC path as the Win32 cwd; the mapped Linux cwd is still
+ * passed through `--cd` and remains authoritative inside the distro.
+ */
+export function hostCwdForWslSpawn(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (parseWslUncPath(cwd) === undefined) return cwd
+  return env.USERPROFILE ?? env.SystemRoot ?? env.SYSTEMROOT ?? 'C:\\'
+}
+
 /** Build wsl.exe argv without shell interpolation. */
 export function buildWslDshArgs(
   linuxCwd: string,
@@ -181,7 +194,8 @@ function wslenvName(entry: string): string {
  * WSLENV entries are preserved. DSH_HOME is intentionally excluded because a
  * Windows profile may contain Windows-native node_modules; WSL owns its own
  * DSH home and package graph. Bridge-control `ORCANA_WSL_*` variables stay on
- * the host unless explicitly named by a future dedicated carrier.
+ * the host. Entries added by this bridge use `/u`, so they flow only from
+ * Win32 into WSL and do not implicitly flow back into Win32 children.
  */
 export function environmentForWsl(
   env: NodeJS.ProcessEnv = process.env,
@@ -201,7 +215,7 @@ export function environmentForWsl(
   const merged = [...existing]
   for (const key of forward) {
     if (env[key] !== undefined && !names.has(key)) {
-      merged.push(key)
+      merged.push(`${key}/u`)
       names.add(key)
     }
   }
@@ -240,12 +254,13 @@ export async function launchWslBridge(
       ? ['-lc', DOCTOR_SCRIPT]
       : dshArgsForBridge(options)
     const command = options.mode === 'doctor' ? '/bin/sh' : dshCommand
-    return await spawnAndWait(command, args, { env, cwd })
+    return await spawnAndWait(command, args, { env, cwd, relaySignals: true })
   }
 
   const mapped = windowsPathToWsl(cwd, options.distro)
   const distro = options.distro ?? mapped.distro
   const childEnv = environmentForWsl(env)
+  const hostCwd = hostCwdForWslSpawn(cwd, env)
 
   if (options.mode === 'doctor') {
     const args = [
@@ -253,17 +268,17 @@ export async function launchWslBridge(
       '--cd', mapped.linuxPath,
       '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT,
     ]
-    return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd })
+    return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, relaySignals: false })
   }
 
   const args = buildWslDshArgs(mapped.linuxPath, dshArgsForBridge(options), distro, dshCommand)
-  return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd })
+  return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, relaySignals: false })
 }
 
 async function spawnAndWait(
   command: string,
   args: readonly string[],
-  options: { env: NodeJS.ProcessEnv; cwd: string },
+  options: { env: NodeJS.ProcessEnv; cwd: string; relaySignals: boolean },
 ): Promise<number> {
   return await new Promise<number>((resolve) => {
     const child = spawn(command, [...args], {
@@ -276,8 +291,10 @@ async function spawnAndWait(
     const finish = (code: number) => {
       if (settled) return
       settled = true
-      process.off('SIGINT', onSigint)
-      process.off('SIGTERM', onSigterm)
+      if (options.relaySignals) {
+        process.off('SIGINT', onSigint)
+        process.off('SIGTERM', onSigterm)
+      }
       resolve(code)
     }
     const onSigint = () => {
@@ -286,8 +303,15 @@ async function spawnAndWait(
     const onSigterm = () => {
       try { child.kill('SIGTERM') } catch { /* process already gone */ }
     }
-    process.on('SIGINT', onSigint)
-    process.on('SIGTERM', onSigterm)
+    // POSIX can genuinely relay signals. Windows child.kill(SIGINT/SIGTERM)
+    // is an abrupt termination, not a Linux signal, so do not pretend it is
+    // graceful process-group forwarding. The inherited Windows console owns
+    // Ctrl+C delivery to wsl.exe; a future WSL-side supervisor will provide
+    // explicit Linux process-group cancellation semantics.
+    if (options.relaySignals) {
+      process.on('SIGINT', onSigint)
+      process.on('SIGTERM', onSigterm)
+    }
     child.once('error', (error) => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         console.error(`${command} was not found`)
