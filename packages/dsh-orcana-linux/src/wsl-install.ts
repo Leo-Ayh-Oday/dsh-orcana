@@ -31,16 +31,13 @@ export function dshHeadlessPackage(dshPackage: string): string {
 }
 
 /**
- * Run DSH plugin management with an exact local toolchain when available;
- * otherwise ask npx for both pinned packages in one ephemeral execution env.
- * The resolver uses a non-login /bin/sh so WSL's inherited Linux environment
- * remains authoritative and no user shell startup file mutates execution.
+ * Dedicated `--wsl-install` resolver.
  *
- * This resolver is intentionally dedicated to `--wsl-install`: it validates
- * the expected `dsh plugin --profile <name> add ...` shape, prepends the DSH
- * one-shot headless bundle plus exact Orcana implementation packages, and
- * injects pnpm's `--save-exact`. The profile therefore has a runnable DSH task
- * surface and an exact Orcana top-level dependency closure.
+ * It creates a runnable and reproducible profile using an exact DSH/pnpm
+ * toolchain, exact DSH headless bundle, exact Orcana runtime closure, and exact
+ * Orcana bundles. After `dsh plugin add` succeeds, it runs the official
+ * boot-free `dsh --profile <name> --dump-config` path. The install is reported
+ * successful only when the resulting profile patch stack can actually compose.
  */
 export const INSTALL_RESOLVER_SCRIPT = [
   'dsh_package=$1',
@@ -58,15 +55,35 @@ export const INSTALL_RESOLVER_SCRIPT = [
   '# The Orcana release package list is compile-time controlled and contains no spaces/globs.',
   'set -f',
   'set -- plugin --profile "$profile" add --save-exact "$headless_package" $orcana_packages "$@"',
+  'runner=npx',
   'if command -v dsh >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then',
   '  dsh_version=$(dsh --version 2>/dev/null || true)',
   '  pnpm_version=$(pnpm --version 2>/dev/null || true)',
-  '  if node -e "$version_contract" "$dsh_package" "$dsh_version" >/dev/null 2>&1 && node -e "$version_contract" "$pnpm_package" "$pnpm_version" >/dev/null 2>&1; then exec dsh "$@"; fi',
-  '  printf "%s\\n" "dsh-orcana: installed dsh/pnpm toolchain does not match pinned install toolchain; using npx bootstrap" >&2',
+  '  if node -e "$version_contract" "$dsh_package" "$dsh_version" >/dev/null 2>&1 && node -e "$version_contract" "$pnpm_package" "$pnpm_version" >/dev/null 2>&1; then runner=local; fi',
   'fi',
-  'if command -v npx >/dev/null 2>&1; then exec npx --yes --package="$pnpm_package" --package="$dsh_package" -- dsh "$@"; fi',
-  'printf "%s\\n" "dsh-orcana: plugin installation needs either the pinned dsh+pnpm toolchain or npx" >&2',
-  'exit 127',
+  'if [ "$runner" = local ]; then',
+  '  dsh "$@"',
+  '  install_status=$?',
+  'else',
+  '  if ! command -v npx >/dev/null 2>&1; then printf "%s\\n" "dsh-orcana: plugin installation needs either the pinned dsh+pnpm toolchain or npx" >&2; exit 127; fi',
+  '  npx --yes --package="$pnpm_package" --package="$dsh_package" -- dsh "$@"',
+  '  install_status=$?',
+  'fi',
+  'if [ "$install_status" -ne 0 ]; then exit "$install_status"; fi',
+  '# rc.5 --dump-config composes bundle/profile/overlay patches without booting the runtime or evaluating !!js.',
+  'if [ "$runner" = local ]; then',
+  '  dsh --profile "$profile" --dump-config >/dev/null',
+  '  smoke_status=$?',
+  'else',
+  '  npx --yes --package="$dsh_package" -- dsh --profile "$profile" --dump-config >/dev/null',
+  '  smoke_status=$?',
+  'fi',
+  'if [ "$smoke_status" -ne 0 ]; then',
+  '  printf "%s\\n" "dsh-orcana: profile install completed but composition smoke failed for profile '$profile'" >&2',
+  '  exit "$smoke_status"',
+  'fi',
+  'printf "%s\\n" "dsh-orcana: profile '$profile' installed and composition smoke passed" >&2',
+  'exit 0',
 ].join('\n')
 
 function distroPrefix(distro?: string): string[] {
