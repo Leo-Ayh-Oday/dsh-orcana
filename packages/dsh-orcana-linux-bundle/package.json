@@ -1,6 +1,6 @@
 {
   "name": "@leooday/dsh-orcana-linux-bundle",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "dsh-orcana Linux edition profile bundle for DeepSeek Harness (dsh.bundle.patch contract)",
   "license": "MIT",
   "type": "module",
