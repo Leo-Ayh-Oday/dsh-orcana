@@ -18,6 +18,31 @@ dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 `dsh plugin add` 安装组合包并激活为 profile 层。从 checkout 开发时使用
 [`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh)。
 
+## 从旧加固行升级
+
+Bundle `0.3.0` 保留原来的 `dsh-orcana-linux` row id，但这个行现在从旧的
+argv-hardening plugin 切换到：
+
+```text
+@leooday/dsh-orcana-linux/native-evidence
+```
+
+如果已有 profile 仍在这个行里配置旧 Orcana enforcement 字段——
+`network`、`resourceLimits`、`degradationPolicy` 或 `capabilities`——新版不会把它们
+静默忽略，而会抛出稳定错误：
+
+```text
+LEGACY_HARDENING_CONFIG_MOVED
+```
+
+这是故意的 **fail-closed 迁移门**。否则 Schemastery 在 schema 变化后可能把旧
+字段剥掉，最终表现成“原来有资源/网络约束，升级后悄悄没了”。
+
+把 `network` 和 `resourceLimits` 迁移到下面的 DSH `sandbox-policy` 行即可。
+旧 Orcana 的 `degradationPolicy` / `capabilities` 不做一一映射：现在 DSH 会在真实
+执行后通过 `SandboxReceipt` 报告 applied/degraded 事实，Orcana 应消费事实而不是
+再假装拥有 enforcement。
+
 ## 原生加固配置属于 `sandbox-policy`
 
 当前 DSH 已经在自己的 `sandbox-policy` 行正式拥有 `resourceLimits` 与
