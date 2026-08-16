@@ -60,13 +60,17 @@ DSH                         Orcana
 
 ## 安装
 
-npm scope 为 `@leooday`：
+npm scope 为 `@leooday`。完整 Orcana Profile 使用一条命令安装：
 
 ```sh
-dsh plugin --profile orcana add \
-  @leooday/dsh-bundle \
-  @leooday/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle @deepseek-ai/dsh-headless@next
+```
 
+这里明确使用 `@deepseek-ai/dsh-headless@next`：当前 `latest` 线存在依赖链问题。
+
+然后运行：
+
+```sh
 dsh --profile orcana "<task>"
 ```
 
