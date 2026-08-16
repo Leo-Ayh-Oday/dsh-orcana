@@ -576,6 +576,14 @@ gates:
 7. **analyze 口径修正**:tokenSum 只计 input+output(与 live paired 报告一致,原含 cacheRead 导致 -356875 虚高);纪律指标按轮累计
 8. **数据**:reports/ 已含全部首跑/复跑记录;两任务的 paired 报告 + 完整分析(analysis-full.json)
 
+### 11.16 真实日志结构修复 + reps 数据(2026-08-16,已提交)
+
+1. **ReplayEvent 结构与真实日志不符(已修,重要)**:实际持久化的 tool/result 事件 = `message.source.callId` + block(`toolCallId`/`isError`),而 adapter 假设 `content[0].callId`——**translateSessionEvents 对真实日志解析全败,孤儿率 100%**;这意味着 H1 的 session-start resume 重建与纪律重放此前从未真正工作过(测试 fixture 用的是错误结构,测试绿但实战废)。修复:ReplayEvent 类型按真实结构建模,翻译取 `source.callId ?? block.callId ?? block.toolCallId`;fixture 同步更新(新增真实结构回归用例)
+2. **analyze 纪律重放修复**:step/end 事件此前未被收集(轮边界缺失→zeroProgressRounds 恒 0);duplicate 统计原用 ring 滑动窗口(长会话重复会被淘汰)→ 改全量 Map 计数
+3. **纪律指标实测**(修复后):marked control 重复命令 1 次 vs treatment 0(governor 减少重复验证,方向符合预期);两臂 zero-progress rounds 均 0(该模型在任务中无重复轮,数据为真)
+4. **reps 数据**(deepseek-v4-flash,新配对):demo n=2(seed 7/8,均 completed:success) tokens delta -871/-2695 均值 -1783;marked n=3(seed 6/7/8,均 24 calls 顶格) tokens delta -4079/+4082/-29107 均值 -9701(2/3 方向一致)、wall 均值 -48s;calls 无差异(预算顶格)——tokens 是稳定信号,calls 需更高预算任务或更易任务
+5. **数据分析要点**:marked 两臂均以 24/24 calls 顶格(incomplete)——任务对当前模型偏难(正则修复 24 calls 内常不够),calls 维度的 A/B 差异被预算上限截断;treatment 更早到达 acceptance 通过(judge success 时 calls 相同但 tokens/wall 少)
+
 ## 下一步(P7 收尾 / P8)
 
-任务池扩充(候选:dayjs/zod/fastify 的 verification-trap 类任务,走同一 prep→三 Gate→冻结流程);reps 提升(§5.4 主效果 <20% 时,当前 calls 差 ~8%、tokens 差 ~32%——tokens 差异显著,calls 需更多样本);正式环境(直连或 netns+模型端点)复跑;P8 收口文档(发布物 README/插件文档)。
+任务池扩充(候选:dayjs/zod/fastify,优先 verification-trap 类——现有套件绿但 hidden 红、模型易自以为修好);对 marked 提高 max-calls(如 40)观察完成率;正式环境(直连或 netns+模型端点)复跑;P8 收口文档。

@@ -1,0 +1,52 @@
+[
+  {
+    "task": "demo-format-money",
+    "arm": "treatment",
+    "verdict": {
+      "outcome": "completed",
+      "reason": "exited",
+      "exitCode": 0,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "success",
+      "reason": "acceptance_passed"
+    },
+    "metrics": {
+      "llm_calls": 6,
+      "input_tokens": 6922,
+      "output_tokens": 1618,
+      "cache_read_tokens": 32896,
+      "cache_write_tokens": 0,
+      "tool_calls": 7,
+      "first_event_ms": 1786845746512,
+      "last_event_ms": 1786845764681
+    },
+    "wall_ms": 22171
+  },
+  {
+    "task": "demo-format-money",
+    "arm": "control",
+    "verdict": {
+      "outcome": "completed",
+      "reason": "exited",
+      "exitCode": 0,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "success",
+      "reason": "acceptance_passed"
+    },
+    "metrics": {
+      "llm_calls": 8,
+      "input_tokens": 9348,
+      "output_tokens": 2215,
+      "cache_read_tokens": 61440,
+      "cache_write_tokens": 0,
+      "tool_calls": 10,
+      "first_event_ms": 1786845769060,
+      "last_event_ms": 1786845792345
+    },
+    "wall_ms": 26182
+  }
+]

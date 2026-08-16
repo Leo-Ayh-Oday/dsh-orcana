@@ -1,0 +1,32 @@
+{
+  "task_id": "marked-blank-tab",
+  "arm": "control",
+  "started_at": "2026-08-16T03:20:46.334Z",
+  "finished_at": "2026-08-16T03:22:02.976Z",
+  "verdict": {
+    "outcome": "incomplete",
+    "reason": "llm_call_budget_exhausted",
+    "exitCode": 0,
+    "signal": null
+  },
+  "home": "/home/fuqiang/orcana-dsh/benchmark/run-home-control-marked-blank-tab-1786850446307",
+  "prompt_sha256": "13a7be274422ee7c8d8ed8306ad8d4fa91f7791303918f5c8404c7718b83c18f",
+  "manifest_digest": "marked-blank-tab-v1",
+  "pins": {
+    "node": "v22.22.2",
+    "dsh": "0.1.0-rc.6",
+    "platform": "linux",
+    "arch": "x64",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "profile_config_digest": "085e28ebdf50b048df7348f2e6368319f2dc1720e0c9364d98f8daad8476f452"
+  },
+  "env_pin": {
+    "DSH_PERMISSION_MODE": "danger-full-access",
+    "telemetry": "unset",
+    "tools_mode": "unset",
+    "http_proxy": "set",
+    "https_proxy": "set"
+  },
+  "stdout_tail": "No network. Let me check if a newer marked copy exists anywhere locally (node_modules), and examine the spec tests that touch blank lines:\n",
+  "stderr_tail": "(node:68049) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+}

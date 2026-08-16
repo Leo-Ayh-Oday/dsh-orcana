@@ -1,0 +1,27 @@
+[
+  {
+    "task": "demo-format-money",
+    "arm": "treatment",
+    "verdict": {
+      "outcome": "completed",
+      "reason": "exited",
+      "exitCode": 1,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "failed",
+      "reason": "acceptance_failed"
+    },
+    "metrics": {
+      "llm_calls": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "tool_calls": 0,
+      "first_event_ms": 1786845614675,
+      "last_event_ms": 1786845614677
+    },
+    "wall_ms": 4095
+  }
+]

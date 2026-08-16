@@ -1,0 +1,32 @@
+{
+  "task_id": "demo-format-money",
+  "arm": "treatment",
+  "started_at": "2026-08-16T03:19:51.552Z",
+  "finished_at": "2026-08-16T03:20:15.750Z",
+  "verdict": {
+    "outcome": "completed",
+    "reason": "exited",
+    "exitCode": 0,
+    "signal": null
+  },
+  "home": "/home/fuqiang/orcana-dsh/benchmark/run-home-treatment-demo-format-money-1786850391500",
+  "prompt_sha256": "b7a9e09eae94940f269b0f38c62bfe6c0b6ba1da23dad19cbf151f57582804eb",
+  "manifest_digest": "demo-manifest-v3",
+  "pins": {
+    "node": "v22.22.2",
+    "dsh": "0.1.0-rc.6",
+    "platform": "linux",
+    "arch": "x64",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "profile_config_digest": "085e28ebdf50b048df7348f2e6368319f2dc1720e0c9364d98f8daad8476f452"
+  },
+  "env_pin": {
+    "DSH_PERMISSION_MODE": "danger-full-access",
+    "telemetry": "unset",
+    "tools_mode": "unset",
+    "http_proxy": "set",
+    "https_proxy": "set"
+  },
+  "stdout_tail": "修复完成。\n\n## 问题根因\n\n原 `formatMoney` 对负数非整数金额有两个缺陷：\n1. 符号被丢弃（返回 `\"$...\"` 而非 `\"-$...\"`）\n2. `Math.floor(cents / 100)` 向负无穷取整，例如 `formatMoney(-1.5)` → cents = -150 → floor(-1.5) = -2 → `$-2.50`，而不是 `-$1.50`\n\n## 修复方案（src/format.js）\n\n先提取符号（`amount < 0 ? '-' : ''`），再对 `Math.abs(amount)` 做格式化，最后在美元符号前拼上符号：\n\n```js\nexport function formatMoney(amount) {\n  const sign = amount < 0 ? '-' : ''\n  const abs = Math.abs(amount)\n  if (Number.isInteger(abs)) {\n    return `${sign}$${abs}.00`\n  }\n  const cents = Math.round(abs * 100)\n  return `${sign}$${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`\n}\n```\n\n## 验证结果\n\n- `npm test`：2/2 通过（原有正数用例不受影响，`0`、`5`、`1.5`、`0.05` 均正常）\n- `reproducer.js`（负数门禁）：`formatMoney(-1.5) → -$1.50` ✓，`formatMoney(-0.05) → -$0.05` ✓，退出码 0\n",
+  "stderr_tail": "(node:67774) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+}

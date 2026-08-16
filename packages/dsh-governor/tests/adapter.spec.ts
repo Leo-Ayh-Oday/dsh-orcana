@@ -21,7 +21,15 @@ function call(name: string, args: unknown, callId = 'c1') {
 function replayEvent(tool: string, args: unknown, content: string, isError: boolean, callId: string): ReplayEvent[] {
   return [
     { type: 'tool/call', data: { callId, name: tool, arguments: JSON.stringify(args) } },
-    { type: 'tool/result', data: { message: { content: [{ callId, content: [textBlock(content)], isError }] } } },
+    {
+      type: 'tool/result',
+      data: {
+        message: {
+          source: { kind: 'tool', callId },
+          content: [{ type: 'tool-result', toolCallId: callId, content: [textBlock(content)], isError }],
+        },
+      },
+    },
   ]
 }
 
@@ -117,7 +125,7 @@ describe('translateSessionEvents (replay)', () => {
   it('pairs results with their calls and skips orphan results', () => {
     const events: ReplayEvent[] = [
       ...replayEvent('bash', { command: 'npm test' }, 'fail\n[exit code: 1]', false, 'c1'),
-      { type: 'tool/result', data: { message: { content: [{ callId: 'orphan', content: [textBlock('x')], isError: false }] } } },
+      { type: 'tool/result', data: { message: { source: { kind: 'tool', callId: 'orphan' }, content: [{ toolCallId: 'orphan', content: [textBlock('x')], isError: false }] } } },
     ]
     const translated = translateSessionEvents(events)
     expect(translated).toHaveLength(1)
@@ -127,7 +135,7 @@ describe('translateSessionEvents (replay)', () => {
   it('recovers malformed argument JSON as the raw string (matching the agent loop)', () => {
     const events: ReplayEvent[] = [
       { type: 'tool/call', data: { callId: 'c1', name: 'bash', arguments: 'not-json' } },
-      { type: 'tool/result', data: { message: { content: [{ callId: 'c1', content: [textBlock('x')], isError: false }] } } },
+      { type: 'tool/result', data: { message: { source: { kind: 'tool', callId: 'c1' }, content: [{ toolCallId: 'c1', content: [textBlock('x')], isError: false }] } } },
     ]
     const translated = translateSessionEvents(events)
     expect(translated[0]?.canonicalArgs).toBe(JSON.stringify('not-json'))
@@ -139,7 +147,7 @@ describe('sessionReplayEvents (resume/compact feed)', () => {
     const full = [
       { type: 'user/message', data: { content: [] } },
       { type: 'tool/call', data: { callId: 'c1', name: 'bash', arguments: '{}' } },
-      { type: 'tool/result', data: { message: { content: [{ callId: 'c1', content: [textBlock('x')], isError: false }] } } },
+      { type: 'tool/result', data: { message: { source: { kind: 'tool', callId: 'c1' }, content: [{ toolCallId: 'c1', content: [textBlock('x')], isError: false }] } } },
       { type: 'assistant/message', data: { message: { content: [] } } },
       { type: 'turn/end', data: {} },
     ]

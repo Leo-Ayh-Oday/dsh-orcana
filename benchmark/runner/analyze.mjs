@@ -183,7 +183,7 @@ export async function disciplineMetrics(home) {
       for (const line of text.split('\n')) {
         let event
         try { event = JSON.parse(line.trim()) } catch { continue }
-        if (event?.type === 'tool/call' || event?.type === 'tool/result' || event?.type === 'turn/end') {
+        if (event?.type === 'tool/call' || event?.type === 'tool/result' || event?.type === 'turn/end' || event?.type === 'step/end') {
           events.push({ type: event.type, data: event.data })
         }
       }
@@ -193,33 +193,44 @@ export async function disciplineMetrics(home) {
   const engine = new ProgressFactEngine()
   const pending = new Map()
   let zeroProgressRounds = 0
+  const readCounts = new Map()
+  const commandCounts = new Map()
   for (const event of events) {
     if (event.type === 'tool/call') {
       pending.set(event.data.callId, { callId: event.data.callId, name: event.data.name, arguments: event.data.arguments })
     } else if (event.type === 'tool/result') {
       const block = event.data.message.content[0]
-      const call = pending.get(block.callId)
+      const callId = event.data.message.source?.callId ?? block?.callId ?? block?.toolCallId
+      const call = callId === undefined ? undefined : pending.get(callId)
       if (call === undefined) continue
       engine.applyEvent(adapter.toEngineEvent(
         { callId: call.callId, name: call.name, arguments: parseArguments(call.arguments) },
         { content: block.content, isError: block.isError },
       ))
-    } else if (event.type === 'turn/end') {
+      // Duplicate discipline: FULL counts (the engine ring is a sliding
+      // window and would age out repeats on long sessions).
+      if (call.name === 'read') {
+        const args = parseArguments(call.arguments)
+        const key = JSON.stringify(args)
+        readCounts.set(key, (readCounts.get(key) ?? 0) + 1)
+      }
+      if (call.name === 'bash') {
+        const command = parseArguments(call.arguments)?.command
+        if (typeof command === 'string' && command.trim().length > 0) {
+          commandCounts.set(command.trim(), (commandCounts.get(command.trim()) ?? 0) + 1)
+        }
+      }
+    } else if (event.type === 'turn/end' || event.type === 'step/end') {
+      // Headless sessions are a single turn (turn/end fires once on exit);
+      // the step boundary is the operative round boundary there (one step =
+      // one model decision cycle), so count zero-progress rounds on either.
       if (engine.endTurn().zeroProgress) zeroProgressRounds += 1
-    }
-  }
-  const duplicateReads = new Map()
-  const duplicateCommands = new Map()
-  for (const entry of engine.snapshot().ring) {
-    if (entry.tool === 'read') duplicateReads.set(entry.canonicalArgs, (duplicateReads.get(entry.canonicalArgs) ?? 0) + 1)
-    if (entry.tool === 'bash' && entry.command !== undefined) {
-      duplicateCommands.set(entry.command, (duplicateCommands.get(entry.command) ?? 0) + 1)
     }
   }
   return {
     zeroProgressRounds,
-    duplicateReads: [...duplicateReads.values()].filter(count => count > 1).length,
-    duplicateCommands: [...duplicateCommands.values()].filter(count => count > 1).length,
+    duplicateReads: [...readCounts.values()].filter(count => count > 1).length,
+    duplicateCommands: [...commandCounts.values()].filter(count => count > 1).length,
   }
 }
 

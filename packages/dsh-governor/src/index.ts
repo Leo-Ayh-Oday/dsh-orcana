@@ -230,13 +230,23 @@ export function toEngineEvent(
 }
 
 /**
- * The session-log event subset the replay translator consumes. Non-tool
- * events (user/assistant messages, turns, headers) are never part of the
- * engine's event stream.
+ * The session-log event subset the replay translator consumes. The tool/result
+ * shape follows the PERSISTED session log (verified against real logs): the
+ * call identity lives on `message.source.callId`, the block carries
+ * `toolCallId` + `isError`. Non-tool events (user/assistant messages, turns,
+ * headers) are never part of the engine's event stream.
  */
 export type ReplayEvent =
   | { type: 'tool/call'; data: { callId: string; name: string; arguments: string } }
-  | { type: 'tool/result'; data: { message: { content: readonly [{ callId: string; content: ContentBlock[]; isError: boolean }] } } }
+  | {
+    type: 'tool/result'
+    data: {
+      message: {
+        source: { kind: string; callId: string }
+        content: readonly [{ type?: string; toolCallId?: string; callId?: string; content: ContentBlock[]; isError?: boolean }]
+      }
+    }
+  }
 
 /**
  * Project a session's full event log down to the replayable tool events, in
@@ -269,11 +279,14 @@ export function translateSessionEvents(events: readonly ReplayEvent[]): EngineEv
       pending.set(event.data.callId, { callId: event.data.callId, name: event.data.name, arguments: event.data.arguments })
     } else {
       const block = event.data.message.content[0]
-      const call = pending.get(block.callId)
+      // The persisted log carries the call identity on message.source.callId;
+      // the block-level fields are the legacy/test-visible fallbacks.
+      const callId = event.data.message.source.callId ?? block?.callId ?? block?.toolCallId
+      const call = callId === undefined ? undefined : pending.get(callId)
       if (call === undefined) continue
       out.push(toEngineEvent(
         { callId: call.callId, name: call.name, arguments: parseArguments(call.arguments) },
-        { content: block.content, isError: block.isError },
+        { content: block.content, isError: block.isError ?? false },
       ))
     }
   }

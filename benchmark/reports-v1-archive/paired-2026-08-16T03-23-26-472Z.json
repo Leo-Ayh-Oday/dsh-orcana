@@ -1,0 +1,102 @@
+[
+  {
+    "task": "demo-format-money",
+    "arm": "treatment",
+    "verdict": {
+      "outcome": "completed",
+      "reason": "exited",
+      "exitCode": 0,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "success",
+      "reason": "acceptance_passed"
+    },
+    "metrics": {
+      "llm_calls": 7,
+      "input_tokens": 7305,
+      "output_tokens": 1634,
+      "cache_read_tokens": 39296,
+      "cache_write_tokens": 0,
+      "tool_calls": 8,
+      "first_event_ms": 1786850394277,
+      "last_event_ms": 1786850413824
+    },
+    "wall_ms": 24198
+  },
+  {
+    "task": "demo-format-money",
+    "arm": "control",
+    "verdict": {
+      "outcome": "completed",
+      "reason": "exited",
+      "exitCode": 0,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "success",
+      "reason": "acceptance_passed"
+    },
+    "metrics": {
+      "llm_calls": 7,
+      "input_tokens": 9537,
+      "output_tokens": 2114,
+      "cache_read_tokens": 53504,
+      "cache_write_tokens": 0,
+      "tool_calls": 9,
+      "first_event_ms": 1786850418048,
+      "last_event_ms": 1786850440418
+    },
+    "wall_ms": 26195
+  },
+  {
+    "task": "marked-blank-tab",
+    "arm": "control",
+    "verdict": {
+      "outcome": "incomplete",
+      "reason": "llm_call_budget_exhausted",
+      "exitCode": 0,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "failed",
+      "reason": "acceptance_failed"
+    },
+    "metrics": {
+      "llm_calls": 10,
+      "input_tokens": 36568,
+      "output_tokens": 7215,
+      "cache_read_tokens": 203264,
+      "cache_write_tokens": 0,
+      "tool_calls": 15,
+      "first_event_ms": 1786850448199,
+      "last_event_ms": 1786850522615
+    },
+    "wall_ms": 76642
+  },
+  {
+    "task": "marked-blank-tab",
+    "arm": "treatment",
+    "verdict": {
+      "outcome": "incomplete",
+      "reason": "llm_call_budget_exhausted",
+      "exitCode": 0,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "false-completion",
+      "reason": "claimed_but_acceptance_failed"
+    },
+    "metrics": {
+      "llm_calls": 10,
+      "input_tokens": 34914,
+      "output_tokens": 6656,
+      "cache_read_tokens": 217088,
+      "cache_write_tokens": 0,
+      "tool_calls": 13,
+      "first_event_ms": 1786850532310,
+      "last_event_ms": 1786850602592
+    },
+    "wall_ms": 72562
+  }
+]

@@ -1,0 +1,32 @@
+{
+  "task_id": "demo-format-money",
+  "arm": "control",
+  "started_at": "2026-08-16T02:02:47.155Z",
+  "finished_at": "2026-08-16T02:03:13.337Z",
+  "verdict": {
+    "outcome": "completed",
+    "reason": "exited",
+    "exitCode": 0,
+    "signal": null
+  },
+  "home": "/home/fuqiang/orcana-dsh/benchmark/run-home-control-demo-format-money-1786845767128",
+  "prompt_sha256": "b7a9e09eae94940f269b0f38c62bfe6c0b6ba1da23dad19cbf151f57582804eb",
+  "manifest_digest": "demo-manifest-v3",
+  "pins": {
+    "node": "v22.22.2",
+    "dsh": "0.1.0-rc.6",
+    "platform": "linux",
+    "arch": "x64",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "profile_config_digest": "085e28ebdf50b048df7348f2e6368319f2dc1720e0c9364d98f8daad8476f452"
+  },
+  "env_pin": {
+    "DSH_PERMISSION_MODE": "danger-full-access",
+    "telemetry": "unset",
+    "tools_mode": "unset",
+    "http_proxy": "set",
+    "https_proxy": "set"
+  },
+  "stdout_tail": "修复完成。\n\n## 问题根因\n\n`src/format.js` 中 `formatMoney` 的负数路径使用了 `Math.floor(cents / 100)`，而 `Math.floor` 是向负无穷取整：对 `-1.5` 计算出的 `cents = -150`，`Math.floor(-150 / 100)` 得到 `-2`，因此输出 `$-2.50` 而非 `-$1.50`（负号位置也不对）。\n\n## 修复方案\n\n改为先取符号，再对绝对值做格式化，统一处理整数与小数路径：\n\n```js\nexport function formatMoney(amount) {\n  const sign = amount < 0 ? '-' : ''\n  const cents = Math.round(Math.abs(amount) * 100)\n  return `${sign}$${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`\n}\n```\n\n- `-1.5` → `-$1.50`\n- `-0.05` → `-$0.05`\n- 正数路径行为不变（`1.5` → `$1.50`，`0.05` → `$0.05`，`5` → `$5.00`）\n\n## 验证结果\n\n- `npm test`：2 个现有测试全部通过（`pass 2, fail 0`）\n- `node reproducer.js`：`ok formatMoney(-1.5) → -$1.50`、`ok formatMoney(-0.05) → -$0.05`\n",
+  "stderr_tail": "(node:52259) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+}

@@ -1,0 +1,52 @@
+[
+  {
+    "task": "marked-blank-tab",
+    "arm": "treatment",
+    "verdict": {
+      "outcome": "completed",
+      "reason": "exited",
+      "exitCode": 0,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "success",
+      "reason": "acceptance_passed"
+    },
+    "metrics": {
+      "llm_calls": 22,
+      "input_tokens": 38608,
+      "output_tokens": 9608,
+      "cache_read_tokens": 718208,
+      "cache_write_tokens": 0,
+      "tool_calls": 27,
+      "first_event_ms": 1786850680232,
+      "last_event_ms": 1786850800384
+    },
+    "wall_ms": 122870
+  },
+  {
+    "task": "marked-blank-tab",
+    "arm": "control",
+    "verdict": {
+      "outcome": "incomplete",
+      "reason": "llm_call_budget_exhausted",
+      "exitCode": 0,
+      "signal": null
+    },
+    "judgment": {
+      "verdict": "success",
+      "reason": "acceptance_passed"
+    },
+    "metrics": {
+      "llm_calls": 24,
+      "input_tokens": 57726,
+      "output_tokens": 13157,
+      "cache_read_tokens": 1052416,
+      "cache_write_tokens": 0,
+      "tool_calls": 33,
+      "first_event_ms": 1786850810228,
+      "last_event_ms": 1786850965247
+    },
+    "wall_ms": 157259
+  }
+]

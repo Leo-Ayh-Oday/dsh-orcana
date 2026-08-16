@@ -1,0 +1,32 @@
+{
+  "task_id": "demo-format-money",
+  "arm": "treatment",
+  "started_at": "2026-08-16T02:00:51.654Z",
+  "finished_at": "2026-08-16T02:01:15.834Z",
+  "verdict": {
+    "outcome": "completed",
+    "reason": "exited",
+    "exitCode": 0,
+    "signal": null
+  },
+  "home": "/home/fuqiang/orcana-dsh/benchmark/run-home-treatment-demo-format-money-1786845651620",
+  "prompt_sha256": "b7a9e09eae94940f269b0f38c62bfe6c0b6ba1da23dad19cbf151f57582804eb",
+  "manifest_digest": "demo-manifest-v3",
+  "pins": {
+    "node": "v22.22.2",
+    "dsh": "0.1.0-rc.6",
+    "platform": "linux",
+    "arch": "x64",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "profile_config_digest": "085e28ebdf50b048df7348f2e6368319f2dc1720e0c9364d98f8daad8476f452"
+  },
+  "env_pin": {
+    "DSH_PERMISSION_MODE": "danger-full-access",
+    "telemetry": "unset",
+    "tools_mode": "unset",
+    "http_proxy": "set",
+    "https_proxy": "set"
+  },
+  "stdout_tail": "修复完成。\n\n## 问题根因\n\n`src/format.js` 原实现中：\n\n```js\nconst cents = Math.round(amount * 100)\nreturn `$${Math.floor(cents / 100)}.${...}`\n```\n\n对负数而言 `Math.floor` 向负无穷取整（`Math.floor(-1.5) === -2`），导致 `formatMoney(-1.5)` 返回 `$-2.50`；同时 `$` 前缀位置也错误（符号被放在 `$` 之后）。\n\n## 修复方式\n\n改为对绝对值进行格式化，并在 `$` 前加符号前缀：\n\n```js\nexport function formatMoney(amount) {\n  const sign = amount < 0 ? '-' : ''\n  const abs = Math.abs(amount)\n  if (Number.isInteger(abs)) {\n    return `${sign}$${abs}.00`\n  }\n  const cents = Math.round(abs * 100)\n  return `${sign}$${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`\n}\n```\n\n## 验证结果\n\n- `npm test`：**PASS**（2 个测试全部通过，0 失败）——现有正数用例不受影响\n- `reproducer.js`：`formatMoney(-1.5) → -$1.50`、`formatMoney(-0.05) → -$0.05` 均通过\n- 额外抽查：`-5 → -$5.00`、`-1.51 → -$1.51`（含四舍五入）、`1.5 → $1.50`、`0 → $0.00` 均正确\n\n顺带修复了负数整数路径（原为 `$-5.00`，现为 `-$5.00`）。\n",
+  "stderr_tail": "(node:51650) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+}

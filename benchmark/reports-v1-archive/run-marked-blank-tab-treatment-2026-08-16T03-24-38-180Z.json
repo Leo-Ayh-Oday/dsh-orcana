@@ -1,0 +1,32 @@
+{
+  "task_id": "marked-blank-tab",
+  "arm": "treatment",
+  "started_at": "2026-08-16T03:24:38.180Z",
+  "finished_at": "2026-08-16T03:26:41.050Z",
+  "verdict": {
+    "outcome": "completed",
+    "reason": "exited",
+    "exitCode": 0,
+    "signal": null
+  },
+  "home": "/home/fuqiang/orcana-dsh/benchmark/run-home-treatment-marked-blank-tab-1786850678153",
+  "prompt_sha256": "13a7be274422ee7c8d8ed8306ad8d4fa91f7791303918f5c8404c7718b83c18f",
+  "manifest_digest": "marked-blank-tab-v1",
+  "pins": {
+    "node": "v22.22.2",
+    "dsh": "0.1.0-rc.6",
+    "platform": "linux",
+    "arch": "x64",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "profile_config_digest": "085e28ebdf50b048df7348f2e6368319f2dc1720e0c9364d98f8daad8476f452"
+  },
+  "env_pin": {
+    "DSH_PERMISSION_MODE": "danger-full-access",
+    "telemetry": "unset",
+    "tools_mode": "unset",
+    "http_proxy": "set",
+    "https_proxy": "set"
+  },
+  "stdout_tail": "修复完成。总结如下：\n\n## 修改内容\n\n**`src/rules.ts`**（第 131 行）— 段落词法规则 `_paragraph` 中，用于识别\"空行终止段落\"的否定前瞻从仅匹配空格改为匹配空格或制表符：\n\n```diff\n-const _paragraph = /^([^\\n]+(?:\\n(?!hr|heading|lheading|blockquote|fences|list|html|table| +\\n)[^\\n]+)*)/;\n+const _paragraph = /^([^\\n]+(?:\\n(?!hr|heading|lheading|blockquote|fences|list|html|table|[ \\t]+\\n)[^\\n]+)*)/;\n```\n\n**根因**：段落正则的续行否定前瞻只排除了\"仅含空格的行\"（` +\\n`），而一行只含 tab 或 tab+空格混排时该前瞻不命中，于是 `\\t\\n` 被当作普通行并入段落，相邻段落被错误合并（`foo\\n\\t\\nbar` 输出为单个 `<p>`）。\n\n## 验证结果\n\n- **构建**：`npm run build:esbuild` 成功，`lib/marked.esm.js` 已包含修复。\n- **复现器**：`node reproducer.js` 全部 3 个用例通过（`foo\\n\\t\\nbar`、`a\\n\\t\\nb\\n\\t\\nc`、`foo\\n  \\t  \\nbar` 均正确分隔为多个 `<p>`）。\n- **现有测试套件**：`npm run test:specs` 1749/1749 全部通过。\n- **单元测试**：仅有的 5 个失败（`test/unit/exec.test.js` 中 CLI 的 stderr 断言）为环境性问题——Node 的 `EnvHttpProxyAgent` experimental 警告污染 stderr；已通过 stash 还原到未修改源码验证，基线同样失败 5 个，与本次修复无关。\n",
+  "stderr_tail": "(node:68612) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+}

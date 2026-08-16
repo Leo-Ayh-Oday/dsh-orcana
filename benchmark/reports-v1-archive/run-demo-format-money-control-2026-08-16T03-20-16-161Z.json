@@ -1,0 +1,32 @@
+{
+  "task_id": "demo-format-money",
+  "arm": "control",
+  "started_at": "2026-08-16T03:20:16.161Z",
+  "finished_at": "2026-08-16T03:20:42.356Z",
+  "verdict": {
+    "outcome": "completed",
+    "reason": "exited",
+    "exitCode": 0,
+    "signal": null
+  },
+  "home": "/home/fuqiang/orcana-dsh/benchmark/run-home-control-demo-format-money-1786850416137",
+  "prompt_sha256": "b7a9e09eae94940f269b0f38c62bfe6c0b6ba1da23dad19cbf151f57582804eb",
+  "manifest_digest": "demo-manifest-v3",
+  "pins": {
+    "node": "v22.22.2",
+    "dsh": "0.1.0-rc.6",
+    "platform": "linux",
+    "arch": "x64",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "profile_config_digest": "085e28ebdf50b048df7348f2e6368319f2dc1720e0c9364d98f8daad8476f452"
+  },
+  "env_pin": {
+    "DSH_PERMISSION_MODE": "danger-full-access",
+    "telemetry": "unset",
+    "tools_mode": "unset",
+    "http_proxy": "set",
+    "https_proxy": "set"
+  },
+  "stdout_tail": "完成。修复已应用于 `src/format.js`（注意：环境中没有 `/workspace` 目录，实际工作区是当前目录 `ws-control-demo-format-money-1786850416126`）。\n\n**问题所在：** 原来的负数路径对 `cents`（负数）执行 `Math.floor(cents / 100)`，而 `Math.floor` 是向负无穷取整，因此 `formatMoney(-1.5)` 计算得到 `cents = -150`、`Math.floor(-150/100) = -2`，结果变成了 `$-2.50`，并且负号被放置在了 `$` 后面。\n\n**修复方法：** 提前提取符号（`amount < 0 ? '-' : ''`），对所有中间计算使用绝对值 `Math.abs(amount)`，并将符号前置在 `$` 之前：\n\n```js\nexport function formatMoney(amount) {\n  const sign = amount < 0 ? '-' : ''\n  const magnitude = Math.abs(amount)\n  if (Number.isInteger(magnitude)) {\n    return `${sign}$${magnitude}.00`\n  }\n  const cents = Math.round(magnitude * 100)\n  return `${sign}$${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`\n}\n```\n\n**验证结果：**\n- `npm test`：2 个测试全部通过（正数整数和正数小数路径，`$5.00`、`$0.00`、`$1.50`、`$0.05`）。\n- 隐藏的复现器（reproducer.js）：`formatMoney(-1.5)` → `-$1.50`，`formatMoney(-0.05)` → `-$0.05`，均正确。\n",
+  "stderr_tail": "(node:67909) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+}
