@@ -1,4 +1,5 @@
 export const DEFAULT_WSL_PNPM_PACKAGE = 'pnpm@11.7.0'
+export const INSTALL_NODE_CONTRACT_SCRIPT = 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 19) || major >= 24 ? 0 : 1)'
 
 export const DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES = Object.freeze([
   '@leooday/governor-core@0.1.0-rc.1',
@@ -110,8 +111,8 @@ export function nativeInstallShellArgs(
   dshArgs: readonly string[],
   dshPackage: string,
   versionContract: string,
-  nodeContract: string,
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
+  nodeContract = INSTALL_NODE_CONTRACT_SCRIPT,
 ): string[] {
   const parsedPnpm = parseExactPackageSpec(pnpmPackage)
   if (parsedPnpm.name !== 'pnpm') {
@@ -131,14 +132,14 @@ export function buildWslInstallArgs(
   dshArgs: readonly string[],
   dshPackage: string,
   versionContract: string,
-  nodeContract: string,
   distro?: string,
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
+  nodeContract = INSTALL_NODE_CONTRACT_SCRIPT,
 ): string[] {
   return [
     ...distroPrefix(distro),
     '--cd', linuxCwd,
     '--exec', '/bin/sh',
-    ...nativeInstallShellArgs(dshArgs, dshPackage, versionContract, nodeContract, pnpmPackage),
+    ...nativeInstallShellArgs(dshArgs, dshPackage, versionContract, pnpmPackage, nodeContract),
   ]
 }
