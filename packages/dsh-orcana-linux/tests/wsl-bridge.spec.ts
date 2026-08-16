@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_WSL_BUNDLES,
+  DEFAULT_WSL_DSH_PACKAGE,
   buildWslDshArgs,
   dshArgsForBridge,
   environmentForWsl,
@@ -51,7 +52,7 @@ describe('WSL bridge argument contract', () => {
     ])
   })
 
-  it('keeps task text out of the fixed resolver script and passes it only as positional argv', () => {
+  it('pins the compatible DSH npm fallback and keeps task text out of the resolver script', () => {
     const task = 'echo "$HOME" && rm -rf nope'
     const argv = buildWslDshArgs(
       '/mnt/c/work tree',
@@ -65,9 +66,17 @@ describe('WSL bridge argument contract', () => {
     ])
     const resolver = argv[7]
     expect(resolver).toContain('command -v dsh')
-    expect(resolver).toContain('npx --yes @deepseek-ai/dsh')
+    expect(resolver).toContain('npx --yes "$package_spec"')
     expect(resolver).not.toContain(task)
+    expect(argv[8]).toBe('dsh-orcana')
+    expect(argv[9]).toBe(DEFAULT_WSL_DSH_PACKAGE)
     expect(argv.slice(-3)).toEqual(['--profile', 'orcana', task])
+  })
+
+  it('allows an explicit compatible DSH package fallback without shell interpolation', () => {
+    const argv = buildWslDshArgs('/home/leo/repo', ['web'], 'Ubuntu', undefined, '@deepseek-ai/dsh@0.1.0-rc.99')
+    expect(argv[9]).toBe('@deepseek-ai/dsh@0.1.0-rc.99')
+    expect(argv.at(-1)).toBe('web')
   })
 
   it('uses a caller-supplied DSH executable directly without a resolver shell', () => {
@@ -130,20 +139,24 @@ describe('WSL environment contract', () => {
       WSLENV: 'EXISTING/u',
       EXISTING: 'x',
       DEEPSEEK_API_KEY: 'secret',
+      DEEPSEEK_BASE_URL: 'https://gateway.example.test',
       DSH_TRACE: '1',
       DSH_HOME: 'C:\\Users\\leo\\.dsh',
       ORCANA_MODE: 'warn-steer',
       ORCANA_WSL_DISTRO: 'Ubuntu',
+      ORCANA_WSL_DSH_PACKAGE: '@deepseek-ai/dsh@custom',
       PATH: 'C:\\Windows',
     })
     expect(result.WSLENV?.split(':')).toEqual([
       'EXISTING/u',
       'DEEPSEEK_API_KEY/u',
+      'DEEPSEEK_BASE_URL/u',
       'DSH_TRACE/u',
       'ORCANA_MODE/u',
     ])
     expect(result.WSLENV).not.toContain('DSH_HOME')
     expect(result.WSLENV).not.toContain('ORCANA_WSL_DISTRO')
+    expect(result.WSLENV).not.toContain('ORCANA_WSL_DSH_PACKAGE')
     expect(result.WSLENV).not.toContain('PATH')
   })
 
