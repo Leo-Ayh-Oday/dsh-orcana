@@ -68,6 +68,8 @@ describe.skipIf(process.platform === 'win32' || !hasGit)('workspace doctor shell
         ...process.env,
         HOME: join(dir, 'isolated-home'),
         XDG_CONFIG_HOME: join(dir, 'isolated-xdg'),
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
       }
       mkdirSync(env.HOME, { recursive: true })
       mkdirSync(env.XDG_CONFIG_HOME, { recursive: true })
