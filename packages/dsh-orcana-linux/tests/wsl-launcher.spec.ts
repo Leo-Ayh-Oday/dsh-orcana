@@ -1,8 +1,56 @@
 import { describe, expect, it } from 'vitest'
 import {
   distroForWindowsWorkspace,
+  requiredOrcanaProfileForRun,
   translateDshPluginPathSpecsForWsl,
 } from '../src/wsl-launcher.ts'
+
+describe('dsh-orcana product profile authority', () => {
+  it('requires the default headless profile for task-style invocations', () => {
+    expect(requiredOrcanaProfileForRun([], 'orcana')).toBe('headless')
+    expect(requiredOrcanaProfileForRun(['fix the tests'], 'orcana')).toBe('headless')
+    expect(requiredOrcanaProfileForRun([
+      '--patch', './extra.yml', 'fix the tests',
+    ], 'orcana')).toBe('headless')
+    expect(requiredOrcanaProfileForRun(['--dump-config'], 'orcana')).toBe('headless')
+  })
+
+  it('requires the Web companion for the web alias or an explicit owned Web profile', () => {
+    expect(requiredOrcanaProfileForRun(['web', '--host', '127.0.0.1'], 'orcana')).toBe('web')
+    expect(requiredOrcanaProfileForRun([
+      '--profile', 'orcana-web', '--help',
+    ], 'orcana')).toBe('web')
+    expect(requiredOrcanaProfileForRun([
+      '--profile=orcana-web', '--dump-config',
+    ], 'orcana')).toBe('web')
+  })
+
+  it('still verifies the owned headless profile when the caller spells it explicitly', () => {
+    expect(requiredOrcanaProfileForRun([
+      '--profile', 'orcana', 'fix the tests',
+    ], 'orcana')).toBe('headless')
+    expect(requiredOrcanaProfileForRun([
+      '--profile=orcana', '--patch', './extra.yml', 'fix the tests',
+    ], 'orcana')).toBe('headless')
+  })
+
+  it('treats another explicit DSH profile as a deliberate escape hatch', () => {
+    expect(requiredOrcanaProfileForRun([
+      '--profile', 'bench', 'fix the tests',
+    ], 'orcana')).toBeUndefined()
+    expect(requiredOrcanaProfileForRun([
+      '--profile=plain-web', '--help',
+    ], 'orcana')).toBeUndefined()
+  })
+
+  it('keeps root management/help/version commands transparent', () => {
+    expect(requiredOrcanaProfileForRun(['plugin', '--profile', 'dev', 'list'], 'orcana')).toBeUndefined()
+    expect(requiredOrcanaProfileForRun(['--help'], 'orcana')).toBeUndefined()
+    expect(requiredOrcanaProfileForRun(['-h'], 'orcana')).toBeUndefined()
+    expect(requiredOrcanaProfileForRun(['--version'], 'orcana')).toBeUndefined()
+    expect(requiredOrcanaProfileForRun(['-V'], 'orcana')).toBeUndefined()
+  })
+})
 
 describe('Windows WSL execution-world selection', () => {
   it('uses a WSL UNC cwd as the execution distro when no selector was provided', () => {
