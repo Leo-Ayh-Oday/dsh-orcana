@@ -31,7 +31,7 @@ describe('WSL plugin-install toolchain', () => {
     )
 
     expect(args.slice(0, 7)).toEqual([
-      '-lc', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
+      '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
       DSH_PACKAGE, DEFAULT_WSL_PNPM_PACKAGE, VERSION_CONTRACT,
       'plugin',
     ])
@@ -51,7 +51,7 @@ describe('WSL plugin-install toolchain', () => {
     expect(args.slice(0, 7)).toEqual([
       '--distribution', 'Ubuntu-24.04',
       '--cd', '/mnt/c/work tree',
-      '--exec', '/bin/sh', '-lc',
+      '--exec', '/bin/sh', '-c',
     ])
     expect(args[7]).toBe(INSTALL_RESOLVER_SCRIPT)
     expect(args[9]).toBe(DSH_PACKAGE)
