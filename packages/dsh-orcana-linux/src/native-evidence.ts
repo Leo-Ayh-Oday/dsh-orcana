@@ -13,16 +13,58 @@ import type {
   ShellSandboxInfo,
 } from '@deepseek-ai/dsh-shell'
 
-/** Native observer configuration. Enforcement remains owned by DSH sandbox-policy/provider. */
+/** Legacy package-root resource vocabulary retained only to fail loud on migration. */
+export interface LegacyHardeningResourceLimits {
+  memoryBytes?: number
+  cpuQuotaUs?: number
+  pidsMax?: number
+}
+
+/** Legacy package-root degradation vocabulary retained only to fail loud on migration. */
+export interface LegacyHardeningDegradationPolicy {
+  resourceLimits?: 'required' | 'best-effort'
+  network?: 'required' | 'best-effort'
+}
+
+/**
+ * Native observer configuration. Enforcement remains owned by DSH
+ * sandbox-policy/provider.
+ *
+ * The deprecated fields intentionally remain in the schema so an upgraded
+ * profile cannot have an old enforcement request silently stripped by
+ * schemastery. Their presence throws {@link LegacyHardeningConfigMovedError}.
+ */
 export interface NativeEvidenceConfig {
   /** Bounded final-execution evidence window. Older rows are dropped. */
   ledgerMaxEntries?: number
+  /** @deprecated Move to DSH's `sandbox-policy.resourceLimits`. */
+  resourceLimits?: LegacyHardeningResourceLimits
+  /** @deprecated Move to DSH's `sandbox-policy.network`. */
+  network?: 'inherit' | 'none'
+  /** @deprecated No native-evidence equivalent; DSH reports degradation in SandboxReceipt. */
+  degradationPolicy?: LegacyHardeningDegradationPolicy
+  /** @deprecated Legacy test/deployment capability pin; native-evidence never probes enforcement. */
+  capabilities?: unknown
 }
 
 export const DEFAULT_NATIVE_EVIDENCE_LEDGER_MAX_ENTRIES = 1024
 
 export const Config: z<NativeEvidenceConfig> = z.object({
   ledgerMaxEntries: z.number().min(1),
+  // These legacy rows are deliberately accepted by the schema and rejected
+  // by validateNativeEvidenceConfig(). If omitted here, schemastery may strip
+  // them before apply(), silently weakening an upgraded profile.
+  resourceLimits: z.object({
+    memoryBytes: z.number().min(0),
+    cpuQuotaUs: z.number().min(0),
+    pidsMax: z.number().min(0),
+  }),
+  network: z.union(['inherit', 'none'] as const),
+  degradationPolicy: z.object({
+    resourceLimits: z.union(['required', 'best-effort'] as const),
+    network: z.union(['required', 'best-effort'] as const),
+  }),
+  capabilities: z.any(),
 })
 
 /** Stable code for a second live observer wrapping the same shell provider. */
@@ -33,6 +75,22 @@ export class DuplicateNativeEvidenceError extends Error {
   constructor() {
     super('a dsh-orcana native-evidence observer already owns this shell provider — dispose it before mounting another')
     this.name = 'DuplicateNativeEvidenceError'
+  }
+}
+
+/** Stable migration error: an old Orcana enforcement config reached the evidence-only adapter. */
+export const LEGACY_HARDENING_CONFIG_MOVED = 'LEGACY_HARDENING_CONFIG_MOVED'
+
+export class LegacyHardeningConfigMovedError extends Error {
+  code: typeof LEGACY_HARDENING_CONFIG_MOVED = LEGACY_HARDENING_CONFIG_MOVED
+  constructor(readonly fields: readonly string[]) {
+    super(
+      'dsh-orcana-linux/native-evidence: legacy enforcement config is still present '
+      + `(${fields.join(', ')}). DSH now owns native enforcement; move network/resourceLimits to the `
+      + '`sandbox-policy` row. `degradationPolicy`/`capabilities` have no evidence-adapter enforcement '
+      + 'equivalent. Refusing to mount instead of silently weakening the previous policy.',
+    )
+    this.name = 'LegacyHardeningConfigMovedError'
   }
 }
 
@@ -94,6 +152,14 @@ export interface NativeExecutionRecord {
   aborted?: boolean
   /** Infrastructure failures expose routing identity only, never the error message. */
   error?: Readonly<{ name?: string; code?: string }>
+}
+
+interface NativeExecutionStartSnapshot {
+  startedAt: number
+  commandHash: string
+  commandBytes: number
+  workdir: string
+  policy?: NativePolicySnapshot
 }
 
 interface NativeEvidenceLedgerState {
@@ -236,22 +302,37 @@ function infrastructureError(error: unknown): NativeExecutionRecord['error'] {
   }
 }
 
+function executionStartSnapshot(spec: ShellExecSpec): NativeExecutionStartSnapshot {
+  return {
+    startedAt: Date.now(),
+    ...commandFingerprint(spec.command),
+    workdir: spec.workdir,
+    ...(spec.sandboxPolicy !== undefined ? { policy: snapshotNativePolicy(spec.sandboxPolicy) } : {}),
+  }
+}
+
+function recordBase(start: NativeExecutionStartSnapshot, finishedAt: number) {
+  return {
+    startedAt: start.startedAt,
+    finishedAt,
+    durationMs: Math.max(0, finishedAt - start.startedAt),
+    commandHash: start.commandHash,
+    commandBytes: start.commandBytes,
+    workdir: start.workdir,
+    ...(start.policy !== undefined ? { policy: start.policy } : {}),
+  }
+}
+
 function completedForegroundRecord(
-  spec: ShellExecSpec,
+  start: NativeExecutionStartSnapshot,
   result: ShellRunResult,
-  startedAt: number,
   finishedAt: number,
 ): NativeExecutionRecord {
   const sandbox = snapshotNativeSandbox(result.sandbox)
   return {
-    startedAt,
-    finishedAt,
-    durationMs: Math.max(0, finishedAt - startedAt),
+    ...recordBase(start, finishedAt),
     kind: 'foreground',
     outcome: 'completed',
-    ...commandFingerprint(spec.command),
-    workdir: spec.workdir,
-    ...(spec.sandboxPolicy !== undefined ? { policy: snapshotNativePolicy(spec.sandboxPolicy) } : {}),
     evidenceKind: nativeEvidenceKind(result.sandbox),
     ...(sandbox !== undefined ? { sandbox } : {}),
     exitCode: result.exitCode,
@@ -262,21 +343,15 @@ function completedForegroundRecord(
 }
 
 function completedBackgroundRecord(
-  spec: ShellExecSpec,
+  start: NativeExecutionStartSnapshot,
   process: ShellProcess,
-  startedAt: number,
   finishedAt: number,
 ): NativeExecutionRecord {
   const sandbox = snapshotNativeSandbox(process.sandbox)
   return {
-    startedAt,
-    finishedAt,
-    durationMs: Math.max(0, finishedAt - startedAt),
+    ...recordBase(start, finishedAt),
     kind: 'background',
     outcome: 'completed',
-    ...commandFingerprint(spec.command),
-    workdir: spec.workdir,
-    ...(spec.sandboxPolicy !== undefined ? { policy: snapshotNativePolicy(spec.sandboxPolicy) } : {}),
     evidenceKind: nativeEvidenceKind(process.sandbox),
     ...(sandbox !== undefined ? { sandbox } : {}),
     exitCode: process.exitCode,
@@ -286,20 +361,14 @@ function completedBackgroundRecord(
 
 function rejectedRecord(
   kind: NativeExecutionKind,
-  spec: ShellExecSpec,
+  start: NativeExecutionStartSnapshot,
   error: unknown,
-  startedAt: number,
   finishedAt: number,
 ): NativeExecutionRecord {
   return {
-    startedAt,
-    finishedAt,
-    durationMs: Math.max(0, finishedAt - startedAt),
+    ...recordBase(start, finishedAt),
     kind,
     outcome: 'infrastructure-error',
-    ...commandFingerprint(spec.command),
-    workdir: spec.workdir,
-    ...(spec.sandboxPolicy !== undefined ? { policy: snapshotNativePolicy(spec.sandboxPolicy) } : {}),
     evidenceKind: 'none',
     error: infrastructureError(error),
   }
@@ -321,11 +390,22 @@ type PatchableShell = ShellExecutor & Record<symbol, unknown> & {
   start: ShellExecutor['start']
 }
 
+function legacyHardeningFields(config: NativeEvidenceConfig): string[] {
+  const fields: string[] = []
+  if (config.resourceLimits !== undefined) fields.push('resourceLimits')
+  if (config.network !== undefined) fields.push('network')
+  if (config.degradationPolicy !== undefined) fields.push('degradationPolicy')
+  if (config.capabilities !== undefined) fields.push('capabilities')
+  return fields
+}
+
 export function validateNativeEvidenceConfig(config: NativeEvidenceConfig): void {
   const maxEntries = config.ledgerMaxEntries
   if (maxEntries !== undefined && (!Number.isInteger(maxEntries) || maxEntries < 1)) {
     throw new Error(`dsh-orcana-linux/native-evidence: invalid ledgerMaxEntries ${JSON.stringify(maxEntries)} — expected a positive integer`)
   }
+  const legacy = legacyHardeningFields(config)
+  if (legacy.length > 0) throw new LegacyHardeningConfigMovedError(legacy)
 }
 
 /**
@@ -359,13 +439,13 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   const wrappedRun: ShellExecutor['run'] = async (spec: ShellExecSpec): Promise<ShellRunResult> => {
     const observing = active
     if (!observing) return await originalRun.call(raw, spec)
-    const startedAt = Date.now()
+    const start = executionStartSnapshot(spec)
     try {
       const result = await originalRun.call(raw, spec)
-      pushRecord(state, completedForegroundRecord(spec, result, startedAt, Date.now()))
+      pushRecord(state, completedForegroundRecord(start, result, Date.now()))
       return result
     } catch (error) {
-      pushRecord(state, rejectedRecord('foreground', spec, error, startedAt, Date.now()))
+      pushRecord(state, rejectedRecord('foreground', start, error, Date.now()))
       throw error
     }
   }
@@ -373,23 +453,23 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   const wrappedStart: ShellExecutor['start'] = (spec: ShellExecSpec): ShellProcess => {
     const observing = active
     if (!observing) return originalStart.call(raw, spec)
-    const startedAt = Date.now()
+    const start = executionStartSnapshot(spec)
     let process: ShellProcess
     try {
       process = originalStart.call(raw, spec)
     } catch (error) {
-      pushRecord(state, rejectedRecord('background', spec, error, startedAt, Date.now()))
+      pushRecord(state, rejectedRecord('background', start, error, Date.now()))
       throw error
     }
     state.pendingBackground += 1
     void process.done.then(() => {
       // A process that started while this observer was active still belongs to
       // this evidence stream even if the observer fiber reloaded before exit.
-      pushRecord(state, completedBackgroundRecord(spec, process, startedAt, Date.now()))
+      pushRecord(state, completedBackgroundRecord(start, process, Date.now()))
     }).catch((error: unknown) => {
       // DSH's ShellProcess.done contract says it never rejects. Keep the
       // observer total if a third-party shell provider violates that contract.
-      pushRecord(state, rejectedRecord('background', spec, error, startedAt, Date.now()))
+      pushRecord(state, rejectedRecord('background', start, error, Date.now()))
     }).finally(() => {
       state.pendingBackground = Math.max(0, state.pendingBackground - 1)
     })
