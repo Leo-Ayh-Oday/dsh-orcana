@@ -279,6 +279,51 @@ export function lastAssistantText(session: Session | undefined): string | undefi
 }
 
 /**
+ * P5 — capability router.
+ *
+ * Task-profile tool disclosure (PLAN 3.4): a stable core tool set is always
+ * available, each task profile adds its instruments, and the router applies
+ * the profile as a `ctx.tools.restrict({ allow })` on the agent scope before
+ * its first model request. v0.1 is a static profile chosen at config time
+ * (benchmark manifests declare it); automatic progressive disclosure lands
+ * in v0.2. The restrict allow-list only ever names tools actually registered
+ * at application time — `restrict` fails loudly on unknown names, so the
+ * router filters its profile against the registry's global view first.
+ */
+
+/** Task-presentation profiles (PLAN 3.4). */
+export type TaskProfile = 'coding' | 'research' | 'minimal'
+
+/** The stable core set — always available regardless of profile (PLAN 3.4). */
+export const CORE_TOOL_NAMES: readonly string[] = ['read', 'write', 'edit', 'bash', 'todo_write']
+
+/**
+ * Registered tool names per profile (PLAN 3.4 v0.1). Names are DSH registry
+ * names as verified against the codebase: the fs-search package registers
+ * `grep`/`glob`, the str-replace editor registers `str_replace_editor`,
+ * subagent/workflow tools default to `subagent`/`workflow`, and the web tool
+ * registers `web_search`/`web_fetch`.
+ */
+export const PROFILE_TOOL_NAMES: Readonly<Record<TaskProfile, readonly string[]>> = {
+  coding: [...CORE_TOOL_NAMES, 'grep', 'glob', 'str_replace_editor', 'subagent', 'workflow'],
+  research: [...CORE_TOOL_NAMES, 'web_search', 'web_fetch'],
+  minimal: [...CORE_TOOL_NAMES],
+}
+
+/**
+ * Resolve a profile's allow-list restricted to the tools actually present,
+ * so `ctx.tools.restrict` never fails on an unregistered name. Undefined when
+ * nothing of the profile is present — no restriction then.
+ * @param profile - the task profile to apply.
+ * @param known - globally registered tool names at application time.
+ * @returns the safe allow-list restriction, or undefined.
+ */
+export function resolveToolRestriction(profile: TaskProfile, known: readonly string[]): { readonly allow: readonly string[] } | undefined {
+  const allow = PROFILE_TOOL_NAMES[profile].filter(name => known.includes(name))
+  return allow.length > 0 ? { allow } : undefined
+}
+
+/**
  * Install the governor's listeners.
  * @param ctx - plugin context; listeners are scoped to it and disposed with it.
  * @param config - validated {@link Config}.
@@ -324,6 +369,26 @@ export function apply(ctx: Context, config: Config): void {
           ) ?? ''
         },
       })
+    })
+  }
+
+  // Capability router (P5): apply the configured task profile to each agent
+  // scope before its first model request. Static v0.1 — the profile is chosen
+  // at config time (benchmark manifests declare it), and the restriction's
+  // disposer (the manual lift) is left to the agent scope's lifecycle: it
+  // unwinds automatically on agent disposal.
+  if (config.tools.disclosure === 'task-profile') {
+    ctx.on('agent/created', ({ agent }) => {
+      const known = PROFILE_TOOL_NAMES[config.tools.defaultProfile]
+        .filter(name => ctx.tools.get(name) !== undefined)
+      const restriction = resolveToolRestriction(config.tools.defaultProfile, known)
+      if (restriction === undefined) return
+      agent.ctx.tools.restrict(restriction)
+      ctx.logger?.info(
+        '[orcana-governor] capability router: %s profile, allow %d tools',
+        config.tools.defaultProfile,
+        restriction.allow.length,
+      )
     })
   }
 

@@ -348,7 +348,7 @@ gates:
 | P2 | dsh-governor:Governor steer(escalation + 上限) | post-execute 提醒 + turn-stopping 续轮 | 单测 + 提醒文本快照 | ✅ 50/50,11.5 |
 | P3 | Evidence 呈现 + stale 判定 | 验证状态 context | 单测 | ✅ 70/70,11.6 |
 | P4 | Completion guard 三规则 | turn-stopping 拦截 | 单测 + 快照 | ✅ 121/121,11.7 |
-| P5 | Capability Router | restrict 应用 + 画像 | 单测:schema 变化断言 |
+| P5 | Capability Router | restrict 应用 + 画像 | 单测:schema 变化断言 | ✅ 130/130,11.8 |
 | P6 | 任务选取 + 三 Gate dry-run + runner(supervisor/配对/隔离) | 冻结 manifests + A/B 可运行 | 基线任务跑通 |
 | P7 | A/B 实验 + paired 分析 | 报告 | 归因结论 |
 | P8 | README + docs | 发布物 | — |
@@ -476,6 +476,14 @@ gates:
 7. **实测修正**:claimedTokens 正则需 `i` flag(文本大小写不定);段式模式(`build:all`)需 `(?!\w|:)` 负前瞻,否则 `build` 分支在冒号前截断
 8. **Config 新增**:`completion.claimCheck`(bool,默认 false)、`completion.claimPatterns`(string[],默认 DEFAULT_CLAIM_PATTERNS)
 
-## 下一步(P5)
+### 11.8 P5 结论(Capability Router 完成,130/130 测试全绿)
+1. **注册名勘误(源码验证)**:tool-fs-search 注册 `grep`/`glob`(非 `fs_search`);str-replace editor 注册 `str_replace_editor`;subagent/workflow 默认工具名即 `subagent`/`workflow`;tool-web 注册 `web_search`/`web_fetch`;tool-bash 注册 `bash`;tool-todo 注册 `todo_write`——画像清单按真实注册名编写
+2. **画像**:`CORE_TOOL_NAMES = [read, write, edit, bash, todo_write]` 恒可用;coding = 核心 + grep/glob/str_replace_editor/subagent/workflow;research = 核心 + web_search/web_fetch;minimal = 核心
+3. **安全 restrict**:`ctx.tools.restrict` 对 unknown name **fail loudly** → `resolveToolRestriction(profile, known)` 先按全局注册视图(`ctx.tools.get(name)`)过滤,只 allow 实际存在的工具;全缺席 → undefined(不施加限制)
+4. **接线**:`agent/created` 时对 `agent.ctx.tools.restrict({ allow })`,同步生效于首次 assembly(必然早于第一个模型请求);disposer 留给 agent scope 生命周期自动 unwind(agent/disposed)
+5. **静态语义(记录)**:v0.1 画像在 agent/created 时刻快照——延迟注册的全局工具(subagent 等 provider 出现才注册)若此刻缺席则被过滤且此后被 allow 过滤保持不可见;交互默认 coding,benchmark manifest 显式声明;自动渐进披露留 v0.2
+6. **Config 零改动**:`tools.disclosure` / `tools.defaultProfile` 已在前置阶段声明,本阶段只接行为
 
-Capability Router(§3.4):稳定核心(read/write/edit/bash/todo_write 始终可用)+ 三画像(coding / research / minimal);首轮前 `agent.ctx.tools.restrict()`,v0.1 静态画像 + 手动 lift;单测断言 schema 变化。
+## 下一步(P6)
+
+任务选取 + 三 Gate dry-run + runner(supervisor/配对/隔离):冻结 manifests + A/B 可运行;benchmark/runner 实现预算、配对、隔离 home、权威状态,并验证基线任务跑通(§5)。
