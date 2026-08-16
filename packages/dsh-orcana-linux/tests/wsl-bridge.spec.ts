@@ -212,7 +212,8 @@ describe('WSL environment contract', () => {
       MY_PATH: 'C:\\toolchain',
       PATH: 'C:\\Windows',
     })
-    expect(result.WSLENV?.split(':')).toEqual([
+    const rows = result.WSLENV?.split(':') ?? []
+    expect(rows).toEqual([
       'EXISTING/u',
       'DEEPSEEK_API_KEY/u',
       'MY_PATH/pu',
@@ -220,10 +221,11 @@ describe('WSL environment contract', () => {
       'DSH_TRACE/u',
       'ORCANA_MODE/u',
     ])
-    expect(result.WSLENV).not.toContain('DSH_HOME')
-    expect(result.WSLENV).not.toContain('ORCANA_WSL_DISTRO')
-    expect(result.WSLENV).not.toContain('ORCANA_WSL_DSH_PACKAGE')
-    expect(result.WSLENV).not.toContain('PATH')
+    const names = rows.map((entry) => entry.split('/', 1)[0])
+    expect(names).not.toContain('DSH_HOME')
+    expect(names).not.toContain('ORCANA_WSL_DISTRO')
+    expect(names).not.toContain('ORCANA_WSL_DSH_PACKAGE')
+    expect(names).not.toContain('PATH')
   })
 
   it('repairs an invalid/reverse existing row for an explicitly forwarded scalar', () => {
