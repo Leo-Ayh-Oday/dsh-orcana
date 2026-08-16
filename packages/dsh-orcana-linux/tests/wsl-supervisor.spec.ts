@@ -22,13 +22,13 @@ describe('WSL supervisor argv contract', () => {
       'Ubuntu-24.04',
     )
 
-    expect(argv.slice(0, 10)).toEqual([
+    expect(argv.slice(0, 9)).toEqual([
       '--distribution', 'Ubuntu-24.04',
       '--cd', '/mnt/c/work tree',
       '--exec', 'node', '--input-type=commonjs', '-e', SUPERVISOR_NODE_SCRIPT,
     ])
     expect(SUPERVISOR_NODE_SCRIPT).not.toContain(task)
-    expect(argv.slice(10)).toEqual([
+    expect(argv.slice(9)).toEqual([
       '@deepseek-ai/dsh@0.1.0-rc.5',
       '',
       resolver,
@@ -48,8 +48,8 @@ describe('WSL supervisor argv contract', () => {
     expect(argv.slice(0, 6)).toEqual([
       '--cd', '/home/leo/repo', '--exec', 'node', '--input-type=commonjs', '-e',
     ])
-    expect(argv.at(-5)).toBe('@deepseek-ai/dsh@0.1.0-rc.5')
-    expect(argv.at(-4)).toBe('/opt/dsh')
+    expect(argv.at(-4)).toBe('@deepseek-ai/dsh@0.1.0-rc.5')
+    expect(argv.at(-3)).toBe('/opt/dsh')
     expect(argv.at(-1)).toBe('web')
   })
 
@@ -81,13 +81,14 @@ describe('WSL supervisor Linux process-group integration', () => {
         stdio: 'ignore',
       })
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 150))
-      supervisor.kill('SIGINT')
-
-      const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      const resultPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
         supervisor.once('error', reject)
         supervisor.once('close', (code, signal) => resolve({ code, signal }))
       })
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 150))
+      supervisor.kill('SIGINT')
+      const result = await resultPromise
 
       expect(result).toEqual({ code: 42, signal: null })
     },
