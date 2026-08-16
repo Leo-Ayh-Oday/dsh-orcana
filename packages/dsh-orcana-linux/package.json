@@ -1,6 +1,6 @@
 {
   "name": "@leooday/dsh-orcana-linux",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "dsh-orcana Linux edition — native hardening plus a Windows-to-WSL bridge for one Linux execution world",
   "license": "MIT",
   "repository": {
