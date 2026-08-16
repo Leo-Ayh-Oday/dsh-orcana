@@ -8,6 +8,7 @@ import {
   dshArgsForBridge,
   environmentForWsl,
   hostCwdForWslSpawn,
+  inferWslDistroFromDshPathArgs,
   parseWslBridgeArgs,
   parseWslUncPath,
   shouldInjectDefaultProfile,
@@ -166,6 +167,29 @@ describe('WSL path contract', () => {
   it('classifies Windows-mounted and WSL-native workspaces for doctor guidance', () => {
     expect(windowsWorkspaceKind('C:\\repo')).toBe('windows-mounted')
     expect(windowsWorkspaceKind('\\\\wsl.localhost\\Ubuntu\\home\\leo\\repo')).toBe('wsl-native')
+  })
+
+  it('infers a distro only from DSH-owned WSL UNC path arguments', () => {
+    expect(inferWslDistroFromDshPathArgs([
+      '--profile', 'orcana',
+      '--patch', '\\\\wsl.localhost\\Debian\\home\\leo\\one.yml',
+      'task',
+      '--patch', '\\\\wsl.localhost\\Ubuntu\\home\\leo\\opaque.yml',
+    ])).toBe('Debian')
+
+    expect(inferWslDistroFromDshPathArgs([
+      '--profile', 'orcana',
+      'please inspect \\\\wsl.localhost\\Debian\\home\\leo\\repo',
+    ])).toBeUndefined()
+  })
+
+  it('fails loud when launcher-owned path arguments span multiple WSL distros', () => {
+    expect(() => inferWslDistroFromDshPathArgs([
+      '--profile', 'orcana',
+      '--patch', '\\\\wsl.localhost\\Ubuntu\\home\\leo\\one.yml',
+      '--patch', '\\\\wsl.localhost\\Debian\\home\\leo\\two.yml',
+      'task',
+    ])).toThrow(/span multiple WSL distros/)
   })
 
   it('translates only DSH-owned --patch paths and leaves task argv opaque', () => {
