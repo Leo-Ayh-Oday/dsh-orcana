@@ -107,14 +107,15 @@ function canonicalBridgeArgs(options: WslBridgeOptions, dshArgs: readonly string
  * distro ownership before entering the core bridge. Doctor additionally checks
  * explicit loopback proxy reachability plus the real WSL workspace/Git surface;
  * it never guesses proxy gateways or copies Windows Git credentials/SSH keys.
+ * Platform authority stays inside this function and cannot be overridden by a
+ * caller pretending to run on another operating system.
  */
 export async function launchDshOrcana(
   rawArgs: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
-  platform: NodeJS.Platform = process.platform,
 ): Promise<number> {
-  if (platform !== 'win32') return await launchWslBridge(rawArgs, env, cwd)
+  if (process.platform !== 'win32') return await launchWslBridge(rawArgs, env, cwd)
 
   const effectiveEnv = augmentWslHostEnvironment(env)
   const parsed = parseWslBridgeArgs(rawArgs, effectiveEnv)
