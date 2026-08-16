@@ -6,6 +6,7 @@ import {
   rewriteOrcanaWebInvocation,
   verifyOrcanaWebProfile,
 } from './wsl-product-profiles.js'
+import { reportWslWebDoctor } from './wsl-web-doctor.js'
 import { runWslWorkspaceDoctor } from './wsl-workspace-doctor.js'
 import {
   launchWslBridge,
@@ -115,6 +116,8 @@ function canonicalBridgeArgs(options: WslBridgeOptions, dshArgs: readonly string
  *
  * Windows additionally normalizes DSH bootstrap proxy/search/certificate
  * environment, local `dsh plugin` filesystem specs, and WSL distro ownership.
+ * Doctor proves the same localhost transport DSH Web uses rather than widening
+ * the server bind address when forwarding is misconfigured.
  */
 export async function launchDshOrcana(
   rawArgs: readonly string[],
@@ -138,6 +141,8 @@ export async function launchDshOrcana(
     if (webStatus !== 0) return webStatus
 
     if (!isWindows) return 0
+    const webRelayStatus = await reportWslWebDoctor(effectiveEnv, selectedDistro, cwd)
+    if (webRelayStatus !== 0) return webRelayStatus
     const proxyStatus = reportWslLoopbackProxyDoctor(effectiveEnv, selectedDistro)
     const mapped = windowsPathToWsl(cwd, selectedDistro)
     const workspaceStatus = runWslWorkspaceDoctor(mapped.linuxPath, effectiveEnv, selectedDistro)
