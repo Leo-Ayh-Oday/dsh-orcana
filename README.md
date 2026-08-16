@@ -61,13 +61,17 @@ effect size needs more reps and tasks.
 
 ## Install
 
-The npm scope is `@leooday`:
+The npm scope is `@leooday`. Install the complete Orcana profile in one command:
 
 ```sh
-dsh plugin --profile orcana add \
-  @leooday/dsh-bundle \
-  @leooday/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle @deepseek-ai/dsh-headless@next
+```
 
+`@deepseek-ai/dsh-headless@next` is intentional: the current `latest` line has a broken dependency chain.
+
+Then run:
+
+```sh
 dsh --profile orcana "<task>"
 ```
 
