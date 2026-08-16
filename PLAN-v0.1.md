@@ -587,3 +587,20 @@ gates:
 ## 下一步(P7 收尾 / P8)
 
 任务池扩充(候选:dayjs/zod/fastify,优先 verification-trap 类——现有套件绿但 hidden 红、模型易自以为修好);对 marked 提高 max-calls(如 40)观察完成率;正式环境(直连或 netns+模型端点)复跑;P8 收口文档。
+
+## 12. 发布计划(0.1.0 正式版,2026-08-16)
+
+范围:governor 线三个包(`@leooday/governor-core` / `@leooday/dsh-governor` /
+`@leooday/dsh-bundle`);`dsh-orcana-linux*` 由独立分支(codex/v4f-dynamic-runtime)
+合入后另行发布(R5)。
+
+| 步骤 | 内容 | 验收标准 | 预估 |
+|---|---|---|---|
+| R0 发布链路验证 | `npm publish --dry-run` 三包;确认 workspace:^ 重写为真实版本;本地 registry(verdaccio/临时)模拟 `dsh plugin add` 真装 + MISSING_CREDENTIAL 哨兵 | registry 安装链路全通,依赖解析无 workspace:^ 残留 | 0.5 天 |
+| R1 benchmark 数据加固 | marked reps → n≥5(seed 9-12);新增 1 个真实任务(verification-trap 类,走 prep→三 Gate→冻结);README 数据更新为统计结论 | n≥5;新任务三 Gate 记录;README 数据刷新 | 1-2 天 |
+| R2 代码收口 | M3:adapter apply() 行为级测试(ctx 级最小);低危残留清理;全量门禁 | 测试全绿;无新增审查阻断 | 0.5 天 |
+| R3 文档与发布物 | CHANGELOG.md(rc.1→0.1.0);版本号 0.1.0;发布物自检清单 | 自检清单全过 | 0.5 天 |
+| R4 正式发布 | `npm publish` 三包(顺序 core→governor→bundle);干净环境 `dsh plugin add @leooday/dsh-bundle` 验证 | 全新 DSH_HOME 下 plugin add 成功且 governor 行为生效(smoke 哨兵) | 0.5 天 |
+| R5 Linux 线合并发布(待 GPT) | Linux 分支合入 → `dsh-orcana-linux*` 发布;README 安装命令更新为单条全量 | registry 可装 Linux bundle | 待定 |
+
+关键路径:R0 → R1 → R2 → R3 → R4;R1 可与 R0/R2 并行。总计约 3-4 天(不含 R5)。
