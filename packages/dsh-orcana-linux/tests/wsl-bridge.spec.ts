@@ -66,7 +66,11 @@ describe('WSL bridge argument contract', () => {
     ])
   })
 
-  it('builds the official one-profile bundle installation', () => {
+  it('pins the Orcana bundle release set for --wsl-install', () => {
+    expect(DEFAULT_WSL_BUNDLES).toEqual([
+      '@leooday/dsh-bundle@0.1.0-rc.1',
+      '@leooday/dsh-orcana-linux-bundle@0.2.0',
+    ])
     const parsed = parseWslBridgeArgs(['--wsl-install'], {})
     expect(dshArgsForBridge(parsed)).toEqual([
       'plugin', '--profile', 'orcana', 'add', ...DEFAULT_WSL_BUNDLES,
@@ -83,7 +87,7 @@ describe('WSL bridge argument contract', () => {
     expect(argv.slice(0, 7)).toEqual([
       '--distribution', 'Ubuntu',
       '--cd', '/mnt/c/work tree',
-      '--exec', '/bin/sh', '-lc',
+      '--exec', '/bin/sh', '-c',
     ])
     const resolver = argv[7]
     expect(resolver).toContain('dsh --version')
