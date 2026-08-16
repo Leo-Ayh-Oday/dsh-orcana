@@ -9,6 +9,7 @@ import {
 } from '@deepseek-ai/dsh-shell'
 import { describe, expect, it } from 'vitest'
 import nativeEvidence, {
+  Config,
   LEGACY_HARDENING_CONFIG_MOVED,
   LegacyHardeningConfigMovedError,
 } from '../src/native-evidence.ts'
@@ -73,6 +74,11 @@ function fakeProcess(done: Promise<void>): ShellProcess {
 }
 
 describe('native-evidence migration safety', () => {
+  it('keeps an empty config empty after schema validation', async () => {
+    const result = await Config['~standard'].validate({})
+    expect(result).toEqual({ value: {} })
+  })
+
   it.each([
     [{ network: 'none' as const }, ['network']],
     [{ resourceLimits: { memoryBytes: 1024 } }, ['resourceLimits']],
