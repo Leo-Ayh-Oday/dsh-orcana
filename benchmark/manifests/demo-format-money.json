@@ -1,0 +1,35 @@
+{
+  "task_id": "demo-format-money",
+  "source": {
+    "issue": "demo: local synthetic verification-trap task (negative-amount money formatting)",
+    "snapshot_at": "2026-08-16T00:00:00Z",
+    "prompt_sha256": "b7a9e09eae94940f269b0f38c62bfe6c0b6ba1da23dad19cbf151f57582804eb"
+  },
+  "prompt": "在 /workspace 中修复 src/format.js 的 formatMoney 函数：负数金额应格式化为 \"-$1.50\" 形式（当前负数路径返回错误值）。修复后运行 npm test 确认现有测试仍然通过。",
+  "repository": {
+    "repo": "demo-money-repo (synthetic)",
+    "base_sha": "demo-base",
+    "fix_sha": "demo-fix",
+    "verifier_sha": "demo-verifier"
+  },
+  "verification": {
+    "baseline_command": "npm test",
+    "reproducer": "node reproducer.js",
+    "acceptance": "npm test && node reproducer.js"
+  },
+  "environment": {
+    "node": ">=22",
+    "install_command": "none (zero-dependency demo)",
+    "network": "deny"
+  },
+  "calibration": {
+    "install_seconds": 0,
+    "test_seconds": 1
+  },
+  "gates": {
+    "baseline": { "existing_suite": "PASS" },
+    "reproducer": { "base": "FAIL" },
+    "official_fix": { "existing_suite": "PASS", "reproducer": "PASS" }
+  },
+  "digest": "demo-manifest-v1"
+}

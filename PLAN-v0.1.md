@@ -349,7 +349,7 @@ gates:
 | P3 | Evidence 呈现 + stale 判定 | 验证状态 context | 单测 | ✅ 70/70,11.6 |
 | P4 | Completion guard 三规则 | turn-stopping 拦截 | 单测 + 快照 | ✅ 121/121,11.7 |
 | P5 | Capability Router | restrict 应用 + 画像 | 单测:schema 变化断言 | ✅ 130/130,11.8 |
-| P6 | 任务选取 + 三 Gate dry-run + runner(supervisor/配对/隔离) | 冻结 manifests + A/B 可运行 | 基线任务跑通 |
+| P6 | 任务选取 + 三 Gate dry-run + runner(supervisor/配对/隔离) | 冻结 manifests + A/B 可运行 | 基线任务跑通 | ✅ 161/161,11.9(代码;live 需 API key) |
 | P7 | A/B 实验 + paired 分析 | 报告 | 归因结论 |
 | P8 | README + docs | 发布物 | — |
 | P9 | GitHub release(若 P7 有结果) | 发布 | — |
@@ -484,6 +484,16 @@ gates:
 5. **静态语义(记录)**:v0.1 画像在 agent/created 时刻快照——延迟注册的全局工具(subagent 等 provider 出现才注册)若此刻缺席则被过滤且此后被 allow 过滤保持不可见;交互默认 coding,benchmark manifest 显式声明;自动渐进披露留 v0.2
 6. **Config 零改动**:`tools.disclosure` / `tools.defaultProfile` 已在前置阶段声明,本阶段只接行为
 
-## 下一步(P6)
+### 11.9 P6 结论(Runner 完成,161/161 测试全绿)
+1. **supervisor.mjs**(benchmark/runner/):`planRuns`(配对 + mulberry32 确定性随机臂序,同 task 两臂相邻)、`outcomeOf`(权威判定——wall/call 预算耗尽先于任何 exit code;自然退出仅 completed,success 归 judge)、`runOne`(隔离 run-home 复制[reflink→plain 回退]、环境 pin `DSH_PERMISSION_MODE=danger-full-access`、轮询 session 日志数 assistant/message 作 LLM-call 预算、SIGTERM→5s grace→SIGKILL)、`countAssistantMessages`(读 run-home sessions zstd 日志)
+2. **aggregate.mjs**:session JSONL 离线折叠——llm_calls/input/output/cache tokens/tool_calls/事件时间跨度,纯函数可测;与 supervisor 预算计数同源(不会分歧)
+3. **judge.mjs**:独立判定——acceptance 命令对结果 workspace 执行;verdict = success / false-completion(声称完成但 acceptance 失败——verification trap 信号)/ failed;`claimedCompletion` 中英文完成声明启发式
+4. **live 测试**(supervisor-live.spec.mjs):fake-dsh 子进程端到端验证预算监控/SIGTERM/SIGKILL 路径——natural-exit 0→completed、call 预算耗尽→incomplete、term-ignoring child→wall→SIGKILL→incomplete_timeout
+5. **demo-format-money 任务**:合成 verification-trap(负数金额符号丢失,现有套件只覆盖正数);三 Gate 实测通过(A: npm test PASS;B: reproducer FAIL;C: 修复后双 GREEN);manifest 已冻结(manifests/demo-format-money.json,含 prompt_sha256)
+6. **vitest 配置**:root vitest.config.ts 排除 benchmark/tasks(避免收集 demo 的 node:test 文件)
+7. **限制(环境)**:live A/B 需 OPENCODE_GO_API_KEY + run-home 模型配置;当前环境缺 key → live 执行与 P7 一起在具备凭证的环境跑;runner 全部路径已由 fake-dsh 覆盖
+8. **dry-run 验证**:`node benchmark/runner/supervisor.mjs --manifests benchmark/manifests` 输出配对计划(seed=1 → treatment 先行)且不执行
 
-任务选取 + 三 Gate dry-run + runner(supervisor/配对/隔离):冻结 manifests + A/B 可运行;benchmark/runner 实现预算、配对、隔离 home、权威状态,并验证基线任务跑通(§5)。
+## 下一步(P7)
+
+A/B 实验 + paired 分析:在具备模型凭证的环境运行 supervisor live;导出 session 指标(aggregate)+ judge 判定;报告 paired success/call/token/wall deltas + 纪律指标(duplicate reads/commands/zero-progress rounds)+ 全量 pin 清单(§5.8,§7)。
