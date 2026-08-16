@@ -20,10 +20,12 @@ frozen invariants and their implementation status.
 # Dry-run: print the paired plan (task × arms, deterministic seed) — nothing executes
 node benchmark/runner/supervisor.mjs --manifests benchmark/manifests
 
-# Live: run the plan end to end (requires DSH + model credentials)
-node benchmark/runner/supervisor.mjs --manifests benchmark/manifests --live
+# Live with OS-level network isolation (PLAN 5.6 layer 2): no default route
+# in the run's namespace; model endpoint must be reachable inside it.
+scripts/bench-run.sh --live --manifests benchmark/manifests
 #   filters: --task <id> --arm <control|treatment> --seed <n> --reps <n>
 #   budget overrides: --max-calls <n> --wall-ms <n> --max-tokens <n>
+#   --no-netns: diagnostics only (no isolation)
 ```
 
 Each live run: isolated `DSH_HOME` (template copy) → agent under budgets →
@@ -46,4 +48,4 @@ outcomes never retry.
 3. Timeout verdict belongs to the supervisor, never to DSH's exit code.
 4. Durability = semantic-checkpoint durability; the last in-flight streaming batch may be lost; unfinished external side effects are unknown-outcome.
 5. Gates A/B/C verified separately and pinned (verify-task-gates.sh writes the dated record).
-6. Environment pin: permission mode danger-full-access (approval never), telemetry/tools-mode stripped, web_search disabled in both arms, recorded per run; run-time OS-level network denial is a pending wrapper (methodology #9).
+6. Environment pin: permission mode danger-full-access (approval never), telemetry/tools-mode and proxy variables stripped, web_search disabled in both arms, recorded per run; run-time OS-level network denial via scripts/bench-run.sh (no default route in the run's namespace; model endpoint must be reachable inside it).

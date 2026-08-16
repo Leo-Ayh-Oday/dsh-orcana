@@ -226,10 +226,31 @@ export function toEngineEvent(
   }
 }
 
-/** The session-log event subset the replay translator consumes. */
+/**
+ * The session-log event subset the replay translator consumes. Non-tool
+ * events (user/assistant messages, turns, headers) are never part of the
+ * engine's event stream.
+ */
 export type ReplayEvent =
   | { type: 'tool/call'; data: { callId: string; name: string; arguments: string } }
   | { type: 'tool/result'; data: { message: { content: readonly [{ callId: string; content: ContentBlock[]; isError: boolean }] } } }
+
+/**
+ * Project a session's full event log down to the replayable tool events, in
+ * log order — the feed for {@link translateSessionEvents} on resume/compact
+ * (PLAN 3.2: replay reflects the CURRENT log, which is authoritative).
+ * @param events - the session's full event log.
+ * @returns the tool/call + tool/result subset.
+ */
+export function sessionReplayEvents(events: readonly { type: string; data: unknown }[]): ReplayEvent[] {
+  const out: ReplayEvent[] = []
+  for (const event of events) {
+    if (event.type === 'tool/call' || event.type === 'tool/result') {
+      out.push(event as ReplayEvent)
+    }
+  }
+  return out
+}
 
 /**
  * Translate session-log events (in log order) into the engine event stream:
@@ -347,6 +368,29 @@ export function apply(ctx: Context, config: Config): void {
     }
     return engine
   }
+
+  // Resume/compaction: rebuild the engine from the CURRENT session log (H1,
+  // PLAN 3.2). The replay path shares the same translation and the same
+  // applyEvent transitions as the live path, so resumed state cannot drift
+  // by construction; the rebuilt state is authoritative over the live one.
+  // `startup` sessions start empty (the engine is lazily created on the
+  // first observation).
+  ctx.on('agent/session-start', ({ agent, source }) => {
+    if (source !== 'resume' && source !== 'compact') return
+    const events = sessionReplayEvents(agent.session.events as unknown as { type: string; data: unknown }[])
+    const rebuilt = ProgressFactEngine.rebuild(translateSessionEvents(events), {
+      fingerprintWindow: config.governor.fingerprintWindow,
+      verifyPatterns: config.evidence.verifyCommandPatterns,
+      inlineRepeatTools: config.governor.inlineRepeatTools,
+    })
+    engines.set(agent, rebuilt)
+    forced.delete(agent)
+    ctx.logger?.info(
+      '[orcana-governor] engine rebuilt from session log (%s, %d tool events)',
+      source,
+      events.length,
+    )
+  })
 
   // Evidence presentation: a per-request verification-state snapshot as
   // dynamic system-prompt context (dsh-system-prompt "context", materialized

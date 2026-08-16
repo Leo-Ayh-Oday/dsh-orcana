@@ -43,8 +43,17 @@ export const ENV_PIN = Object.freeze({
   DSH_PERMISSION_MODE: 'danger-full-access',
 })
 
-/** Variables that must be ABSENT from a run (telemetry/tools mode default-off). */
-export const ENV_STRIP = Object.freeze(['DSH_TELEMETRY_MODE', 'DSH_TOOLS_MODE'])
+/** Variables that must be ABSENT from a run (telemetry/tools mode default-off, proxies stripped so the run cannot tunnel out through a host proxy — PLAN 5.6). */
+export const ENV_STRIP = Object.freeze([
+  'DSH_TELEMETRY_MODE',
+  'DSH_TOOLS_MODE',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+])
 
 /** Arm names. */
 export const ARMS = Object.freeze({ CONTROL: 'control', TREATMENT: 'treatment' })

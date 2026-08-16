@@ -35,11 +35,15 @@ PLAN-v0.1.md §11.10.
    [partially implemented]
 9. **Pollution lockdown** — no GitHub/search/arbitrary web from the agent.
    Tool layer: `tool-web` disabled in the shared bench profile patch
-   [implemented]. OS layer: run-time outbound network denial (unshare -n or
-   container) is NOT yet wired into the runner — a bench-run.sh wrapper is
-   the pending piece before live runs. Registry allowlist and repo
-   preprocessing (no `origin`, no fix commit in history) apply at task
-   preparation time. [partially implemented]
+   [implemented]. OS layer: `scripts/bench-run.sh` wraps the supervisor in a
+   user+net namespace (unshare -r -n, probing both modes, failing loud when
+   neither is available) with zero default route — the run cannot egress
+   except through what the deployment explicitly routes. Note: the isolated
+   namespace has NO route to the model API either; live runs must expose a
+   model endpoint inside it (provider config) [implemented, deployment
+   note]. Proxy variables are stripped from the run environment
+   (`ENV_STRIP`). Registry allowlist and repo preprocessing (no `origin`,
+   no fix commit in history) apply at task preparation time (M7, pending).
 10. **Judging** — an independent script (not the agent, not an LLM) applies the
     manifest's acceptance command to the resulting workspace; false completion
     = agent claimed done but acceptance failed. [implemented]

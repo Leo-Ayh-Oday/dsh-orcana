@@ -535,6 +535,15 @@ gates:
 
 **结论**:全量审核两轮后,阻断级问题清零;runner 38→45 测试,governor-core 70→72;剩余遗留项均已评估并单列。
 
+### 11.12 H1/H2 落地(2026-08-16,已提交)
+
+1. **H1 resume 重放接线(已修)**:adapter 新增 `agent/session-start` 监听——source 为 `resume`/`compact` 时用当前 session log 重建引擎(与 live 同翻译、同 applyEvent,重放态权威);`sessionReplayEvents` 纯函数负责过滤非工具事件(user/message、turn/end 等不会误入引擎);`startup` 会话保持惰性空引擎;重建时重置 forced 预算;测试覆盖(过滤 + 全日志重建 ≡ live 折叠)
+2. **H2 OS 层网络隔离(已修)**:`scripts/bench-run.sh`——`unshare -r -n` 探测、失败回退 `unshare -n`、再失败 fail loud(非 root/无 user ns 环境显式报错);隔离命名空间零默认路由(实测 /proc/net/route 0 行);**部署注记**:netns 内模型 API 同样不可达,live 需在命名空间内暴露模型端点(provider 配置)
+3. **proxy 剥离(已修)**:ENV_STRIP 扩展 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY(含小写变体)——运行期无法经宿主代理出网(§5.6 防抄答案不依赖 agent 自觉)
+4. **文档(已修)**:methodology #9 与 benchmark README 更新为已实现 + 部署注记
+
+**遗留项复核**:M3(adapter apply() 行为级测试——仍为纯函数覆盖,非阻断)、M7(真实任务 prep 流程——非阻断 demo)。
+
 ## 下一步(P7)
 
-A/B 实验 + paired 分析:补 bench-run.sh(OS 层网络隔离,含 proxy 剥离)与 H1 resume 接线后,在具备模型凭证的环境运行 `supervisor.mjs --live`;导出 session 指标(aggregate)+ judge 判定;报告 paired success/call/token/wall deltas + 纪律指标(duplicate reads/commands/zero-progress rounds)+ 全量 pin 清单(§5.8,§7)。
+A/B 实验 + paired 分析:在具备模型凭证 + netns 内模型端点的环境运行 `scripts/bench-run.sh --live`;导出 session 指标(aggregate)+ judge 判定;报告 paired success/call/token/wall deltas + 纪律指标(duplicate reads/commands/zero-progress rounds)+ 全量 pin 清单(§5.8,§7)。

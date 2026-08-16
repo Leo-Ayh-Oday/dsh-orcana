@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { ProgressFactEngine } from '@leooday/governor-core'
-import { toEngineEvent, translateSessionEvents } from '../src/index.ts'
+import { sessionReplayEvents, toEngineEvent, translateSessionEvents } from '../src/index.ts'
 import type { ReplayEvent } from '../src/index.ts'
 
 function textBlock(text: string): ContentBlock {
@@ -16,6 +16,13 @@ function textBlock(text: string): ContentBlock {
 
 function call(name: string, args: unknown, callId = 'c1') {
   return { callId, name, arguments: args }
+}
+
+function replayEvent(tool: string, args: unknown, content: string, isError: boolean, callId: string): ReplayEvent[] {
+  return [
+    { type: 'tool/call', data: { callId, name: tool, arguments: JSON.stringify(args) } },
+    { type: 'tool/result', data: { message: { content: [{ callId, content: [textBlock(content)], isError }] } } },
+  ]
 }
 
 describe('toEngineEvent', () => {
@@ -76,13 +83,6 @@ describe('toEngineEvent', () => {
 })
 
 describe('translateSessionEvents (replay)', () => {
-  function replayEvent(tool: string, args: unknown, content: string, isError: boolean, callId: string): ReplayEvent[] {
-    return [
-      { type: 'tool/call', data: { callId, name: tool, arguments: JSON.stringify(args) } },
-      { type: 'tool/result', data: { message: { content: [{ callId, content: [textBlock(content)], isError }] } } },
-    ]
-  }
-
   it('rebuilds engine state identical to the live path (resume consistency)', () => {
     // The same logical run expressed twice: live executions and a session log.
     const liveCalls = [
@@ -131,5 +131,42 @@ describe('translateSessionEvents (replay)', () => {
     ]
     const translated = translateSessionEvents(events)
     expect(translated[0]?.canonicalArgs).toBe(JSON.stringify('not-json'))
+  })
+})
+
+describe('sessionReplayEvents (resume/compact feed)', () => {
+  it('keeps only tool/call and tool/result events, in log order', () => {
+    const full = [
+      { type: 'user/message', data: { content: [] } },
+      { type: 'tool/call', data: { callId: 'c1', name: 'bash', arguments: '{}' } },
+      { type: 'tool/result', data: { message: { content: [{ callId: 'c1', content: [textBlock('x')], isError: false }] } } },
+      { type: 'assistant/message', data: { message: { content: [] } } },
+      { type: 'turn/end', data: {} },
+    ]
+    const projected = sessionReplayEvents(full)
+    expect(projected.map(event => event.type)).toEqual(['tool/call', 'tool/result'])
+  })
+
+  it('rebuilds engine state identical to the live path from a full session log', () => {
+    const events: ReplayEvent[] = [
+      ...replayEvent('read', { path: 'a' }, 'r1', false, 'c1'),
+      ...replayEvent('write', { path: 'a', content: 'x' }, '', false, 'c2'),
+      ...replayEvent('bash', { command: 'npm test' }, 'ok', false, 'c3'),
+    ]
+    const live = new ProgressFactEngine()
+    for (const event of translateSessionEvents(events)) live.applyEvent(event)
+
+    // Simulate a full session log with interleaved non-tool events.
+    const fullLog = [
+      { type: 'user/message', data: { content: [] } },
+      ...events,
+      { type: 'assistant/message', data: { message: { content: [] } } },
+      { type: 'turn/end', data: {} },
+    ]
+    const rebuilt = ProgressFactEngine.rebuild(translateSessionEvents(sessionReplayEvents(fullLog)))
+
+    expect(rebuilt.snapshot()).toEqual(live.snapshot())
+    expect(rebuilt.receiptFor('npm test')?.status).toBe('pass')
+    expect(rebuilt.currentGeneration()).toBe(1)
   })
 })
