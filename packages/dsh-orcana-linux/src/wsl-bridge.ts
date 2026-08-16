@@ -8,8 +8,8 @@ import {
 export const DEFAULT_WSL_PROFILE = 'orcana'
 export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
 export const DEFAULT_WSL_BUNDLES = Object.freeze([
-  '@leooday/dsh-bundle',
-  '@leooday/dsh-orcana-linux-bundle',
+  '@leooday/dsh-bundle@0.1.0-rc.1',
+  '@leooday/dsh-orcana-linux-bundle@0.2.0',
 ] as const)
 
 const DEFAULT_FORWARD_ENV = Object.freeze([
@@ -350,7 +350,8 @@ export function translateDshPathArgsForWsl(
 /**
  * Build WSL argv without task interpolation. A caller-supplied DSH command is
  * executed directly. Otherwise the resolver rejects a mismatched installed
- * DSH before falling back to the pinned npm package.
+ * DSH before falling back to the pinned npm package. The fixed resolver runs
+ * in a non-login shell so user startup files cannot rewrite execution state.
  */
 export function buildWslDshArgs(
   linuxCwd: string,
@@ -370,7 +371,7 @@ export function buildWslDshArgs(
   return [
     ...distroPrefix(distro),
     '--cd', linuxCwd,
-    '--exec', '/bin/sh', '-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, DSH_VERSION_CONTRACT_SCRIPT,
+    '--exec', '/bin/sh', '-c', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, DSH_VERSION_CONTRACT_SCRIPT,
     ...dshArgs,
   ]
 }
@@ -469,7 +470,7 @@ export async function launchWslBridge(
     const signalMode = nativeSignalMode()
     if (options.mode === 'doctor') {
       return await spawnAndWait('/bin/sh', [
-        '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT,
+        '-c', DOCTOR_SCRIPT, 'dsh-orcana-doctor', dshPackage, NODE_CONTRACT_SCRIPT,
         DSH_VERSION_CONTRACT_SCRIPT, pnpmPackage,
       ], { env, cwd, signalMode })
     }
@@ -486,7 +487,7 @@ export async function launchWslBridge(
       return await spawnAndWait(dshCommand, dshArgs, { env, cwd, signalMode })
     }
     return await spawnAndWait('/bin/sh', [
-      '-lc', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, DSH_VERSION_CONTRACT_SCRIPT, ...dshArgs,
+      '-c', DSH_RESOLVER_SCRIPT, 'dsh-orcana', dshPackage, DSH_VERSION_CONTRACT_SCRIPT, ...dshArgs,
     ], { env, cwd, signalMode })
   }
 
@@ -512,7 +513,7 @@ export async function launchWslBridge(
     const args = [
       ...distroPrefix(distro),
       '--cd', mapped.linuxPath,
-      '--exec', '/bin/sh', '-lc', DOCTOR_SCRIPT, 'dsh-orcana-doctor',
+      '--exec', '/bin/sh', '-c', DOCTOR_SCRIPT, 'dsh-orcana-doctor',
       dshPackage, NODE_CONTRACT_SCRIPT, DSH_VERSION_CONTRACT_SCRIPT, pnpmPackage,
     ]
     return await spawnAndWait('wsl.exe', args, { env: childEnv, cwd: hostCwd, signalMode: 'none' })
