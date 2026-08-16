@@ -423,9 +423,9 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
   const raw = (shell as unknown as Record<symbol, ShellExecutor>)[symbols.original] as PatchableShell
   if (raw[OBSERVER_PATCH_STATE]) throw new DuplicateNativeEvidenceError()
 
-  // Official around-dispatch correlation: this does not mutate ToolRuntime or
-  // the tool execution object. The shell wrappers below read only the current
-  // process-local ALS identity at the exact execution-start boundary.
+  // Event observation does not require the ToolRuntime service to be mounted:
+  // normal DSH tool calls emit `tools/execute` and receive exact correlation;
+  // direct programmatic shell calls remain valid evidence with no correlation.
   installNativeToolCorrelation(ctx)
 
   const maxEntries = config.ledgerMaxEntries ?? DEFAULT_NATIVE_EVIDENCE_LEDGER_MAX_ENTRIES
@@ -467,8 +467,6 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
     }
     state.pendingBackground += 1
     void process.done.then(() => {
-      // Correlation was copied at start, so a detached background task keeps
-      // its exact tool/session identity after ToolRuntime/ALS scope unwinds.
       pushRecord(state, completedBackgroundRecord(start, process, Date.now()))
     }).catch((error: unknown) => {
       pushRecord(state, rejectedRecord('background', start, error, Date.now()))
@@ -500,6 +498,6 @@ export function apply(ctx: Context, config: NativeEvidenceConfig = {}): void {
 }
 
 apply.Config = Config
-apply.inject = ['shell', 'tools']
+apply.inject = ['shell']
 
 export default apply
