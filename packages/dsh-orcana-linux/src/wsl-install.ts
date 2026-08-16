@@ -3,7 +3,8 @@ export const DEFAULT_WSL_PNPM_PACKAGE = 'pnpm@11.7.0'
 /**
  * Run DSH plugin management with an exact local toolchain when available;
  * otherwise ask npx for both pinned packages in one ephemeral execution env.
- * User/plugin arguments remain positional parameters only.
+ * The resolver uses a non-login /bin/sh so WSL's inherited Linux environment
+ * remains authoritative and no user shell startup file mutates execution.
  */
 export const INSTALL_RESOLVER_SCRIPT = [
   'dsh_package=$1',
@@ -32,7 +33,7 @@ export function nativeInstallShellArgs(
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
 ): string[] {
   return [
-    '-lc', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
+    '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
     dshPackage, pnpmPackage, versionContract, ...dshArgs,
   ]
 }
