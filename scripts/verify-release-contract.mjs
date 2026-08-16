@@ -74,6 +74,24 @@ function requireSpecifier(lock, importer, section, packageName, expected) {
   }
 }
 
+function requireSpecifierInAnySection(lock, importer, packageName, expected, sections) {
+  const specifiers = importerSpecifiers(lock, importer)
+  if (specifiers === undefined) {
+    fail(`${importer}: importer is missing from pnpm-lock.yaml`)
+    return
+  }
+  const matches = sections
+    .map(section => ({ section, value: specifiers.get(`${section}:${packageName}`) }))
+    .filter(entry => entry.value !== undefined)
+  if (matches.length === 0) {
+    fail(`${importer}: ${packageName} is missing from allowed lock sections ${sections.join(', ')}`)
+    return
+  }
+  if (!matches.some(entry => entry.value === expected)) {
+    fail(`${importer}: ${packageName} expected specifier ${JSON.stringify(expected)}, found ${matches.map(entry => `${entry.section}=${JSON.stringify(entry.value)}`).join(', ')}`)
+  }
+}
+
 const rootManifest = readJson('package.json')
 const governor = readJson('packages/dsh-governor/package.json')
 const governorCore = readJson('packages/governor-core/package.json')
@@ -113,8 +131,18 @@ for (const packageName of [
   requireSpecifier(lock, 'packages/dsh-governor', 'devDependencies', packageName, '^0.1.0-rc.5')
 }
 
-requireSpecifier(lock, 'packages/dsh-orcana-linux', 'dependencies', '@deepseek-ai/cordis', '4.0.1')
-requireSpecifier(lock, 'packages/dsh-orcana-linux', 'dependencies', '@deepseek-ai/dsh-sandbox', '0.1.0-rc.5')
+for (const [packageName, expected] of [
+  ['@deepseek-ai/cordis', '4.0.1'],
+  ['@deepseek-ai/dsh-sandbox', '0.1.0-rc.5'],
+]) {
+  requireSpecifierInAnySection(
+    lock,
+    'packages/dsh-orcana-linux',
+    packageName,
+    expected,
+    ['dependencies', 'devDependencies', 'optionalDependencies'],
+  )
+}
 
 for (const packageName of [
   '@deepseek-ai/dsh-bash-local',
