@@ -6,103 +6,91 @@
 
 Native hardening layers run as a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 plugin over the **official** sandbox contract (no fork required). Starting in
-v0.4, the same package also ships `dsh-orcana`: a host entrypoint that runs
-DSH directly on Linux/WSL and moves the **entire DSH process** into WSL when
-invoked from Windows. This keeps one Linux execution world instead of mixing
-Windows sandbox/process semantics with Linux subprocesses.
+v0.4, the same package also ships `dsh-orcana`: a host entrypoint that runs DSH
+directly on Linux/WSL and moves the **entire DSH process** into WSL when invoked
+from Windows. Windows remains a launch surface; the task itself stays in one
+native Linux execution world.
 
 - **Resource limits** — `memoryBytes` / `pidsMax` enforced as a `prlimit` argv
   prefix on Linux (`--as` = RLIMIT_AS **address-space approximation**, not a
   cgroup memory cap; `--nproc` = **PER-UID** live-task cap, not per-cell PID
-  authority). `cpuQuotaUs` needs cgroup v2 authority, out of this package's
-  current hardening scope — it degrades.
+  authority). `cpuQuotaUs` needs cgroup v2 authority and currently degrades.
 - **Egress policy** — `network: 'none'` denies all network on supported native
   runners: `--unshare-net` for bwrap and `(deny network*)` for Seatbelt.
 - **Fail-closed by default** — a requested layer this host cannot express
-  throws `HARDENING_UNAVAILABLE` instead of running unenforced. Set the layer's
-  degradation policy to `best-effort` only when that weakening is deliberate.
-- **Execution evidence** — every confinement is recorded in a bounded audit
-  ledger (`ctx.hardening`): requested facts, layers applied, structured
-  degradations, failure records, dropped/total counters. Degradation is never
-  silent.
-- **Windows → WSL execution bridge** — Windows is only the launch surface.
-  cwd is translated by the selected distro's `wslpath`; DSH/task argv remains
-  positional and is never interpolated into a user-controlled shell string;
-  selected runtime environment reaches WSL through one-way `WSLENV` entries;
-  the Windows `DSH_HOME` is not reused inside Linux.
+  throws `HARDENING_UNAVAILABLE` instead of running unenforced. Use
+  `best-effort` only when the weakening is deliberate.
+- **Execution evidence** — every confinement is recorded in a bounded
+  `ctx.hardening` ledger with requested facts, applied layers, structured
+  degradations, failures, and dropped/total counters.
+- **Windows → WSL bridge** — cwd is translated by the selected distro's own
+  `wslpath`; task argv remains positional; selected runtime environment crosses
+  through one-way `WSLENV`; Windows `DSH_HOME` is not reused in Linux.
 
 ## Guarantees
 
 ```text
-✓ confined executions (read-only / workspace-write) through ctx.sandbox
-✓ network-none on supported runner (bwrap / Seatbelt)
-✓ RLIMIT_AS / RLIMIT_NPROC fallback (address-space / per-UID semantics)
-✓ fail-closed configurable per layer (required | best-effort)
-✓ bounded audit ledger (default 1024 entries, dropped/total exposed)
-✓ lifecycle-correct patch: dispose restores the exact original confine
-✓ duplicate live instances fail loud (DUPLICATE_HARDENING_INSTANCE)
-✓ host capability probe at most once per plugin mount
-✓ one cross-platform `dsh-orcana` entrypoint
-✓ Windows cwd mapped by WSL itself (no hard-coded /mnt/c assumption)
-✓ DSH `--` sentinel and task argv survive the bridge unchanged
-✓ prefer installed `dsh`, safely fall back to official `npx --yes @deepseek-ai/dsh`
-✓ API/runtime environment forwarding via one-way WSLENV, not command-line secrets
+✓ confined read-only / workspace-write executions can be hardened through ctx.sandbox
+✓ network-none on supported native runner (bwrap / Seatbelt)
+✓ RLIMIT_AS / RLIMIT_NPROC fallback with explicit semantics
+✓ required | best-effort layer policy
+✓ bounded hardening evidence ledger
+✓ lifecycle-correct confine patch and exact dispose restoration
+✓ duplicate live instances fail loud
+✓ one cross-platform dsh-orcana entrypoint
+✓ whole DSH runtime enters WSL before task/tool execution on Windows
+✓ cwd resolved by the selected WSL distro, not a hard-coded /mnt/c guess
+✓ DSH -- sentinel and task argv survive the bridge unchanged
+✓ installed dsh preferred; npm fallback pinned to a compatible DSH release
+✓ API keys, provider base URLs and runtime env forwarded via one-way WSLENV
+✓ normal terminal stdio, interactive Ctrl+C and exit status stay on WSL's native path
 ```
 
 ## Non-guarantees
 
 ```text
-✗ danger-full-access hardening inside the plugin (it bypasses ctx.sandbox)
+✗ danger-full-access sandbox hardening inside the plugin (that mode bypasses ctx.sandbox)
 ✗ cgroup v2 memory / pids / cpu authority in this package today
 ✗ per-cell PID authority
-✗ CPU quota (cpuQuotaUs degrades / fails closed)
-✗ Windows DSH_HOME/node_modules reused inside WSL
-✗ WSL itself being a security sandbox — it is an execution transport/world boundary
-✗ fake POSIX signal forwarding from Windows child.kill(); deterministic Linux process-group cancellation is future supervisor work
+✗ exact CPU quota for cpuQuotaUs
+✗ reuse of Windows DSH_HOME / Windows node_modules inside WSL
+✗ WSL itself being treated as a security sandbox — it is the Linux execution world boundary here
+✗ a separate Orcana programmatic timeout/cancel API in the Windows bridge today
 ```
 
 ## Scope: `danger-full-access`
 
-When DSH itself is already running in Linux/WSL, `danger-full-access` bypasses
-the confined sandbox seam entirely (the official bash executor runs the local
-path and never calls `ctx.sandbox.confine`). Those executions are therefore
-outside the plugin hardening authority; `ctx.hardening.scope` reports this
-honestly as `{ confinedModes: true, dangerFullAccess: false }`.
+When DSH is already running in Linux/WSL, `danger-full-access` bypasses the
+confined sandbox seam, so those executions are outside this plugin's sandbox
+hardening authority. `ctx.hardening.scope` reports that boundary honestly:
 
-This is distinct from the Windows bridge: the bridge moves the **whole DSH
-runtime** into WSL before any tool execution, so even full-access tools still
-execute in the Linux world. They are not sandbox-hardened, but they also do not
-fall back to Windows process semantics.
+```ts
+{ confinedModes: true, dangerFullAccess: false }
+```
 
-## Install
+The Windows bridge is a different layer: it moves the **whole DSH runtime** into
+WSL before tools run. A full-access tool is therefore still a Linux process; it
+is merely not sandbox-hardened by this plugin.
 
-The package family uses the `@leooday` scope. Recommended DSH bundle install
-**inside Linux/WSL**:
+## Install inside Linux / WSL
+
+Recommended hardening bundle:
 
 ```sh
 dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 ```
 
-For the combined governor + Linux hardening profile:
+Combined governor + Linux hardening profile:
 
 ```sh
 dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
 ```
 
-If no global `dsh` executable is installed, the v0.4 bridge uses the official
-DSH npm form automatically:
+The bundle is neutral by default; installation does not silently enable stronger
+network or resource restrictions. Configure enforcement through the profile row
+or a `--patch` overlay.
 
-```sh
-npx --yes @deepseek-ai/dsh ...
-```
-
-`dsh plugin add` installs the bundle and auto-activates the hardening row as a
-profile layer with NEUTRAL defaults; enforce layers via the row's config (see
-the [bundle README](../dsh-orcana-linux-bundle/README.md)). For checkout-based
-development, use [`scripts/install-orcana-linux.sh`](../../scripts/install-orcana-linux.sh).
-
-For programmatic embedding, install the package and load the plugin after the
-sandbox provider:
+For programmatic embedding:
 
 ```sh
 npm i @leooday/dsh-orcana-linux
@@ -117,94 +105,93 @@ ctx.plugin(hardening, {
 })
 ```
 
-## Windows → WSL: same command, one execution world
+## Windows → WSL: same command, one Linux execution world
 
-For the v0.4 release, install the package on the Windows side so the launcher
-command exists:
+After v0.4 is published, install the launcher once on Windows:
 
 ```powershell
 npm install -g @leooday/dsh-orcana-linux@^0.4.0
 ```
 
-The target WSL distro needs Node/npm. A global `dsh` install is optional:
-`dsh-orcana` prefers `dsh` when present and otherwise runs
-`npx --yes @deepseek-ai/dsh` inside WSL.
+The selected WSL distro needs Node/npm satisfying the current DSH contract:
+`^22.19.0 || >=24.0.0`. A global `dsh` installation is optional.
 
-Check the WSL execution world:
+Check the execution world:
 
 ```powershell
 dsh-orcana --wsl-doctor
 ```
 
-The doctor reports the Linux kernel, Node, the DSH launch path (`dsh` or npx
-fallback), `bwrap`, `prlimit`, and `setsid`. It also tells you whether the
-current workspace is WSL-native or a Windows filesystem mounted into WSL.
-The latter is supported; for Git/npm/build-heavy Linux workloads, a project
-stored under the WSL Linux filesystem is the fast path.
+The doctor reports:
 
-If multiple distros are installed:
+- Linux kernel;
+- Node and whether it satisfies the required runtime contract;
+- direct `dsh` availability or npm fallback availability;
+- `bwrap` and `prlimit` capability visibility;
+- whether the current Windows-side cwd is WSL-native storage or a Windows
+  filesystem mounted into WSL.
+
+Windows-mounted projects are supported. For Git/npm/build-heavy Linux I/O, a
+project stored in the WSL Linux filesystem is the fast path.
+
+With multiple distros:
 
 ```powershell
 dsh-orcana --wsl-distro Ubuntu-24.04 --wsl-doctor
 ```
 
-Install the Orcana profile into WSL from the Windows terminal:
+Install the Orcana profile into WSL from Windows Terminal:
 
 ```powershell
 dsh-orcana --wsl-install
 ```
 
-Then normal work is one command on both Windows and Linux:
-
-```powershell
-dsh-orcana "fix the failing tests"
-```
-
-Equivalent Linux/WSL invocation:
+Then normal work is the same command on Windows and Linux:
 
 ```sh
 dsh-orcana "fix the failing tests"
 ```
 
-The bridge defaults to profile `orcana`. An explicit DSH `--profile` before
-`--` is preserved, or the bridge default can be changed without touching DSH
-args:
+The bridge defaults to profile `orcana`. An explicit DSH `--profile` before the
+first `--` wins; the bridge default can also be changed independently:
 
 ```powershell
 dsh-orcana --wsl-profile orcana-linux "run the tests"
 dsh-orcana --profile bench "run the benchmark"
 ```
 
-### WSL bridge contracts
+### Bridge contracts
 
-The bridge deliberately treats Windows as a launcher, not as a second runtime:
+1. **One execution world.** Windows does not run DSH and forward individual tool
+   calls into Linux. `wsl.exe` starts the DSH process inside WSL before task
+   execution begins.
+2. **cwd is translated, not guessed.** Windows paths are mapped by the selected
+   distro's `wslpath`; `\\wsl.localhost\Distro\...` and `\\wsl$\Distro\...`
+   are recognized directly. A UNC distro conflicting with `--wsl-distro` fails
+   loud.
+3. **argv boundaries are preserved.** Bridge-owned `--wsl-*` options are parsed
+   only before the first `--`. The sentinel itself and everything after it are
+   preserved for DSH. User task text is never interpolated into the fixed
+   resolver script.
+4. **DSH resolution is deterministic.** `ORCANA_WSL_DSH_COMMAND` can select an
+   explicit Linux executable. Otherwise the bridge prefers an installed `dsh`.
+   If absent, v0.4.0 falls back to the pinned compatible package
+   `@deepseek-ai/dsh@0.1.0-rc.5`, not npm `latest`. Use
+   `ORCANA_WSL_DSH_PACKAGE` only for an intentional compatibility test/upgrade.
+5. **Environment is one-way and selective.** Common model API keys, common
+   provider base URLs, proxies, `DSH_*`, and non-bridge runtime `ORCANA_*`
+   variables cross through `WSLENV` entries marked `/u` (Win32 → WSL only).
+   `ORCANA_WSL_*` controls remain host-local.
+6. **Windows DSH home is never reused.** `DSH_HOME`, `HOME`, and Windows `PATH`
+   are not implicitly forwarded. WSL owns its own DSH profile/package graph,
+   avoiding Windows-native `node_modules` / executable contamination.
+7. **Terminal behavior stays native.** stdio is inherited and `wsl.exe` remains
+   the Windows console/cancellation authority. The bridge does not fake POSIX
+   signals with Windows `child.kill()` and does not insert an artificial Linux
+   session/process-group supervisor into normal interactive runs. The DSH/WSL
+   exit status is returned to the caller.
 
-1. **cwd** — Windows drive paths are translated by `wslpath` inside the
-   selected distro. It does not assume `/mnt/c`, so custom WSL automount roots
-   remain valid. `\\wsl.localhost\Distro\...` and `\\wsl$\Distro\...` cwd
-   forms are recognized directly.
-2. **argv** — bridge-owned `--wsl-*` flags are parsed only before the first
-   `--`; the sentinel itself and everything after it are preserved for DSH.
-   Normal task text is passed as positional argv. The automatic dsh/npx
-   resolver is a fixed script and receives user arguments only through `$@`.
-3. **DSH resolution** — an explicit `ORCANA_WSL_DSH_COMMAND` wins. Otherwise
-   the bridge uses `dsh` if available, then falls back to
-   `npx --yes @deepseek-ai/dsh`.
-4. **environment** — provider credentials commonly used by DSH plus `DSH_*`
-   and runtime `ORCANA_*` variables cross through `WSLENV` with `/u` (Win32 →
-   WSL only); their values are not placed in the process command line.
-   `ORCANA_WSL_*` bridge controls stay host-local.
-5. **DSH home** — `DSH_HOME` is intentionally **not** forwarded. A Windows
-   profile can contain Windows-native `node_modules`; sharing it with WSL would
-   reintroduce cross-platform ABI and executable contamination. WSL owns its
-   own DSH profile graph.
-6. **stdio / exit / cancellation** — terminal stdio is inherited and the
-   WSL/DSH exit code is returned. On native POSIX the launcher can relay
-   SIGINT/SIGTERM. On Windows it deliberately does **not** fake POSIX signals
-   with Node `child.kill()`; Ctrl+C remains a console/WSL boundary today.
-   Deterministic Linux process-group cancellation is the next supervisor layer.
-
-Additional environment variables can be explicitly allowed through the bridge:
+Additional environment variables can be explicitly allowed:
 
 ```powershell
 $env:ORCANA_WSL_FORWARD_ENV = "MY_CORP_PROXY,MY_BUILD_FLAG"
@@ -215,81 +202,64 @@ Bridge controls:
 
 | Variable / flag | Meaning |
 |---|---|
-| `ORCANA_WSL_DISTRO` / `--wsl-distro` | select a WSL distro |
-| `ORCANA_WSL_PROFILE` / `--wsl-profile` | default DSH profile (default `orcana`) |
-| `ORCANA_WSL_DSH_COMMAND` | optional explicit DSH executable path/name inside WSL; otherwise dsh → npx fallback |
+| `ORCANA_WSL_DISTRO` / `--wsl-distro` | select WSL distro |
+| `ORCANA_WSL_PROFILE` / `--wsl-profile` | default DSH profile (`orcana`) |
+| `ORCANA_WSL_DSH_COMMAND` | explicit DSH executable inside WSL |
+| `ORCANA_WSL_DSH_PACKAGE` | explicit npm fallback package/version; default is pinned by bridge release |
 | `ORCANA_WSL_FORWARD_ENV` | comma-separated extra environment allowlist |
-| `--wsl-install` | install the Orcana governor + Linux hardening bundles in WSL |
-| `--wsl-doctor` | inspect the selected Linux execution world and workspace path class |
+| `--wsl-install` | install governor + Linux hardening bundles into the WSL profile |
+| `--wsl-doctor` | inspect target execution world and workspace path class |
 
-`dsh-orcana-wsl` is an explicit alias for the same launcher. `dsh-orcana` is
-the preferred cross-platform entrypoint.
+`dsh-orcana-wsl` is an explicit alias. `dsh-orcana` is the preferred
+cross-platform entrypoint.
 
 ## Hardening configuration
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `resourceLimits.memoryBytes` | number | — | `prlimit --as` bytes (**address-space approximation**, not "N MB RAM") |
-| `resourceLimits.pidsMax` | number | — | `prlimit --nproc` live-task cap (**PER-UID** — caps every process of the calling user) |
-| `resourceLimits.cpuQuotaUs` | number | — | cgroup v2 cpu quota per 100 ms — unsupported here today; degrades / fails closed |
-| `network` | `'inherit' \| 'none'` | — | deny all egress when `'none'` |
+| `resourceLimits.memoryBytes` | number | — | `prlimit --as` bytes; address-space approximation |
+| `resourceLimits.pidsMax` | number | — | `prlimit --nproc`; PER-UID live-task cap |
+| `resourceLimits.cpuQuotaUs` | number | — | requires cgroup v2 authority; currently degrades / fails closed |
+| `network` | `'inherit' \| 'none'` | — | deny all egress when `none` |
 | `degradationPolicy.resourceLimits` | `'required' \| 'best-effort'` | `required` | fail closed vs record-and-continue |
-| `degradationPolicy.network` | `'required' \| 'best-effort'` | `required` | same, for egress |
-| `ledgerMaxEntries` | number | 1024 | bounded audit window; older records drop and increment `droppedCount` |
+| `degradationPolicy.network` | `'required' \| 'best-effort'` | `required` | same for egress |
+| `ledgerMaxEntries` | number | 1024 | bounded audit window |
 
-### Per-call overrides
+A caller may attach `resourceLimits` / `network` to its per-call
+`sandboxPolicy`; per-call values win over deployment defaults. Degradation
+policy and ledger size remain deployment-level.
 
-A caller can attach `resourceLimits` / `network` to the sandbox policy object
-it passes to `confine`; per-call values win over deployment config:
+> **Security note:** a per-call carrier can widen a deployment request. A
+> caller explicitly supplying `network: 'inherit'` overrides deployment
+> `network: 'none'` for that call. Mandatory egress policy should therefore be
+> enforced at the owning sandbox-policy layer.
 
-```ts
-const spec = shell.resolve({ command: 'make build' })
-spec.sandboxPolicy = {
-  ...spec.sandboxPolicy!,
-  resourceLimits: { memoryBytes: 512 * 1024 * 1024, pidsMax: 32 },
-  network: 'none',
-}
-```
-
-Degradation policy and ledger size stay deployment-level.
-
-> **Security note:** a per-call carrier may widen a deployment request. A
-> caller that explicitly supplies `network: 'inherit'` overrides deployment
-> `network: 'none'` for that call. The request remains visible in the ledger;
-> deployments that require mandatory egress isolation should enforce policy at
-> the owning sandbox-policy layer rather than relying on caller discipline.
-
-> **`runnerCommand` note:** runner recognition is based on exact `argv[0]`.
-> A custom wrapper or absolute `/usr/bin/bwrap` does not currently match the
-> literal `bwrap` hardening branch, so required network hardening fails loud
-> rather than silently claiming enforcement.
+> **`runnerCommand` note:** runner recognition currently uses exact `argv[0]`.
+> A wrapper or absolute `/usr/bin/bwrap` will not be falsely claimed as hardened;
+> a required layer fails loud instead.
 
 ## How native hardening works
 
-Cordis 4.0.1 refuses service replacement across fibers, so the plugin patches
-the resolved `ctx.sandbox` provider instance's `confine` method instead of
-replacing the service:
+Cordis 4.0.1 does not allow cross-fiber service replacement, so the plugin
+patches the resolved `ctx.sandbox` provider's `confine` method:
 
-1. the inner provider confines file effects (`bwrap` / Landlock / Seatbelt /
-   Windows ACL),
-2. the plugin applies its additional layers (`prlimit`, network-none) to the
-   returned argv and fails closed when a required layer cannot be expressed,
-3. the bounded ledger records requested/applied/degraded facts.
-
-The patch is lifecycle-correct: the exact original `confine` reference is
-restored on dispose when still owned by this plugin. A second live instance
-against the same provider fails with `DUPLICATE_HARDENING_INSTANCE` instead of
-silently stacking configuration.
+1. the inner provider confines file effects;
+2. Orcana adds requested `prlimit` / network-none layers to the returned argv;
+3. a required layer that cannot be expressed fails closed;
+4. the bounded ledger records requested/applied/degraded facts;
+5. dispose restores the exact original `confine` reference when still owned by
+   this plugin.
 
 ## Platform matrix
 
-| Surface | Linux / inside WSL | macOS | Windows host |
+| Surface | Linux / WSL | macOS | Windows host |
 |---|---|---|---|
-| DSH execution through `dsh-orcana` | native | native command path | whole DSH moved to WSL |
-| `resourceLimits` hardening | `prlimit` argv prefix | degraded | applied after entering WSL, when configured there |
-| `network: 'none'` | bwrap `--unshare-net` | Seatbelt `(deny network*)` | applied after entering WSL, when configured there |
-| evidence ledger | yes | yes | yes, inside WSL runtime |
-| Windows-native plugin hardening | n/a | n/a | not claimed; use WSL bridge for Linux semantics |
+| `dsh-orcana` execution | native | native command path | whole DSH enters WSL |
+| resource hardening | `prlimit` | degraded | applied by Linux plugin after entering WSL |
+| `network: none` | bwrap `--unshare-net` | Seatbelt | applied by Linux plugin after entering WSL |
+| evidence ledger | yes | yes | recorded inside WSL runtime |
+| interactive terminal/Ctrl+C | native | native | native `wsl.exe` → Linux path |
+| Windows-native hardening | n/a | n/a | not claimed; Linux semantics use WSL bridge |
 
 ## Development
 
@@ -301,10 +271,10 @@ pnpm --filter @leooday/dsh-orcana-linux build
 pnpm --filter @leooday/dsh-orcana-linux pack
 ```
 
-The WSL bridge unit tests are host-independent: they pin sentinel/argv
-preservation, DSH resolver fallback, profile installation, UNC/wslpath mapping,
-workspace classification, and WSLENV isolation without requiring a Windows
-runner. Native integration tests self-skip when bwrap / prlimit are unavailable.
+The bridge unit tests pin `--`/argv preservation, deterministic DSH fallback,
+profile installation, UNC/wslpath mapping, workspace classification, and
+WSLENV isolation without requiring a Windows runner. Native bwrap/prlimit tests
+self-skip when the host lacks those capabilities.
 
 ## License
 
