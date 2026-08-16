@@ -1,5 +1,11 @@
 export const DEFAULT_WSL_PNPM_PACKAGE = 'pnpm@11.7.0'
 
+export const DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES = Object.freeze([
+  '@leooday/governor-core@0.1.0-rc.1',
+  '@leooday/dsh-governor@0.1.0-rc.1',
+  '@leooday/dsh-orcana-linux@0.4.0',
+] as const)
+
 const DSH_PACKAGE_PREFIX = '@deepseek-ai/dsh@'
 const DSH_HEADLESS_PACKAGE = '@deepseek-ai/dsh-headless'
 
@@ -32,22 +38,26 @@ export function dshHeadlessPackage(dshPackage: string): string {
  *
  * This resolver is intentionally dedicated to `--wsl-install`: it validates
  * the expected `dsh plugin --profile <name> add ...` shape, prepends the DSH
- * one-shot headless bundle, and injects pnpm's `--save-exact`, so the profile
- * is both runnable and pinned to this release family.
+ * one-shot headless bundle plus exact Orcana implementation packages, and
+ * injects pnpm's `--save-exact`. The profile therefore has a runnable DSH task
+ * surface and an exact Orcana top-level dependency closure.
  */
 export const INSTALL_RESOLVER_SCRIPT = [
   'dsh_package=$1',
   'pnpm_package=$2',
   'version_contract=$3',
   'headless_package=$4',
-  'shift 4',
+  'orcana_packages=$5',
+  'shift 5',
   'if [ "$1" != "plugin" ] || [ "$2" != "--profile" ] || [ -z "$3" ] || [ "$4" != "add" ]; then',
   '  printf "%s\\n" "dsh-orcana: internal install argv does not match plugin --profile <name> add" >&2',
   '  exit 64',
   'fi',
   'profile=$3',
   'shift 4',
-  'set -- plugin --profile "$profile" add --save-exact "$headless_package" "$@"',
+  '# The Orcana release package list is compile-time controlled and contains no spaces/globs.',
+  'set -f',
+  'set -- plugin --profile "$profile" add --save-exact "$headless_package" $orcana_packages "$@"',
   'if command -v dsh >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then',
   '  dsh_version=$(dsh --version 2>/dev/null || true)',
   '  pnpm_version=$(pnpm --version 2>/dev/null || true)',
@@ -70,9 +80,10 @@ export function nativeInstallShellArgs(
   pnpmPackage = DEFAULT_WSL_PNPM_PACKAGE,
 ): string[] {
   const headlessPackage = dshHeadlessPackage(dshPackage)
+  const orcanaPackages = DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES.join(' ')
   return [
     '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
-    dshPackage, pnpmPackage, versionContract, headlessPackage, ...dshArgs,
+    dshPackage, pnpmPackage, versionContract, headlessPackage, orcanaPackages, ...dshArgs,
   ]
 }
 
