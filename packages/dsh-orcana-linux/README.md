@@ -26,10 +26,10 @@ Windows sandbox/process semantics with Linux subprocesses.
   degradations, failure records, dropped/total counters. Degradation is never
   silent.
 - **Windows → WSL execution bridge** — Windows is only the launch surface.
-  cwd is translated by the selected distro's `wslpath`; DSH argv is passed
-  through `wsl.exe --exec` without task-shell interpolation; selected runtime
-  environment reaches WSL through `WSLENV`; the Windows `DSH_HOME` is not
-  reused inside Linux.
+  cwd is translated by the selected distro's `wslpath`; DSH/task argv remains
+  positional and is never interpolated into a user-controlled shell string;
+  selected runtime environment reaches WSL through one-way `WSLENV` entries;
+  the Windows `DSH_HOME` is not reused inside Linux.
 
 ## Guarantees
 
@@ -44,8 +44,9 @@ Windows sandbox/process semantics with Linux subprocesses.
 ✓ host capability probe at most once per plugin mount
 ✓ one cross-platform `dsh-orcana` entrypoint
 ✓ Windows cwd mapped by WSL itself (no hard-coded /mnt/c assumption)
-✓ task argv crosses Windows → WSL without shell re-parsing
-✓ explicit API/runtime environment forwarding via WSLENV, not command-line secrets
+✓ DSH `--` sentinel and task argv survive the bridge unchanged
+✓ prefer installed `dsh`, safely fall back to official `npx --yes @deepseek-ai/dsh`
+✓ API/runtime environment forwarding via one-way WSLENV, not command-line secrets
 ```
 
 ## Non-guarantees
@@ -57,6 +58,7 @@ Windows sandbox/process semantics with Linux subprocesses.
 ✗ CPU quota (cpuQuotaUs degrades / fails closed)
 ✗ Windows DSH_HOME/node_modules reused inside WSL
 ✗ WSL itself being a security sandbox — it is an execution transport/world boundary
+✗ fake POSIX signal forwarding from Windows child.kill(); deterministic Linux process-group cancellation is future supervisor work
 ```
 
 ## Scope: `danger-full-access`
@@ -74,8 +76,8 @@ fall back to Windows process semantics.
 
 ## Install
 
-The package is published under the `@leooday` scope. Recommended DSH bundle
-install **inside Linux/WSL**:
+The package family uses the `@leooday` scope. Recommended DSH bundle install
+**inside Linux/WSL**:
 
 ```sh
 dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
@@ -85,6 +87,13 @@ For the combined governor + Linux hardening profile:
 
 ```sh
 dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
+```
+
+If no global `dsh` executable is installed, the v0.4 bridge uses the official
+DSH npm form automatically:
+
+```sh
+npx --yes @deepseek-ai/dsh ...
 ```
 
 `dsh plugin add` installs the bundle and auto-activates the hardening row as a
@@ -110,13 +119,16 @@ ctx.plugin(hardening, {
 
 ## Windows → WSL: same command, one execution world
 
-Install v0.4+ on the Windows side so the launcher command exists. DSH itself
-must also exist in the selected WSL distro because execution intentionally
-happens there rather than in the Windows Node installation.
+For the v0.4 release, install the package on the Windows side so the launcher
+command exists:
 
 ```powershell
 npm install -g @leooday/dsh-orcana-linux@^0.4.0
 ```
+
+The target WSL distro needs Node/npm. A global `dsh` install is optional:
+`dsh-orcana` prefers `dsh` when present and otherwise runs
+`npx --yes @deepseek-ai/dsh` inside WSL.
 
 Check the WSL execution world:
 
@@ -124,15 +136,19 @@ Check the WSL execution world:
 dsh-orcana --wsl-doctor
 ```
 
-The doctor reports the Linux kernel and whether `node`, `dsh`, `bwrap`, and
-`prlimit` are visible in that distro. If multiple distros are installed:
+The doctor reports the Linux kernel, Node, the DSH launch path (`dsh` or npx
+fallback), `bwrap`, `prlimit`, and `setsid`. It also tells you whether the
+current workspace is WSL-native or a Windows filesystem mounted into WSL.
+The latter is supported; for Git/npm/build-heavy Linux workloads, a project
+stored under the WSL Linux filesystem is the fast path.
+
+If multiple distros are installed:
 
 ```powershell
 dsh-orcana --wsl-distro Ubuntu-24.04 --wsl-doctor
 ```
 
-Once DSH is installed in WSL, install the Orcana profile there from the
-Windows terminal:
+Install the Orcana profile into WSL from the Windows terminal:
 
 ```powershell
 dsh-orcana --wsl-install
@@ -150,8 +166,9 @@ Equivalent Linux/WSL invocation:
 dsh-orcana "fix the failing tests"
 ```
 
-The bridge defaults to profile `orcana`. An explicit DSH `--profile` is
-preserved, or the bridge default can be changed without touching DSH args:
+The bridge defaults to profile `orcana`. An explicit DSH `--profile` before
+`--` is preserved, or the bridge default can be changed without touching DSH
+args:
 
 ```powershell
 dsh-orcana --wsl-profile orcana-linux "run the tests"
@@ -166,19 +183,26 @@ The bridge deliberately treats Windows as a launcher, not as a second runtime:
    selected distro. It does not assume `/mnt/c`, so custom WSL automount roots
    remain valid. `\\wsl.localhost\Distro\...` and `\\wsl$\Distro\...` cwd
    forms are recognized directly.
-2. **argv** — the task is handed to `wsl.exe --exec dsh ...` as an argv vector.
-   The task text is not inserted into `bash -c`, so quoting and shell metacharacters
-   do not gain a second interpretation at the Windows/WSL boundary.
-3. **environment** — provider credentials commonly used by DSH plus `DSH_*`
-   and runtime `ORCANA_*` variables cross through `WSLENV`; their values are
-   not placed in the process command line. `ORCANA_WSL_*` bridge controls stay
-   host-local.
-4. **DSH home** — `DSH_HOME` is intentionally **not** forwarded. A Windows
+2. **argv** — bridge-owned `--wsl-*` flags are parsed only before the first
+   `--`; the sentinel itself and everything after it are preserved for DSH.
+   Normal task text is passed as positional argv. The automatic dsh/npx
+   resolver is a fixed script and receives user arguments only through `$@`.
+3. **DSH resolution** — an explicit `ORCANA_WSL_DSH_COMMAND` wins. Otherwise
+   the bridge uses `dsh` if available, then falls back to
+   `npx --yes @deepseek-ai/dsh`.
+4. **environment** — provider credentials commonly used by DSH plus `DSH_*`
+   and runtime `ORCANA_*` variables cross through `WSLENV` with `/u` (Win32 →
+   WSL only); their values are not placed in the process command line.
+   `ORCANA_WSL_*` bridge controls stay host-local.
+5. **DSH home** — `DSH_HOME` is intentionally **not** forwarded. A Windows
    profile can contain Windows-native `node_modules`; sharing it with WSL would
    reintroduce cross-platform ABI and executable contamination. WSL owns its
    own DSH profile graph.
-5. **stdio / exit** — terminal stdio is inherited and the WSL/DSH exit code is
-   returned by the bridge. SIGINT/SIGTERM are relayed to the launched process.
+6. **stdio / exit / cancellation** — terminal stdio is inherited and the
+   WSL/DSH exit code is returned. On native POSIX the launcher can relay
+   SIGINT/SIGTERM. On Windows it deliberately does **not** fake POSIX signals
+   with Node `child.kill()`; Ctrl+C remains a console/WSL boundary today.
+   Deterministic Linux process-group cancellation is the next supervisor layer.
 
 Additional environment variables can be explicitly allowed through the bridge:
 
@@ -193,10 +217,10 @@ Bridge controls:
 |---|---|
 | `ORCANA_WSL_DISTRO` / `--wsl-distro` | select a WSL distro |
 | `ORCANA_WSL_PROFILE` / `--wsl-profile` | default DSH profile (default `orcana`) |
-| `ORCANA_WSL_DSH_COMMAND` | DSH executable name/path inside WSL (default `dsh`) |
+| `ORCANA_WSL_DSH_COMMAND` | optional explicit DSH executable path/name inside WSL; otherwise dsh → npx fallback |
 | `ORCANA_WSL_FORWARD_ENV` | comma-separated extra environment allowlist |
 | `--wsl-install` | install the Orcana governor + Linux hardening bundles in WSL |
-| `--wsl-doctor` | inspect the selected Linux execution world |
+| `--wsl-doctor` | inspect the selected Linux execution world and workspace path class |
 
 `dsh-orcana-wsl` is an explicit alias for the same launcher. `dsh-orcana` is
 the preferred cross-platform entrypoint.
@@ -277,10 +301,10 @@ pnpm --filter @leooday/dsh-orcana-linux build
 pnpm --filter @leooday/dsh-orcana-linux pack
 ```
 
-The WSL bridge unit tests are host-independent: they pin argv preservation,
-profile installation, UNC/wslpath mapping, and WSLENV isolation without
-requiring a Windows runner. Native integration tests self-skip when bwrap /
-prlimit are unavailable.
+The WSL bridge unit tests are host-independent: they pin sentinel/argv
+preservation, DSH resolver fallback, profile installation, UNC/wslpath mapping,
+workspace classification, and WSLENV isolation without requiring a Windows
+runner. Native integration tests self-skip when bwrap / prlimit are unavailable.
 
 ## License
 
