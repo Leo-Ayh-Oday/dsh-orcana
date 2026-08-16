@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { reportWslManagedConfigDoctor } from './wsl-config-doctor.js'
 import { augmentWslHostEnvironment } from './wsl-host-env.js'
+import { DEFAULT_WSL_DSH_PACKAGE } from './wsl-bridge.js'
+import { DEFAULT_WSL_PNPM_PACKAGE } from './wsl-install.js'
 import { runWslParityDoctor } from './wsl-parity-doctor.js'
 import { reportWslLoopbackProxyDoctor } from './wsl-proxy-doctor.js'
 import {
@@ -80,6 +82,29 @@ export function requiredOrcanaProfileForRun(
   if (explicit === baseProfile) return 'headless'
   if (explicit === orcanaWebProfileName(baseProfile)) return 'web'
   return undefined
+}
+
+/**
+ * Product-owned toolchain authority: product profiles may only run through
+ * the exact validated DSH/pnpm selectors (or their defaults); an opaque DSH
+ * command or any drifted selector is rejected loudly instead of silently
+ * changing the execution world.
+ */
+export function assertSupportedProductToolchainSelectors(env: {
+  ORCANA_WSL_DSH_PACKAGE?: string
+  ORCANA_WSL_PNPM_PACKAGE?: string
+  ORCANA_WSL_DSH_COMMAND?: string
+}): void {
+  const { ORCANA_WSL_DSH_PACKAGE, ORCANA_WSL_PNPM_PACKAGE, ORCANA_WSL_DSH_COMMAND } = env
+  if (ORCANA_WSL_DSH_COMMAND !== undefined && ORCANA_WSL_DSH_COMMAND.trim() !== '') {
+    throw new Error(`ORCANA_WSL_DSH_COMMAND bypasses the exact product DSH selector (${DEFAULT_WSL_DSH_PACKAGE})`)
+  }
+  if (ORCANA_WSL_DSH_PACKAGE !== undefined && ORCANA_WSL_DSH_PACKAGE.trim() !== '' && ORCANA_WSL_DSH_PACKAGE !== DEFAULT_WSL_DSH_PACKAGE) {
+    throw new Error(`ORCANA_WSL_DSH_PACKAGE must be ${DEFAULT_WSL_DSH_PACKAGE}`)
+  }
+  if (ORCANA_WSL_PNPM_PACKAGE !== undefined && ORCANA_WSL_PNPM_PACKAGE.trim() !== '' && ORCANA_WSL_PNPM_PACKAGE !== DEFAULT_WSL_PNPM_PACKAGE) {
+    throw new Error(`ORCANA_WSL_PNPM_PACKAGE must be ${DEFAULT_WSL_PNPM_PACKAGE}`)
+  }
 }
 
 /**

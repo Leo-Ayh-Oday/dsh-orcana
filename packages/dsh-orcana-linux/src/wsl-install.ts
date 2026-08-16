@@ -2,8 +2,8 @@ export const DEFAULT_WSL_PNPM_PACKAGE = 'pnpm@11.7.0'
 export const INSTALL_NODE_CONTRACT_SCRIPT = 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 19) || major >= 24 ? 0 : 1)'
 
 export const DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES = Object.freeze([
-  '@leooday/governor-core@0.1.0-rc.1',
-  '@leooday/dsh-governor@0.1.0-rc.1',
+  '@leooday/governor-core@0.1.0',
+  '@leooday/dsh-governor@0.1.0',
   '@leooday/dsh-orcana-linux@0.4.0',
 ] as const)
 

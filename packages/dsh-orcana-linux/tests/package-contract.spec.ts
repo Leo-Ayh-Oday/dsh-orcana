@@ -57,9 +57,9 @@ describe('@leooday/dsh-orcana-linux package contract', () => {
     expect(manifest.engines?.node).toBe('^22.19.0 || >=24.0.0')
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/cordis': '4.0.1',
-      '@deepseek-ai/dsh-sandbox': '0.1.0-rc.5',
-      '@deepseek-ai/dsh-shell': '0.1.0-rc.5',
-      '@deepseek-ai/dsh-tools': '0.1.0-rc.5',
+      '@deepseek-ai/dsh-sandbox': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-shell': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-tools': '0.1.0-rc.6',
     })
     expect(manifest.peerDependenciesMeta).toEqual({
       '@deepseek-ai/cordis': { optional: true },

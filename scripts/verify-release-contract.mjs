@@ -139,8 +139,8 @@ if (typeof nativeExport !== 'object' || nativeExport === null
   fail('@leooday/dsh-orcana-linux must publish the ./native-evidence JS/types export pair')
 }
 for (const dependency of ['@deepseek-ai/dsh-shell', '@deepseek-ai/dsh-tools']) {
-  if (linux.peerDependencies?.[dependency] !== '0.1.0-rc.5') {
-    fail(`Linux native-evidence ABI must pin ${dependency}@0.1.0-rc.5, found ${JSON.stringify(linux.peerDependencies?.[dependency])}`)
+  if (linux.peerDependencies?.[dependency] !== '0.1.0-rc.6') {
+    fail(`Linux native-evidence ABI must pin ${dependency}@0.1.0-rc.6, found ${JSON.stringify(linux.peerDependencies?.[dependency])}`)
   }
 }
 if (!profileVerifier.includes("'@leooday/dsh-orcana-linux/native-evidence'")) {
@@ -172,9 +172,9 @@ for (const packageName of [
 
 for (const [packageName, expected] of [
   ['@deepseek-ai/cordis', '4.0.1'],
-  ['@deepseek-ai/dsh-sandbox', '0.1.0-rc.5'],
-  ['@deepseek-ai/dsh-shell', '0.1.0-rc.5'],
-  ['@deepseek-ai/dsh-tools', '0.1.0-rc.5'],
+  ['@deepseek-ai/dsh-sandbox', '0.1.0-rc.6'],
+  ['@deepseek-ai/dsh-shell', '0.1.0-rc.6'],
+  ['@deepseek-ai/dsh-tools', '0.1.0-rc.6'],
 ]) {
   requireSpecifierInAnySection(
     lock,
@@ -195,7 +195,7 @@ for (const packageName of [
   '@deepseek-ai/dsh-subprocess-local',
   '@deepseek-ai/dsh-tools',
 ]) {
-  requireSpecifier(lock, 'packages/dsh-orcana-linux', 'devDependencies', packageName, '0.1.0-rc.5')
+  requireSpecifier(lock, 'packages/dsh-orcana-linux', 'devDependencies', packageName, '0.1.0-rc.6')
 }
 
 requireSpecifier(lock, 'packages/dsh-orcana-linux-bundle', 'dependencies', '@leooday/dsh-orcana-linux', 'workspace:^')

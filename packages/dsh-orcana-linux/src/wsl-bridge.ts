@@ -12,9 +12,9 @@ import {
 } from './wsl-profile.js'
 
 export const DEFAULT_WSL_PROFILE = 'orcana'
-export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
+export const DEFAULT_WSL_DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6'
 export const DEFAULT_WSL_BUNDLES = Object.freeze([
-  '@leooday/dsh-bundle@0.1.0-rc.1',
+  '@leooday/dsh-bundle@0.1.0',
   '@leooday/dsh-orcana-linux-bundle@0.3.0',
 ] as const)
 
