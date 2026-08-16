@@ -8,6 +8,7 @@ import {
   parseWslBridgeArgs,
   parseWslUncPath,
   windowsPathToWsl,
+  windowsWorkspaceKind,
 } from '../src/wsl-bridge.ts'
 
 describe('WSL bridge argument contract', () => {
@@ -26,12 +27,21 @@ describe('WSL bridge argument contract', () => {
     })
   })
 
-  it('defaults to the orcana profile but respects an explicit DSH profile', () => {
+  it('defaults to the orcana profile but respects an explicit pre-sentinel DSH profile', () => {
     const defaulted = parseWslBridgeArgs(['fix it'], {})
     expect(dshArgsForBridge(defaulted)).toEqual(['--profile', 'orcana', 'fix it'])
 
     const explicit = parseWslBridgeArgs(['--profile', 'bench', 'fix it'], {})
     expect(dshArgsForBridge(explicit)).toEqual(['--profile', 'bench', 'fix it'])
+  })
+
+  it('preserves the -- sentinel and treats everything after it as opaque DSH/task argv', () => {
+    const parsed = parseWslBridgeArgs(['--', '--profile', 'literal', '--wsl-distro', 'also-literal'], {})
+    expect(parsed.distro).toBeUndefined()
+    expect(parsed.dshArgs).toEqual(['--', '--profile', 'literal', '--wsl-distro', 'also-literal'])
+    expect(dshArgsForBridge(parsed)).toEqual([
+      '--profile', 'orcana', '--', '--profile', 'literal', '--wsl-distro', 'also-literal',
+    ])
   })
 
   it('builds the official one-profile bundle installation', () => {
@@ -41,21 +51,29 @@ describe('WSL bridge argument contract', () => {
     ])
   })
 
-  it('never shell-interpolates task argv', () => {
+  it('keeps task text out of the fixed resolver script and passes it only as positional argv', () => {
+    const task = 'echo "$HOME" && rm -rf nope'
     const argv = buildWslDshArgs(
       '/mnt/c/work tree',
-      ['--profile', 'orcana', 'echo "$HOME" && rm -rf nope'],
+      ['--profile', 'orcana', task],
       'Ubuntu',
     )
-    expect(argv).toEqual([
+    expect(argv.slice(0, 7)).toEqual([
       '--distribution', 'Ubuntu',
       '--cd', '/mnt/c/work tree',
-      '--exec', 'dsh',
-      '--profile', 'orcana',
-      'echo "$HOME" && rm -rf nope',
+      '--exec', '/bin/sh', '-lc',
     ])
-    expect(argv).not.toContain('bash')
-    expect(argv).not.toContain('-c')
+    const resolver = argv[7]
+    expect(resolver).toContain('command -v dsh')
+    expect(resolver).toContain('npx --yes @deepseek-ai/dsh')
+    expect(resolver).not.toContain(task)
+    expect(argv.slice(-3)).toEqual(['--profile', 'orcana', task])
+  })
+
+  it('uses a caller-supplied DSH executable directly without a resolver shell', () => {
+    expect(buildWslDshArgs('/home/leo/repo', ['web'], 'Ubuntu', '/opt/dsh')).toEqual([
+      '--distribution', 'Ubuntu', '--cd', '/home/leo/repo', '--exec', '/opt/dsh', 'web',
+    ])
   })
 })
 
@@ -98,6 +116,11 @@ describe('WSL path contract', () => {
       USERPROFILE: 'C:\\Users\\leo',
     })).toBe('C:\\Users\\leo')
     expect(hostCwdForWslSpawn('\\\\wsl$\\Ubuntu\\home\\leo\\repo', {})).toBe('C:\\')
+  })
+
+  it('classifies Windows-mounted and WSL-native workspaces for doctor guidance', () => {
+    expect(windowsWorkspaceKind('C:\\repo')).toBe('windows-mounted')
+    expect(windowsWorkspaceKind('\\\\wsl.localhost\\Ubuntu\\home\\leo\\repo')).toBe('wsl-native')
   })
 })
 
