@@ -155,6 +155,18 @@ export interface NativeExecutionRecord {
   error?: Readonly<{ name?: string; code?: string }>
 }
 
+/**
+ * Causal selector over the bounded evidence window. Supplying multiple fields
+ * is conjunctive. At least one field is required; use {@link NativeExecutionEvidenceService.ledger}
+ * when the caller intentionally wants the whole current window.
+ */
+export interface NativeEvidenceQuery {
+  sessionId?: string
+  callId?: string
+  rootCallId?: string
+  toolName?: string
+}
+
 interface NativeExecutionStartSnapshot {
   startedAt: number
   commandHash: string
@@ -184,13 +196,49 @@ function resizeLedgerState(state: NativeEvidenceLedgerState, maxEntries: number)
   }
 }
 
+/**
+ * Freeze only Orcana-owned snapshot data. Records are built entirely from
+ * detached primitives/arrays/plain objects, so recursively freezing them cannot
+ * mutate DSH's original ShellRunResult, SandboxReceipt, spec, or process handle.
+ */
+function freezeEvidenceValue<T>(value: T, seen: WeakSet<object> = new WeakSet()): T {
+  if (typeof value !== 'object' || value === null) return value
+  const objectValue = value as object
+  if (seen.has(objectValue) || Object.isFrozen(objectValue)) return value
+  seen.add(objectValue)
+  for (const nested of Object.values(objectValue as Record<string, unknown>)) {
+    freezeEvidenceValue(nested, seen)
+  }
+  return Object.freeze(value) as T
+}
+
 function pushRecord(state: NativeEvidenceLedgerState, record: NativeExecutionRecord): void {
+  const frozen = freezeEvidenceValue(record)
   state.total += 1
   if (state.records.length >= state.maxEntries) {
     state.records.shift()
     state.dropped += 1
   }
-  state.records.push(record)
+  state.records.push(frozen)
+}
+
+function assertEvidenceQuery(query: NativeEvidenceQuery): void {
+  if (query.sessionId === undefined
+    && query.callId === undefined
+    && query.rootCallId === undefined
+    && query.toolName === undefined) {
+    throw new Error('native evidence query requires at least one causal field')
+  }
+}
+
+function matchesEvidenceQuery(record: NativeExecutionRecord, query: NativeEvidenceQuery): boolean {
+  const correlation = record.correlation
+  if (correlation === undefined) return false
+  if (query.sessionId !== undefined && correlation.sessionId !== query.sessionId) return false
+  if (query.callId !== undefined && correlation.callId !== query.callId) return false
+  if (query.rootCallId !== undefined && correlation.rootCallId !== query.rootCallId) return false
+  if (query.toolName !== undefined && correlation.toolName !== query.toolName) return false
+  return true
 }
 
 export class NativeExecutionEvidenceService extends Service {
@@ -198,8 +246,30 @@ export class NativeExecutionEvidenceService extends Service {
     super(ctx, 'orcanaLinuxEvidence')
   }
 
+  /** Runtime-frozen window copy; records and every nested evidence object are frozen at insertion. */
   get ledger(): readonly NativeExecutionRecord[] {
-    return [...this.state.records]
+    return Object.freeze([...this.state.records])
+  }
+
+  /**
+   * Find every record in the current bounded window matching the supplied
+   * causal identity. This is intentionally a bounded scan rather than a second
+   * mutable index: the default window is 1024 and the ledger remains the sole
+   * source of truth.
+   */
+  find(query: NativeEvidenceQuery): readonly NativeExecutionRecord[] {
+    assertEvidenceQuery(query)
+    return Object.freeze(this.state.records.filter(record => matchesEvidenceQuery(record, query)))
+  }
+
+  /** Latest record in the bounded window matching one causal selector. */
+  latest(query: NativeEvidenceQuery): NativeExecutionRecord | undefined {
+    assertEvidenceQuery(query)
+    for (let i = this.state.records.length - 1; i >= 0; i -= 1) {
+      const record = this.state.records[i]!
+      if (matchesEvidenceQuery(record, query)) return record
+    }
+    return undefined
   }
 
   get totalRecorded(): number {
