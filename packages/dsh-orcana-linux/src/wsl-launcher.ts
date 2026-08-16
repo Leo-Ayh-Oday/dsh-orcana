@@ -24,33 +24,16 @@ function localPackageSpec(argument: string): { prefix: string; path: string } | 
   return { prefix, path }
 }
 
-function pluginCommandIndex(args: readonly string[]): number | undefined {
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!
-    if (arg === '--') return undefined
-    if (arg === '--profile' || arg === '--patch') {
-      i += 1
-      continue
-    }
-    if (arg.startsWith('--profile=') || arg.startsWith('--patch=')) continue
-    if (arg === '--dump-config' || arg === '--dump-default-config') continue
-    return arg === 'plugin' ? i : undefined
-  }
-  return undefined
-}
-
-function pluginPnpmArgsStart(args: readonly string[], pluginIndex: number): number | undefined {
-  let i = pluginIndex + 1
-  const profileArg = args[i]
+function pluginPnpmArgsStart(args: readonly string[]): number | undefined {
+  // DSH itself rejects parent --profile/--patch/--dump-* before `plugin`, so
+  // only the exact subcommand shape is eligible for launcher rewriting.
+  if (args[0] !== 'plugin') return undefined
+  const profileArg = args[1]
   if (profileArg === '--profile') {
-    if (args[i + 1] === undefined) return undefined
-    i += 2
-  } else if (profileArg?.startsWith('--profile=')) {
-    i += 1
-  } else {
-    return undefined
+    return args[2] === undefined ? undefined : 3
   }
-  return i
+  if (profileArg?.startsWith('--profile=')) return 2
+  return undefined
 }
 
 /**
@@ -79,9 +62,7 @@ export function translateDshPluginPathSpecsForWsl(
   distro?: string,
   run: typeof spawnSync = spawnSync,
 ): TranslatedPluginArgs {
-  const pluginIndex = pluginCommandIndex(args)
-  if (pluginIndex === undefined) return { args: [...args], ...(distro === undefined ? {} : { distro }) }
-  const start = pluginPnpmArgsStart(args, pluginIndex)
+  const start = pluginPnpmArgsStart(args)
   if (start === undefined) return { args: [...args], ...(distro === undefined ? {} : { distro }) }
 
   const translated = [...args]
