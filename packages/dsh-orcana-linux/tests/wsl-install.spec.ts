@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES,
   DEFAULT_WSL_PNPM_PACKAGE,
+  INSTALL_NODE_CONTRACT_SCRIPT,
   INSTALL_RESOLVER_SCRIPT,
   buildWslInstallArgs,
   dshCompanionPackage,
@@ -61,19 +62,22 @@ const INSTALL_ARGS = [
 ] as const
 
 describe('WSL plugin-install toolchain', () => {
-  it('pins the pnpm version and Orcana implementation closure', () => {
+  it('pins the pnpm version, Node contract and Orcana implementation closure', () => {
     expect(DEFAULT_WSL_PNPM_PACKAGE).toBe('pnpm@11.7.0')
+    expect(INSTALL_NODE_CONTRACT_SCRIPT).toContain('major === 22 && minor >= 19')
+    expect(INSTALL_NODE_CONTRACT_SCRIPT).toContain('major >= 24')
     expect(DEFAULT_ORCANA_PROFILE_RUNTIME_PACKAGES).toEqual(ORCANA_RUNTIME_PACKAGES)
   })
 
-  it('derives official DSH companion bundles from the selected CLI package', () => {
+  it('derives official DSH companion bundles only from an exact selected CLI package', () => {
     expect(dshHeadlessPackage(DSH_PACKAGE)).toBe(HEADLESS_PACKAGE)
     expect(dshHeadlessPackage('@deepseek-ai/dsh@0.1.0-rc.6')).toBe('@deepseek-ai/dsh-headless@0.1.0-rc.6')
-    expect(dshCompanionPackage('@deepseek-ai/dsh', '@deepseek-ai/dsh-headless')).toBe('@deepseek-ai/dsh-headless')
-    expect(() => dshHeadlessPackage('file:../dsh')).toThrow(/cannot derive/)
+    expect(() => dshCompanionPackage('@deepseek-ai/dsh', '@deepseek-ai/dsh-headless')).toThrow(/exact version/)
+    expect(() => dshHeadlessPackage('file:../dsh')).toThrow(/exact version/)
   })
 
-  it('uses exact local dsh+pnpm or an exact npx bootstrap', () => {
+  it('checks Node before using exact local dsh+pnpm or an exact npx bootstrap', () => {
+    expect(INSTALL_RESOLVER_SCRIPT).toContain('node -e "$node_contract"')
     expect(INSTALL_RESOLVER_SCRIPT).toContain('dsh --version')
     expect(INSTALL_RESOLVER_SCRIPT).toContain('pnpm --version')
     expect(INSTALL_RESOLVER_SCRIPT).toContain('node -e "$version_contract" "$dsh_package" "$dsh_version"')
@@ -96,10 +100,10 @@ describe('WSL plugin-install toolchain', () => {
       VERSION_CONTRACT,
     )
 
-    expect(args.slice(0, 9)).toEqual([
+    expect(args.slice(0, 10)).toEqual([
       '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
       DSH_PACKAGE, DEFAULT_WSL_PNPM_PACKAGE, VERSION_CONTRACT,
-      HEADLESS_PACKAGE, ORCANA_RUNTIME_PACKAGES.join(' '), 'plugin',
+      INSTALL_NODE_CONTRACT_SCRIPT, HEADLESS_PACKAGE, ORCANA_RUNTIME_PACKAGES.join(' '), 'plugin',
     ])
     expect(INSTALL_RESOLVER_SCRIPT).not.toContain(packageName)
     expect(args.at(-1)).toBe(packageName)
@@ -108,13 +112,28 @@ describe('WSL plugin-install toolchain', () => {
   it.skipIf(process.platform === 'win32')('rejects accidental use with a non-plugin-add internal argv shape', () => {
     const result = spawnSync('/bin/sh', [
       '-c', INSTALL_RESOLVER_SCRIPT, 'dsh-orcana-install',
-      DSH_PACKAGE, DEFAULT_WSL_PNPM_PACKAGE, VERSION_CONTRACT, HEADLESS_PACKAGE,
-      ORCANA_RUNTIME_PACKAGES.join(' '),
+      DSH_PACKAGE, DEFAULT_WSL_PNPM_PACKAGE, VERSION_CONTRACT, INSTALL_NODE_CONTRACT_SCRIPT,
+      HEADLESS_PACKAGE, ORCANA_RUNTIME_PACKAGES.join(' '),
       'web',
     ], { encoding: 'utf8' })
 
     expect(result.status).toBe(64)
     expect(result.stderr).toContain('internal install argv does not match')
+  })
+
+  it.skipIf(process.platform === 'win32')('fails before DSH/pnpm work when the Linux Node contract is unsupported', () => {
+    withFakeLocalToolchain((env, log) => {
+      const result = spawnSync('/bin/sh', nativeInstallShellArgs(
+        INSTALL_ARGS,
+        DSH_PACKAGE,
+        VERSION_CONTRACT,
+        DEFAULT_WSL_PNPM_PACKAGE,
+        'process.exit(1)',
+      ), { env, encoding: 'utf8' })
+      expect(result.status).toBe(126)
+      expect(result.stderr).toContain('unsupported Node')
+      expect(() => readFileSync(log, 'utf8')).toThrow()
+    })
   })
 
   it.skipIf(process.platform === 'win32')('runs a boot-free composition smoke after a successful local install', () => {
@@ -181,8 +200,9 @@ describe('WSL plugin-install toolchain', () => {
     expect(args[7]).toBe(INSTALL_RESOLVER_SCRIPT)
     expect(args[9]).toBe(DSH_PACKAGE)
     expect(args[10]).toBe(DEFAULT_WSL_PNPM_PACKAGE)
-    expect(args[12]).toBe(HEADLESS_PACKAGE)
-    expect(args[13]).toBe(ORCANA_RUNTIME_PACKAGES.join(' '))
+    expect(args[12]).toBe(INSTALL_NODE_CONTRACT_SCRIPT)
+    expect(args[13]).toBe(HEADLESS_PACKAGE)
+    expect(args[14]).toBe(ORCANA_RUNTIME_PACKAGES.join(' '))
     expect(args.at(-1)).toBe('@leooday/dsh-bundle@0.1.0-rc.1')
   })
 })
