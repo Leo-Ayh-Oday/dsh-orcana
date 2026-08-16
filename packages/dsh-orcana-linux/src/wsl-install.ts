@@ -5,12 +5,24 @@ export const DEFAULT_WSL_PNPM_PACKAGE = 'pnpm@11.7.0'
  * otherwise ask npx for both pinned packages in one ephemeral execution env.
  * The resolver uses a non-login /bin/sh so WSL's inherited Linux environment
  * remains authoritative and no user shell startup file mutates execution.
+ *
+ * This resolver is intentionally dedicated to `--wsl-install`: it validates
+ * the expected `dsh plugin --profile <name> add ...` shape and injects pnpm's
+ * `--save-exact`, so both the immediate resolution AND the persisted DSH
+ * profile manifest stay pinned to this Orcana release.
  */
 export const INSTALL_RESOLVER_SCRIPT = [
   'dsh_package=$1',
   'pnpm_package=$2',
   'version_contract=$3',
   'shift 3',
+  'if [ "$1" != "plugin" ] || [ "$2" != "--profile" ] || [ -z "$3" ] || [ "$4" != "add" ]; then',
+  '  printf "%s\\n" "dsh-orcana: internal install argv does not match plugin --profile <name> add" >&2',
+  '  exit 64',
+  'fi',
+  'profile=$3',
+  'shift 4',
+  'set -- plugin --profile "$profile" add --save-exact "$@"',
   'if command -v dsh >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then',
   '  dsh_version=$(dsh --version 2>/dev/null || true)',
   '  pnpm_version=$(pnpm --version 2>/dev/null || true)',
