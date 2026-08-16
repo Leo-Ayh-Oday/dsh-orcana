@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { reportWslManagedConfigDoctor } from './wsl-config-doctor.js'
 import { augmentWslHostEnvironment } from './wsl-host-env.js'
 import { runWslParityDoctor } from './wsl-parity-doctor.js'
 import { reportWslLoopbackProxyDoctor } from './wsl-proxy-doctor.js'
@@ -184,8 +185,11 @@ export async function launchDshOrcana(
     const proxyStatus = reportWslLoopbackProxyDoctor(effectiveEnv, selectedDistro)
     const mapped = windowsPathToWsl(cwd, selectedDistro)
     const workspaceStatus = runWslWorkspaceDoctor(mapped.linuxPath, effectiveEnv, selectedDistro)
+    const configStatus = reportWslManagedConfigDoctor(effectiveEnv, selectedDistro, cwd)
     runWslParityDoctor(mapped.linuxPath, effectiveEnv, selectedDistro)
-    return proxyStatus !== 0 ? proxyStatus : workspaceStatus
+    if (proxyStatus !== 0) return proxyStatus
+    if (workspaceStatus !== 0) return workspaceStatus
+    return configStatus
   }
 
   if (parsed.mode === 'install') {
