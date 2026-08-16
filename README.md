@@ -10,10 +10,22 @@ Runtime governance for stronger coding-agent execution.
 - generation-bound verification evidence (Evidence Freshness)
 - evidence-aware completion (Completion Claim Guard)
 - task-profile capability disclosure (Capability Router)
-- native Linux hardening + a Windows → WSL single-execution-world bridge
+- DSH-native Linux execution evidence
+- Windows → WSL single-execution-world launcher
 
-The v0.1 governor scope remains frozen by [PLAN-v0.1.md](PLAN-v0.1.md); the
-Linux/WSL execution layer evolves independently and is now targeting v0.4.
+The v0.1 governor scope remains frozen by [PLAN-v0.1.md](PLAN-v0.1.md). The
+Linux/WSL line evolves independently around a strict authority split:
+
+```text
+DSH                         Orcana
+├ sandbox-policy            ├ Progress / Completion governance
+├ sandbox-local             ├ Native execution evidence
+├ cgroup / prlimit          └ Windows → WSL execution adapter
+└ SandboxReceipt
+      │
+      └──────────────► Orcana consumes facts; it does not duplicate enforcement
+```
+
 See [docs/architecture.md](docs/architecture.md),
 [docs/methodology.md](docs/methodology.md), and the
 [Linux/WSL package README](packages/dsh-orcana-linux/README.md).
@@ -22,40 +34,41 @@ See [docs/architecture.md](docs/architecture.md),
 
 | Path | Role |
 |---|---|
-| `packages/governor-core` | Framework-agnostic progress-fact engine (zero Cordis) |
-| `packages/dsh-governor` | DSH adapter plugin (function plugin, mounts DSH extension points) |
-| `packages/dsh-bundle` | Profile bundle (`dsh.bundle.patch` contract) |
-| `packages/dsh-orcana-linux` | Linux native hardening + the cross-platform `dsh-orcana` launcher |
-| `packages/dsh-orcana-linux-bundle` | Profile bundle for the Linux edition (`dsh.bundle.patch` contract) |
-| `benchmark/` | A/B harness: task manifests, patches, runner, reports |
-| `scripts/` | dev-install / smoke / bench-run |
+| `packages/governor-core` | Framework-agnostic progress-fact engine |
+| `packages/dsh-governor` | DSH governance adapter |
+| `packages/dsh-bundle` | Governor profile bundle |
+| `packages/dsh-orcana-linux` | DSH-native evidence adapters + cross-platform `dsh-orcana` launcher; legacy root API retained temporarily |
+| `packages/dsh-orcana-linux-bundle` | Neutral profile bundle that mounts `@leooday/dsh-orcana-linux/native-evidence` |
+| `benchmark/` | A/B harness |
+| `scripts/` | install / smoke / release checks |
 
 ## Install
 
-The npm scope is `@leooday`. DSH profiles use the official plugin command:
+The npm scope is `@leooday`:
 
 ```sh
-# Everything in one profile (governor + Linux hardening):
-dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle
-# or separate profiles:
-dsh plugin --profile orcana add @leooday/dsh-bundle
-dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
+dsh plugin --profile orcana add \
+  @leooday/dsh-bundle \
+  @leooday/dsh-orcana-linux-bundle
+
 dsh --profile orcana "<task>"
 ```
 
-`dsh plugin add` installs the bundle and activates it as a profile layer. Bundle
-defaults are NEUTRAL: installation alone does not silently enable stronger
-resource or network restrictions; enforcement is configured explicitly through
-the profile row or a later `--patch` overlay.
+Installation is **policy-neutral**. Orcana observes execution facts; native
+resource/network enforcement is configured on DSH's existing `sandbox-policy`
+row, whose `SandboxReceipt` becomes Orcana's evidence source.
 
-Programmatic implementation packages use the same scope, including
-`@leooday/dsh-governor`, `@leooday/governor-core`, and
-`@leooday/dsh-orcana-linux`.
+Programmatic evidence adapter:
+
+```ts
+import nativeEvidence from '@leooday/dsh-orcana-linux/native-evidence'
+ctx.plugin(nativeEvidence)
+```
 
 ## Windows / WSL: one execution entrypoint
 
-v0.4 does **not** keep DSH on Windows and jump individual tool calls into WSL.
-Windows is only the launch surface:
+The Windows design does **not** keep DSH on Windows and forward individual tool
+calls into WSL. Windows is only the launch surface:
 
 ```text
 Windows Terminal / PowerShell
@@ -64,77 +77,65 @@ Windows Terminal / PowerShell
         ↓
       wsl.exe
         ↓
-whole DSH runtime enters WSL once
-        ↓
-DSH + Orcana + sandbox + subprocess + bash/PTC/LSP
+whole DSH + Orcana runtime enters WSL
         ↓
 one native Linux execution world
 ```
 
-This keeps the Agent/preset/task layer free of separate Windows/Linux execution
-branches. cwd, process, shell, sandbox, background work, terminal handling and
-interactive Ctrl+C remain on WSL's native execution path rather than being
-reimplemented by the bridge.
-
-After the v0.4 package is published, install the launcher once on Windows:
+Install the launcher on Windows:
 
 ```powershell
 npm install -g @leooday/dsh-orcana-linux@^0.4.0
 ```
 
-Inspect the target WSL world:
+Then:
 
 ```powershell
 dsh-orcana --wsl-doctor
-```
-
-The bridge prefers an existing `dsh`. If none is installed globally, it falls
-back to the DSH npm package version pinned for this bridge release
-(`@deepseek-ai/dsh@0.1.0-rc.5` for v0.4.0) instead of silently following
-`latest`. Override intentionally with `ORCANA_WSL_DSH_PACKAGE` when validating
-a newer DSH release.
-
-Install the Orcana profile from Windows:
-
-```powershell
 dsh-orcana --wsl-install
+dsh-orcana "fix the failing tests"
 ```
 
-Then Windows and Linux use the same command:
+The bridge preserves cwd/argv boundaries, keeps Windows and WSL DSH homes
+separate, selectively forwards bootstrap/runtime environment through WSLENV,
+and pins its DSH/pnpm compatibility contract. `--wsl-install` verifies profile
+composition plus the **actual runtime module/peer chain**, including
+`@leooday/dsh-orcana-linux/native-evidence`.
 
-```sh
-dsh-orcana "<task>"
-```
+`--wsl-doctor` also checks web localhost relay, proxy reachability, workspace
+filesystem semantics, Git identity/credential capability, TTY/UTF-8/path
+parity, and DrvFS metadata warnings without silently mutating host or WSL
+configuration.
 
-Important boundaries: Windows `DSH_HOME` is not shared with WSL; Windows cwd is
-translated by the selected distro's own `wslpath`; DSH `--` and task argv are
-preserved; model credentials and common provider base URLs cross through
-one-way `WSLENV` entries. Windows filesystem projects work directly, while
-WSL-native project storage is the fast path for Linux-heavy Git/npm/build I/O.
-Full details are in
+Full contracts are documented in
 [`packages/dsh-orcana-linux/README.md`](packages/dsh-orcana-linux/README.md).
 
-For interactive development from a checkout:
+## Current authority boundary
 
-```sh
-pnpm install && pnpm build
-bash scripts/dev-install.sh
-bash scripts/install-orcana-linux.sh
-dsh --profile orcana "<task>"
-```
+- **DSH owns native enforcement.** Current DSH has official
+  `resourceLimits`/`network` policy fields, cgroup-v2/prlimit mechanisms,
+  process lifecycle ownership, cleanup and `SandboxReceipt`.
+- **Orcana owns governance/evidence.** The default Linux bundle observes
+  foreground/background `ctx.shell` execution and records DSH's real receipt.
+- **The old package-root argv-hardening plugin is compatibility-only.** The
+  current bundle does not mount it.
+- **Custom persistent-terminal/PTTY profiles are not claimed as receipt-parity
+  surfaces yet.** Orcana's own headless/web product profiles do not mount that
+  capability by default.
 
 ## Known Limitations
 
-- Workspace generation observes mutation-typed tool calls only; shell-internal
-  mutations (`sed -i`, etc.) are still invisible until git-probe receipts land.
-- The governor itself does not directly kill/cancel an agent; its strongest
-  action remains bounded steering.
-- Interactive Ctrl+C intentionally stays under `wsl.exe`/Linux terminal
-  semantics. A separate programmatic cancel/timeout control API for Orcana is
-  not part of this bridge yet; it should be implemented at the execution-control
-  seam rather than by changing terminal process/session semantics.
+- Workspace generation still observes mutation-typed tool calls; shell-internal
+  mutations need the future git-probe receipt path.
+- The governor does not directly own agent kill/cancel authority; steering is
+  bounded.
+- Interactive Ctrl+C intentionally remains on native `wsl.exe` / Linux terminal
+  semantics. A future programmatic timeout/cancel API belongs at the execution
+  control plane, not in a fake Windows signal shim.
+- `pnpm-lock.yaml` still requires genuine regeneration with the repository-pinned
+  pnpm in a registry-connected environment; the release contract blocks hand-
+  fabricated rc.5 snapshots.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) — PRs carry exactly one kind/* and at
-least one area/* label, matching the upstream contribution convention.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
