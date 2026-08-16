@@ -53,17 +53,19 @@ describe('@leooday/dsh-orcana-linux package contract', () => {
     })
   })
 
-  it('pins the DSH/Cordis ABI while keeping Windows launcher peers optional', () => {
+  it('pins DSH/Cordis shell + ToolRuntime correlation ABI while keeping Windows launcher peers optional', () => {
     expect(manifest.engines?.node).toBe('^22.19.0 || >=24.0.0')
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/cordis': '4.0.1',
       '@deepseek-ai/dsh-sandbox': '0.1.0-rc.5',
       '@deepseek-ai/dsh-shell': '0.1.0-rc.5',
+      '@deepseek-ai/dsh-tools': '0.1.0-rc.5',
     })
     expect(manifest.peerDependenciesMeta).toEqual({
       '@deepseek-ai/cordis': { optional: true },
       '@deepseek-ai/dsh-sandbox': { optional: true },
       '@deepseek-ai/dsh-shell': { optional: true },
+      '@deepseek-ai/dsh-tools': { optional: true },
     })
   })
 
