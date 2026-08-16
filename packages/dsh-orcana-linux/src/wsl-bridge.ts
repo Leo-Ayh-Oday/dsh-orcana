@@ -601,7 +601,7 @@ export async function launchWslBridge(
   }
 
   const dshArgs = translateDshPathArgsForWsl(baseDshArgs, distro)
-  const args = buildWslDshArgs(mapped.linuxCwd, dshArgs, distro, dshCommand, dshPackage)
+  const args = buildWslDshArgs(mapped.linuxPath, dshArgs, distro, dshCommand, dshPackage)
   return await spawnAndWait('wsl.exe', args, {
     env: childEnv,
     cwd: hostCwd,
