@@ -60,8 +60,8 @@
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-sandbox": ">=0.1.0-rc.5 <0.2.0"
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-sandbox": "0.1.0-rc.5"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -72,13 +72,15 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-bash-local": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-bash-sandbox": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-sandbox-local": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-sandbox-policy": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-shell": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-subprocess": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-subprocess-local": "0.1.0-rc.6",
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-sandbox": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-bash-local": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-bash-sandbox": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-sandbox-local": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-sandbox-policy": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-shell": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-subprocess": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.0-rc.5",
     "@types/node": "^24.0.0",
     "typescript": "^5.7.0"
   }
