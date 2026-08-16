@@ -98,6 +98,8 @@ const governorCore = readJson('packages/governor-core/package.json')
 const bundle = readJson('packages/dsh-bundle/package.json')
 const linux = readJson('packages/dsh-orcana-linux/package.json')
 const linuxBundle = readJson('packages/dsh-orcana-linux-bundle/package.json')
+const linuxBundlePatch = readFileSync(resolve(root, 'packages/dsh-orcana-linux-bundle/cordis.patch.yml'), 'utf8')
+const profileVerifier = readFileSync(resolve(root, 'packages/dsh-orcana-linux/src/wsl-profile.ts'), 'utf8')
 const lock = readFileSync(resolve(root, 'pnpm-lock.yaml'), 'utf8')
 
 if (rootManifest.packageManager !== 'pnpm@11.7.0') {
@@ -112,6 +114,34 @@ for (const manifest of publicPackages) {
   if (manifest.publishConfig?.access !== 'public') {
     fail(`${manifest.name}: publishConfig.access must be public`)
   }
+}
+
+// Product architecture gate: DSH owns native enforcement. The default bundle
+// must observe DSH receipts and must never regress to the legacy argv-hardening
+// package root.
+const nativeEvidenceRow = "name: '@leooday/dsh-orcana-linux/native-evidence'"
+const legacyRootRow = "name: '@leooday/dsh-orcana-linux'"
+if (!linuxBundlePatch.includes(nativeEvidenceRow)) {
+  fail('Linux bundle does not mount @leooday/dsh-orcana-linux/native-evidence')
+}
+if (linuxBundlePatch.includes(legacyRootRow)) {
+  fail('Linux bundle regressed to the legacy argv-hardening package root')
+}
+if (!linuxBundlePatch.includes('config: {}')) {
+  fail('Linux bundle must remain policy-neutral; expected config: {} on the evidence row')
+}
+
+const nativeExport = linux.exports?.['./native-evidence']
+if (typeof nativeExport !== 'object' || nativeExport === null
+  || nativeExport.default !== './lib/native-evidence.js'
+  || nativeExport.types !== './lib/types/native-evidence.d.ts') {
+  fail('@leooday/dsh-orcana-linux must publish the ./native-evidence JS/types export pair')
+}
+if (linux.peerDependencies?.['@deepseek-ai/dsh-shell'] !== '0.1.0-rc.5') {
+  fail(`Linux native-evidence ABI must pin @deepseek-ai/dsh-shell@0.1.0-rc.5, found ${JSON.stringify(linux.peerDependencies?.['@deepseek-ai/dsh-shell'])}`)
+}
+if (!profileVerifier.includes("'@leooday/dsh-orcana-linux/native-evidence'")) {
+  fail('WSL profile verifier does not probe the actual native-evidence runtime subpath')
 }
 
 if (lock.includes('@orcana/')) {
@@ -134,6 +164,7 @@ for (const packageName of [
 for (const [packageName, expected] of [
   ['@deepseek-ai/cordis', '4.0.1'],
   ['@deepseek-ai/dsh-sandbox', '0.1.0-rc.5'],
+  ['@deepseek-ai/dsh-shell', '0.1.0-rc.5'],
 ]) {
   requireSpecifierInAnySection(
     lock,
