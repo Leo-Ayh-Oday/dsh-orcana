@@ -2,47 +2,36 @@ import { randomUUID } from 'node:crypto'
 
 export type WslBridgeSignal = 'INT' | 'TERM' | 'KILL'
 
-const SESSION_SCRIPT = [
-  'state=$1',
-  'package_spec=$2',
-  'dsh_command=$3',
-  'shift 3',
-  'printf "%s\\n" "$$" > "$state" || exit 73',
-  'if [ -n "$dsh_command" ]; then exec "$dsh_command" "$@"; fi',
-  'if command -v dsh >/dev/null 2>&1; then exec dsh "$@"; fi',
-  'if command -v npx >/dev/null 2>&1; then exec npx --yes "$package_spec" "$@"; fi',
-  'printf "%s\\n" "dsh-orcana: neither dsh nor npx is available in this Linux execution world" >&2',
-  'exit 127',
-].join('\n')
-
-const SUPERVISOR_SCRIPT = [
-  'run_id=$1',
-  'package_spec=$2',
-  'dsh_command=$3',
-  'session_script=$4',
-  'shift 4',
-  'case "$run_id" in ""|*[!a-f0-9]*) printf "%s\\n" "dsh-orcana: invalid bridge run id" >&2; exit 64;; esac',
-  'command -v setsid >/dev/null 2>&1 || { printf "%s\\n" "dsh-orcana: setsid is required for Windows/WSL process-session control" >&2; exit 126; }',
-  'command -v pkill >/dev/null 2>&1 || { printf "%s\\n" "dsh-orcana: pkill is required for Windows/WSL process-session control" >&2; exit 126; }',
-  'uid=$(id -u) || exit 71',
-  'runtime_root="/tmp/dsh-orcana-bridge-$uid"',
-  'umask 077',
-  'mkdir -p "$runtime_root" || exit 73',
-  'state="$runtime_root/$run_id.sid"',
-  'cleanup() { rm -f "$state"; }',
-  'forward() { sig=$1; [ -s "$state" ] || return 0; IFS= read -r sid < "$state" || return 0; case "$sid" in ""|*[!0-9]*) return 0;; esac; pkill "-$sig" -s "$sid" 2>/dev/null || true; }',
-  'trap "forward HUP" HUP',
-  'trap "forward INT" INT',
-  'trap "forward TERM" TERM',
-  'trap cleanup 0',
-  'ctty_arg=',
-  '[ -t 0 ] && ctty_arg=--ctty',
-  'setsid --wait $ctty_arg /bin/sh -c "$session_script" dsh-orcana-session "$state" "$package_spec" "$dsh_command" "$@" &',
-  'launcher=$!',
-  'status=0',
-  'while :; do wait "$launcher"; status=$?; kill -0 "$launcher" 2>/dev/null || break; done',
-  'exit "$status"',
-].join('\n')
+const SUPERVISOR_NODE_SCRIPT = [
+  'const { spawn, spawnSync } = require("node:child_process")',
+  'const { chmodSync, mkdirSync, rmSync, writeFileSync } = require("node:fs")',
+  'const [runId, packageSpec, dshCommand, resolverScript, ...dshArgs] = process.argv.slice(1)',
+  'if (!runId || !/^[a-f0-9]+$/.test(runId)) { console.error("dsh-orcana: invalid bridge run id"); process.exit(64) }',
+  'const [major, minor] = process.versions.node.split(".").map(Number)',
+  'if (!((major === 22 && minor >= 19) || major >= 24)) { console.error(`dsh-orcana: unsupported WSL Node ${process.versions.node}; need ^22.19.0 || >=24.0.0`); process.exit(126) }',
+  'const pkillProbe = spawnSync("pkill", ["--version"], { stdio: "ignore" })',
+  'if (pkillProbe.error && pkillProbe.error.code === "ENOENT") { console.error("dsh-orcana: pkill is required for Windows/WSL session control"); process.exit(126) }',
+  'const uid = typeof process.getuid === "function" ? process.getuid() : undefined',
+  'if (uid === undefined) { console.error("dsh-orcana: Linux uid is unavailable inside WSL"); process.exit(71) }',
+  'const runtimeRoot = `/tmp/dsh-orcana-bridge-${uid}`',
+  'mkdirSync(runtimeRoot, { recursive: true, mode: 0o700 })',
+  'try { chmodSync(runtimeRoot, 0o700) } catch {}',
+  'const state = `${runtimeRoot}/${runId}.sid`',
+  'const command = dshCommand || "/bin/sh"',
+  'const args = dshCommand ? dshArgs : ["-lc", resolverScript, "dsh-orcana", packageSpec, ...dshArgs]',
+  'const child = spawn(command, args, { detached: true, stdio: "inherit", env: process.env })',
+  'writeFileSync(state, `${child.pid}\\n`, { mode: 0o600 })',
+  'let finished = false',
+  'const cleanup = () => { try { rmSync(state, { force: true }) } catch {} }',
+  'const forward = (sig) => { if (child.pid === undefined) return; spawnSync("pkill", [`-${sig}`, "-s", String(child.pid)], { stdio: "ignore" }) }',
+  'const onInt = () => forward("INT")',
+  'const onTerm = () => forward("TERM")',
+  'const onHup = () => forward("HUP")',
+  'process.on("SIGINT", onInt); process.on("SIGTERM", onTerm); process.on("SIGHUP", onHup)',
+  'const finish = (code) => { if (finished) return; finished = true; cleanup(); process.off("SIGINT", onInt); process.off("SIGTERM", onTerm); process.off("SIGHUP", onHup); process.exitCode = code }',
+  'child.once("error", (error) => { console.error(error && error.message ? error.message : String(error)); finish(127) })',
+  'child.once("close", (code, signal) => { if (code !== null) return finish(code); if (signal === "SIGINT") return finish(130); if (signal === "SIGTERM") return finish(143); return finish(128) })',
+].join(';')
 
 const CONTROL_SCRIPT = [
   'run_id=$1',
@@ -68,27 +57,27 @@ export function createWslBridgeRunId(): string {
 }
 
 /**
- * Build one supervised Windows→WSL DSH launch. User-controlled task arguments
- * are positional parameters only; the fixed supervisor/session scripts are
- * never constructed from task text.
+ * Build one supervised Windows→WSL DSH launch. The fixed Node supervisor owns
+ * state/cleanup while its detached child becomes the Linux session leader.
+ * User-controlled task arguments remain positional values only.
  */
 export function buildWslSupervisedDshArgs(
   linuxCwd: string,
   runId: string,
   dshArgs: readonly string[],
   dshPackage: string,
+  resolverScript: string,
   distro?: string,
   dshCommand?: string,
 ): string[] {
   return [
     ...distroPrefix(distro),
     '--cd', linuxCwd,
-    '--exec', '/bin/sh', '-lc', SUPERVISOR_SCRIPT,
-    'dsh-orcana-supervisor',
+    '--exec', 'node', '-e', SUPERVISOR_NODE_SCRIPT,
     runId,
     dshPackage,
     dshCommand ?? '',
-    SESSION_SCRIPT,
+    resolverScript,
     ...dshArgs,
   ]
 }
