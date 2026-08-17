@@ -70,7 +70,7 @@ npm scope 为 `@leooday`。完整 Orcana Profile 使用一条命令安装：
 dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle @deepseek-ai/dsh-headless@next
 ```
 
-这里明确使用 `@deepseek-ai/dsh-headless@next`，作为 R5 已验证的安装路径。
+R5 将 `@deepseek-ai/dsh-headless@next` 固定为 release-candidate 安装 selector；发布前必须由干净环境门禁验证这组精确组合。
 
 然后运行：
 
