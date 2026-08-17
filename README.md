@@ -17,13 +17,17 @@ The v0.1 governor scope remains frozen by [PLAN-v0.1.md](PLAN-v0.1.md). The
 Linux/WSL line evolves independently around a strict authority split:
 
 ```text
-DSH                         Orcana
+DSH rc.6                    Orcana
 ├ sandbox-policy            ├ Progress / Completion governance
-├ sandbox-local             ├ Native execution evidence
-├ cgroup / prlimit          └ Windows → WSL execution adapter
-└ SandboxReceipt
-      │
-      └──────────────► Orcana consumes facts; it does not duplicate enforcement
+│  └ mode/workspaceRoot     ├ Native shell evidence
+├ sandbox-local             └ Windows → WSL execution adapter
+└ ctx.shell
+   └ sandbox facts
+      { mode, denied,
+        enforcement?,
+        runnerFailed? }
+             │
+             └──────────► Orcana observes facts; it does not duplicate enforcement
 ```
 
 See [docs/architecture.md](docs/architecture.md),
@@ -37,7 +41,7 @@ See [docs/architecture.md](docs/architecture.md),
 | `packages/governor-core` | Framework-agnostic progress-fact engine |
 | `packages/dsh-governor` | DSH governance adapter |
 | `packages/dsh-bundle` | Governor profile bundle |
-| `packages/dsh-orcana-linux` | DSH-native evidence adapters + cross-platform `dsh-orcana` launcher; legacy root API retained temporarily |
+| `packages/dsh-orcana-linux` | DSH-native evidence adapter + cross-platform `dsh-orcana` launcher; legacy root API retained temporarily |
 | `packages/dsh-orcana-linux-bundle` | Neutral profile bundle that mounts `@leooday/dsh-orcana-linux/native-evidence` |
 | `benchmark/` | A/B harness |
 | `scripts/` | install / smoke / release checks |
@@ -67,7 +71,7 @@ The npm scope is `@leooday`. Install the complete Orcana profile in one command:
 dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle @deepseek-ai/dsh-headless@next
 ```
 
-`@deepseek-ai/dsh-headless@next` is intentional: the current `latest` line has a broken dependency chain.
+`@deepseek-ai/dsh-headless@next` is intentional for the validated R5 install path.
 
 Then run:
 
@@ -75,9 +79,9 @@ Then run:
 dsh --profile orcana "<task>"
 ```
 
-Installation is **policy-neutral**. Orcana observes execution facts; native
-resource/network enforcement is configured on DSH's existing `sandbox-policy`
-row, whose `SandboxReceipt` becomes Orcana's evidence source.
+Installation is **policy-neutral**. DSH rc.6 owns its file-effect sandbox policy
+and enforcement. Orcana observes the public post-execution shell sandbox facts;
+it does not add resource limits, network isolation, or a second sandbox layer.
 
 Programmatic evidence adapter:
 
@@ -133,29 +137,30 @@ Full contracts are documented in
 
 ## Current authority boundary
 
-- **DSH owns native enforcement.** Current DSH has official
-  `resourceLimits`/`network` policy fields, cgroup-v2/prlimit mechanisms,
-  process lifecycle ownership, cleanup and `SandboxReceipt`.
-- **Orcana owns governance/evidence.** The default Linux bundle observes
-  foreground/background `ctx.shell` execution and records DSH's real receipt.
+- **DSH owns native file confinement.** In rc.6, `SandboxExecutionPolicy`
+  exposes `mode`, `workspaceRoot`, and optional `sessionId`; the sandbox provider
+  owns confinement and reports execution facts through the shell result seam.
+- **Orcana owns governance/evidence.** The default Linux bundle records the
+  public `ShellSandboxInfo` facts (`mode`, `denied`, optional `enforcement` and
+  `runnerFailed`) for foreground/background `ctx.shell` execution.
+- **No receipt compatibility shim.** rc.6 does not expose the earlier
+  `SandboxReceipt` / resource-limit / network evidence API. Orcana does not
+  reconstruct those claims from argv, stderr, or provider internals.
 - **The old package-root argv-hardening plugin is compatibility-only.** The
   current bundle does not mount it.
-- **Custom persistent-terminal/PTTY profiles are not claimed as receipt-parity
-  surfaces yet.** Orcana's own headless/web product profiles do not mount that
-  capability by default.
 
 ## Known Limitations
 
+- rc.6 native evidence is **sandbox-facts evidence**, not resource/network
+  accounting proof. Completion/governance code must not treat it as cgroup,
+  network-isolation, peak-usage, cleanup, or degradation evidence.
 - Workspace generation still observes mutation-typed tool calls; shell-internal
-  mutations need the future git-probe receipt path.
+  mutations need the future git-probe evidence path.
 - The governor does not directly own agent kill/cancel authority; steering is
   bounded.
 - Interactive Ctrl+C intentionally remains on native `wsl.exe` / Linux terminal
   semantics. A future programmatic timeout/cancel API belongs at the execution
   control plane, not in a fake Windows signal shim.
-- `pnpm-lock.yaml` still requires genuine regeneration with the repository-pinned
-  pnpm in a registry-connected environment; the release contract blocks hand-
-  fabricated rc.5 snapshots.
 
 ## Contributing
 
