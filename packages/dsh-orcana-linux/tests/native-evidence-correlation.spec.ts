@@ -45,7 +45,7 @@ class CorrelationShell extends ShellExecutor {
       workdir: request.workdir ?? '/repo',
       timeoutMs: request.timeoutMs ?? 60_000,
       stdoutMaxBytes: request.stdoutMaxBytes ?? 1024,
-      ...(request.sandboxPolicy !== undefined ? { sandboxPolicy: request.sandboxPolicy } : {}),
+      sandboxPolicy: request.sandboxPolicy,
     }
   }
 
