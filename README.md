@@ -71,7 +71,7 @@ The npm scope is `@leooday`. Install the complete Orcana profile in one command:
 dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle @deepseek-ai/dsh-headless@next
 ```
 
-`@deepseek-ai/dsh-headless@next` is intentional for the validated R5 install path.
+R5 pins `@deepseek-ai/dsh-headless@next` as its release-candidate install selector; the clean-environment release gate must verify this exact composition before publication.
 
 Then run:
 
