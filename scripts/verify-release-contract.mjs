@@ -119,7 +119,8 @@ for (const manifest of publicPackages) {
 }
 
 // DSH is the sole native enforcement owner. The default bundle must consume
-// DSH receipts and must never regress to the legacy argv-hardening package root.
+// DSH's public rc.6 shell sandbox facts and must never regress to the legacy
+// argv-hardening package root.
 const nativeEvidenceRow = "name: '@leooday/dsh-orcana-linux/native-evidence'"
 const legacyRootRow = "name: '@leooday/dsh-orcana-linux'"
 if (!linuxBundlePatch.includes(nativeEvidenceRow)) {
@@ -138,7 +139,7 @@ if (typeof nativeExport !== 'object' || nativeExport === null
   || nativeExport.types !== './lib/types/native-evidence.d.ts') {
   fail('@leooday/dsh-orcana-linux must publish the ./native-evidence JS/types export pair')
 }
-for (const dependency of ['@deepseek-ai/dsh-shell', '@deepseek-ai/dsh-tools']) {
+for (const dependency of ['@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-shell', '@deepseek-ai/dsh-tools']) {
   if (linux.peerDependencies?.[dependency] !== '0.1.0-rc.6') {
     fail(`Linux native-evidence ABI must pin ${dependency}@0.1.0-rc.6, found ${JSON.stringify(linux.peerDependencies?.[dependency])}`)
   }
