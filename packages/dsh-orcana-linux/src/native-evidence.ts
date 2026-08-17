@@ -1,10 +1,7 @@
 import { createHash } from 'node:crypto'
 import { Context, Service, symbols } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type {
-  SandboxExecutionPolicy,
-  SandboxReceipt,
-} from '@deepseek-ai/dsh-sandbox'
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import type {
   ShellExecSpec,
   ShellExecutor,
@@ -32,20 +29,21 @@ export interface LegacyHardeningDegradationPolicy {
 }
 
 /**
- * Native observer configuration. Enforcement remains owned by DSH
- * sandbox-policy/provider.
+ * Native observer configuration. Enforcement remains owned by DSH's rc.6
+ * file-sandbox policy/provider seam.
  *
  * Deprecated enforcement fields intentionally remain in the schema so an
  * upgraded profile cannot have an old request silently stripped by
- * schemastery. Their presence fails loud at mount.
+ * schemastery. rc.6 has no public resource/network/receipt equivalent, so
+ * their presence fails loud at mount instead of being reinterpreted.
  */
 export interface NativeEvidenceConfig {
   ledgerMaxEntries?: number
-  /** @deprecated Move to DSH's `sandbox-policy.resourceLimits`. */
+  /** @deprecated No public rc.6 sandbox-policy resource-limit equivalent; remove this field. */
   resourceLimits?: LegacyHardeningResourceLimits
-  /** @deprecated Move to DSH's `sandbox-policy.network`. */
+  /** @deprecated No public rc.6 sandbox-policy network equivalent; remove this field. */
   network?: 'inherit' | 'none'
-  /** @deprecated DSH reports degradation in SandboxReceipt. */
+  /** @deprecated rc.6 exposes shell sandbox facts, not a degradation receipt API. */
   degradationPolicy?: LegacyHardeningDegradationPolicy
   /** @deprecated Native evidence never probes or overrides enforcement. */
   capabilities?: unknown
@@ -88,51 +86,34 @@ export class LegacyHardeningConfigMovedError extends Error {
   constructor(readonly fields: readonly string[]) {
     super(
       'dsh-orcana-linux/native-evidence: legacy enforcement config is still present '
-      + `(${fields.join(', ')}). DSH now owns native enforcement; move network/resourceLimits to the `
-      + '`sandbox-policy` row. `degradationPolicy`/`capabilities` have no evidence-adapter enforcement '
-      + 'equivalent. Refusing to mount instead of silently weakening the previous policy.',
+      + `(${fields.join(', ')}). DSH rc.6 sandbox-policy exposes only file-effect mode/workspaceRoot `
+      + 'and ctx.shell exposes only sandbox execution facts; there is no public resourceLimits/network/receipt '
+      + 'equivalent. Remove these legacy fields instead of silently reinterpreting them.',
     )
     this.name = 'LegacyHardeningConfigMovedError'
   }
 }
 
+/** Request-time rc.6 file-sandbox policy snapshot. */
 export interface NativePolicySnapshot {
   mode: SandboxExecutionPolicy['mode']
   workspaceRoot: string
-  resourceLimits?: Readonly<{
-    memoryBytes?: number
-    cpuQuotaUs?: number
-    pidsMax?: number
-  }>
-  network: 'inherit' | 'none'
 }
 
-export interface NativeReceiptSnapshot {
-  layers: readonly string[]
-  degraded: readonly string[]
-  limitsMechanism?: 'cgroup-v2' | 'prlimit' | 'none'
-  cgroupPath?: string
-  memoryPeakBytes?: number
-  cpuUsageUs?: number
-  pidsPeak?: number
-  cleanupVerified: boolean
-  live?: Readonly<{ current: number; peak: number; total: number }>
-}
-
+/** Post-execution sandbox facts exposed by rc.6 on ShellRunResult/ShellProcess. */
 export interface NativeSandboxSnapshot {
   mode: ShellSandboxInfo['mode']
   denied: boolean
   enforcement?: ShellSandboxInfo['enforcement']
   runnerFailed?: boolean
-  receipt?: NativeReceiptSnapshot
 }
 
-export type NativeEvidenceKind = 'native-receipt' | 'sandbox-facts' | 'none'
+export type NativeEvidenceKind = 'sandbox-facts' | 'none'
 export type NativeExecutionKind = 'foreground' | 'background'
 export type NativeExecutionOutcome = 'completed' | 'infrastructure-error'
 
 /**
- * Final execution evidence derived from DSH's public tool/shell/sandbox
+ * Final execution evidence derived from DSH's public rc.6 tool/shell/sandbox
  * contracts. Raw command text is intentionally absent; only a SHA-256
  * fingerprint and byte length are retained.
  */
@@ -147,8 +128,10 @@ export interface NativeExecutionRecord {
   workdir: string
   /** Exact DSH causal identity when this shell work ran under ToolRuntime. */
   correlation?: NativeToolCorrelation
+  /** Request-time file policy; rc.6 exposes no resource/network policy fields. */
   policy?: NativePolicySnapshot
   evidenceKind: NativeEvidenceKind
+  /** Post-execution facts; rc.6 exposes no SandboxReceipt on this seam. */
   sandbox?: NativeSandboxSnapshot
   exitCode?: number | null
   signal?: NodeJS.Signals | null
@@ -202,7 +185,7 @@ function resizeLedgerState(state: NativeEvidenceLedgerState, maxEntries: number)
 /**
  * Freeze only Orcana-owned snapshot data. Records are built entirely from
  * detached primitives/arrays/plain objects, so recursively freezing them cannot
- * mutate DSH's original ShellRunResult, SandboxReceipt, spec, or process handle.
+ * mutate DSH's original ShellRunResult, spec, sandbox facts, or process handle.
  */
 function freezeEvidenceValue<T>(value: T, seen: WeakSet<object> = new WeakSet()): T {
   if (typeof value !== 'object' || value === null) return value
@@ -287,7 +270,7 @@ export class NativeExecutionEvidenceService extends Service {
     return this.state.pendingBackground
   }
 
-  /** DSH enforces. Orcana observes facts and correlates them to tool/session identity. */
+  /** DSH enforces its rc.6 file sandbox. Orcana observes and correlates public shell facts. */
   get scope(): Readonly<{
     enforcementOwner: 'dsh'
     observationSeam: 'shell'
@@ -318,52 +301,24 @@ function commandFingerprint(command: string): { commandHash: string; commandByte
 
 export function snapshotNativePolicy(policy: SandboxExecutionPolicy | undefined): NativePolicySnapshot | undefined {
   if (policy === undefined) return undefined
-  const limits = policy.resourceLimits
   return {
     mode: policy.mode,
     workspaceRoot: policy.workspaceRoot,
-    ...(limits !== undefined ? {
-      resourceLimits: {
-        ...(limits.memoryBytes !== undefined ? { memoryBytes: limits.memoryBytes } : {}),
-        ...(limits.cpuQuotaUs !== undefined ? { cpuQuotaUs: limits.cpuQuotaUs } : {}),
-        ...(limits.pidsMax !== undefined ? { pidsMax: limits.pidsMax } : {}),
-      },
-    } : {}),
-    network: policy.network ?? 'inherit',
-  }
-}
-
-export function snapshotNativeReceipt(receipt: SandboxReceipt | undefined): NativeReceiptSnapshot | undefined {
-  if (receipt === undefined) return undefined
-  return {
-    layers: [...receipt.layers],
-    degraded: [...receipt.degraded],
-    ...(receipt.limitsMechanism !== undefined ? { limitsMechanism: receipt.limitsMechanism } : {}),
-    ...(receipt.cgroupPath !== undefined ? { cgroupPath: receipt.cgroupPath } : {}),
-    ...(receipt.memoryPeakBytes !== undefined ? { memoryPeakBytes: receipt.memoryPeakBytes } : {}),
-    ...(receipt.cpuUsageUs !== undefined ? { cpuUsageUs: receipt.cpuUsageUs } : {}),
-    ...(receipt.pidsPeak !== undefined ? { pidsPeak: receipt.pidsPeak } : {}),
-    cleanupVerified: receipt.cleanupVerified,
-    ...(receipt.live !== undefined ? { live: { ...receipt.live } } : {}),
   }
 }
 
 export function snapshotNativeSandbox(sandbox: ShellSandboxInfo | undefined): NativeSandboxSnapshot | undefined {
   if (sandbox === undefined) return undefined
-  const receipt = snapshotNativeReceipt(sandbox.receipt)
   return {
     mode: sandbox.mode,
     denied: sandbox.denied,
     ...(sandbox.enforcement !== undefined ? { enforcement: sandbox.enforcement } : {}),
     ...(sandbox.runnerFailed !== undefined ? { runnerFailed: sandbox.runnerFailed } : {}),
-    ...(receipt !== undefined ? { receipt } : {}),
   }
 }
 
 export function nativeEvidenceKind(sandbox: ShellSandboxInfo | undefined): NativeEvidenceKind {
-  if (sandbox?.receipt !== undefined) return 'native-receipt'
-  if (sandbox !== undefined) return 'sandbox-facts'
-  return 'none'
+  return sandbox === undefined ? 'none' : 'sandbox-facts'
 }
 
 function infrastructureError(error: unknown): NativeExecutionRecord['error'] {
