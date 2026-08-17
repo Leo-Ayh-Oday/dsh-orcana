@@ -48,7 +48,7 @@ class ReloadShell extends ShellExecutor {
 }
 
 describe('native evidence observer reload', () => {
-  it('keeps a pending background execution visible and records its final receipt after remount', async () => {
+  it('keeps a pending background execution visible and records its final rc.6 sandbox facts after remount', async () => {
     const ctx = new Context()
     const shell = new ReloadShell(ctx)
     const done = deferred()
@@ -64,7 +64,7 @@ describe('native evidence observer reload', () => {
     const fiberA = await ctx.plugin(nativeEvidence, { ledgerMaxEntries: 8 })
     const spec = ctx.shell.resolve({
       command: 'long-running-build',
-      sandboxPolicy: { mode: 'workspace-write', workspaceRoot: '/repo', network: 'none' },
+      sandboxPolicy: { mode: 'workspace-write', workspaceRoot: '/repo' },
     })
     ctx.shell.start(spec)
     expect(ctx.orcanaLinuxEvidence.pendingBackground).toBe(1)
@@ -79,12 +79,6 @@ describe('native evidence observer reload', () => {
       mode: 'workspace-write',
       denied: false,
       enforcement: 'full',
-      receipt: {
-        layers: ['network-none'],
-        degraded: [],
-        limitsMechanism: 'none',
-        cleanupVerified: true,
-      },
     }
     done.resolve()
     await done.promise
@@ -95,8 +89,8 @@ describe('native evidence observer reload', () => {
     expect(ctx.orcanaLinuxEvidence.ledger[0]).toMatchObject({
       kind: 'background',
       outcome: 'completed',
-      evidenceKind: 'native-receipt',
-      sandbox: { receipt: { layers: ['network-none'], cleanupVerified: true } },
+      evidenceKind: 'sandbox-facts',
+      sandbox: { mode: 'workspace-write', denied: false, enforcement: 'full' },
     })
 
     await fiberB.dispose()
