@@ -18,13 +18,13 @@ import {
   nativeInstallShellArgs,
 } from '../src/wsl-install.ts'
 
-const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.5'
-const HEADLESS_PACKAGE = '@deepseek-ai/dsh-headless@0.1.0-rc.5'
-const WEB_PACKAGE = '@deepseek-ai/dsh-web-app@0.1.0-rc.5'
+const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6'
+const HEADLESS_PACKAGE = '@deepseek-ai/dsh-headless@0.1.0-rc.6'
+const WEB_PACKAGE = '@deepseek-ai/dsh-web-app@0.1.0-rc.6'
 const VERSION_CONTRACT = 'const [spec,actual]=process.argv.slice(1);process.exit(spec.endsWith("@"+actual)?0:1)'
 const ORCANA_RUNTIME_PACKAGES = [
-  '@leooday/governor-core@0.1.0-rc.1',
-  '@leooday/dsh-governor@0.1.0-rc.1',
+  '@leooday/governor-core@0.1.0',
+  '@leooday/dsh-governor@0.1.0',
   '@leooday/dsh-orcana-linux@0.4.0',
 ] as const
 
@@ -36,7 +36,7 @@ function withFakeLocalToolchain<T>(run: (env: NodeJS.ProcessEnv, log: string) =>
   writeFileSync(dsh, [
     '#!/bin/sh',
     'printf "%s\\n" "$*" >> "$DSH_FAKE_LOG"',
-    'if [ "$1" = "--version" ]; then printf "%s\\n" "0.1.0-rc.5"; exit 0; fi',
+    'if [ "$1" = "--version" ]; then printf "%s\\n" "0.1.0-rc.6"; exit 0; fi',
     'if [ "$1" = "plugin" ]; then exit "${DSH_FAKE_INSTALL_STATUS:-0}"; fi',
     'if [ "$1" = "--profile" ] && [ "$3" = "--dump-config" ]; then exit "${DSH_FAKE_SMOKE_STATUS:-0}"; fi',
     'exit 98',

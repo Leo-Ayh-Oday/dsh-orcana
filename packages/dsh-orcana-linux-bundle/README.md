@@ -3,13 +3,13 @@
 [English](README.md) | [中文](README.zh.md)
 
 Profile bundle for [@leooday/dsh-orcana-linux](../dsh-orcana-linux). The
-bundle now activates the **DSH-native execution evidence adapter** via the
+bundle activates the **DSH-native shell evidence adapter** through the
 `dsh.bundle.patch` contract.
 
 DSH remains the sole execution-enforcement owner. Installing this bundle is
-neutral: it does not add a second `prlimit`, network namespace, resource cap,
-or egress policy. Orcana observes the sandbox facts and native receipt that DSH
-actually produced.
+neutral: it does not add a second sandbox, resource cap, network namespace, or
+egress policy. Orcana observes only the public sandbox facts that DSH rc.6
+actually exposes on the shell result seam.
 
 ## Install
 
@@ -30,40 +30,38 @@ stable.
 If an existing profile still supplies any legacy Orcana enforcement fields on
 that row — `network`, `resourceLimits`, `degradationPolicy`, or `capabilities`
 — the evidence adapter throws the stable
-`LEGACY_HARDENING_CONFIG_MOVED` error. It deliberately **fails closed instead
-of letting schemastery strip the old fields and silently weakening the previous
-policy**.
+`LEGACY_HARDENING_CONFIG_MOVED` error. It deliberately **fails loud instead of
+letting Schemastery strip or reinterpret the old fields**.
 
-Migrate `network` and `resourceLimits` to DSH's `sandbox-policy` row as shown
-below. The old Orcana `degradationPolicy` / `capabilities` knobs are not mapped:
-DSH now reports actual applied/degraded native facts through `SandboxReceipt`,
-and Orcana consumes those facts rather than pretending to own enforcement.
+That migration boundary matters because DSH rc.6 no longer exposes a public
+resource-limit/network/`SandboxReceipt` equivalent on this policy/result seam.
+There is therefore no honest one-to-one destination for those old Orcana
+fields. Remove them and configure only capabilities that the installed DSH
+rc.6 actually exposes.
 
-## Native enforcement belongs to `sandbox-policy`
+## rc.6 evidence contract
 
-Current DSH already owns `resourceLimits` and `network` on its existing
-`sandbox-policy` row. Configure that row in a later profile/user patch instead
-of configuring the Orcana evidence row.
+The public request-time `SandboxExecutionPolicy` contains:
 
-A DSH patch replaces the target row's whole `config`, so preserve the standing
-mode/root when adding native limits:
-
-```yaml
-- id: sandbox-policy
-  config:
-    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
-    workspaceRoot: !!js process.cwd()
-    network: none
-    resourceLimits:
-      memoryBytes: 536870912
-      pidsMax: 64
-      cpuQuotaUs: 50000
+```text
+mode
+workspaceRoot
+sessionId? 
 ```
 
-DSH then chooses its real mechanism (for example cgroup v2 or a documented
-`prlimit` fallback), records degradations, and returns its native
-`SandboxReceipt`. Orcana's `native-evidence` adapter records that receipt
-without changing the execution.
+The public post-execution `ShellSandboxInfo` contains:
+
+```text
+mode
+denied
+enforcement?
+runnerFailed?
+```
+
+`native-evidence` records those shell facts and labels the evidence as
+`sandbox-facts`. It does not fabricate a receipt, cgroup/resource accounting,
+network-isolation proof, cleanup proof, or degradation report from provider
+internals.
 
 The package root (`@leooday/dsh-orcana-linux`) remains available temporarily as
 the legacy argv-hardening API for compatibility. **The bundle does not load
@@ -71,4 +69,4 @@ that legacy path.** New DSH integrations should use the bundle/native-evidence
 path.
 
 See the [package README](../dsh-orcana-linux/README.md) for the Windows → WSL
-execution bridge and evidence semantics.
+execution bridge, correlation semantics, and evidence limitations.

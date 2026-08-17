@@ -18,7 +18,6 @@ import nativeEvidence, {
   NativeExecutionEvidenceService,
   nativeEvidenceKind,
   snapshotNativePolicy,
-  snapshotNativeReceipt,
   snapshotNativeSandbox,
 } from '../src/native-evidence.ts'
 
@@ -31,20 +30,6 @@ const bwrapUsable = spawnSync(
 const POLICY = {
   mode: 'workspace-write' as const,
   workspaceRoot: '/repo',
-  resourceLimits: { memoryBytes: 64 * 1024 * 1024, cpuQuotaUs: 50_000, pidsMax: 16 },
-  network: 'none' as const,
-}
-
-const RECEIPT = {
-  layers: ['cgroup-v2', 'network-none'],
-  degraded: [],
-  limitsMechanism: 'cgroup-v2' as const,
-  cgroupPath: '/sys/fs/cgroup/dsh/cell-test',
-  memoryPeakBytes: 1024,
-  cpuUsageUs: 2048,
-  pidsPeak: 3,
-  cleanupVerified: true,
-  live: { current: 0, peak: 2, total: 7 },
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void; reject: (error: unknown) => void } {
@@ -70,7 +55,6 @@ class FakeShellExecutor extends ShellExecutor {
       mode: 'workspace-write',
       denied: false,
       enforcement: 'full',
-      receipt: RECEIPT,
     },
   }
   runError: unknown
@@ -123,24 +107,19 @@ function fakeProcess(done: Promise<void>): ShellProcess {
 }
 
 describe('native evidence pure snapshots', () => {
-  it('copies DSH policy/receipt/sandbox facts without inventing enforcement', () => {
+  it('copies rc.6 policy and sandbox facts without inventing unavailable receipt fields', () => {
     expect(snapshotNativePolicy(POLICY)).toEqual({
       mode: 'workspace-write',
       workspaceRoot: '/repo',
-      resourceLimits: POLICY.resourceLimits,
-      network: 'none',
     })
-    expect(snapshotNativeReceipt(RECEIPT)).toEqual(RECEIPT)
     expect(snapshotNativeSandbox({
       mode: 'workspace-write',
       denied: false,
       enforcement: 'full',
-      receipt: RECEIPT,
     })).toEqual({
       mode: 'workspace-write',
       denied: false,
       enforcement: 'full',
-      receipt: RECEIPT,
     })
     expect(nativeEvidenceKind({ mode: 'danger-full-access', denied: false })).toBe('sandbox-facts')
     expect(nativeEvidenceKind(undefined)).toBe('none')
@@ -169,13 +148,18 @@ describe('native evidence shell observation', () => {
     })
 
     const record = ctx.orcanaLinuxEvidence.ledger[0]!
-    expect(record.evidenceKind).toBe('native-receipt')
-    expect(record.sandbox?.receipt).toEqual(RECEIPT)
+    expect(record.evidenceKind).toBe('sandbox-facts')
+    expect(record.sandbox).toEqual({
+      mode: 'workspace-write',
+      denied: false,
+      enforcement: 'full',
+    })
     expect(record.policy).toEqual(snapshotNativePolicy(POLICY))
     expect(record.commandHash).toBe(createHash('sha256').update(secretCommand).digest('hex'))
     expect(record.commandBytes).toBe(Buffer.byteLength(secretCommand))
     expect(JSON.stringify(record)).not.toContain('super-secret-token')
     expect('command' in record).toBe(false)
+    expect('receipt' in (record.sandbox ?? {})).toBe(false)
 
     await fiber.dispose()
     expect(raw.run).toBe(originalRun)
@@ -203,7 +187,6 @@ describe('native evidence shell observation', () => {
       mode: 'workspace-write',
       denied: false,
       enforcement: 'full',
-      receipt: RECEIPT,
     }
     done.resolve()
     await done.promise
@@ -215,12 +198,13 @@ describe('native evidence shell observation', () => {
       kind: 'background',
       outcome: 'completed',
       exitCode: 0,
-      evidenceKind: 'native-receipt',
+      evidenceKind: 'sandbox-facts',
+      sandbox: { mode: 'workspace-write', denied: false, enforcement: 'full' },
     })
     await ctx.fiber.dispose()
   })
 
-  it('records danger-full-access honestly without fabricating a native receipt', async () => {
+  it('records danger-full-access honestly as sandbox facts', async () => {
     const ctx = new Context()
     const fake = new FakeShellExecutor(ctx)
     fake.runResult = {
@@ -235,8 +219,7 @@ describe('native evidence shell observation', () => {
     await ctx.shell.run(spec)
     const record = ctx.orcanaLinuxEvidence.ledger[0]!
     expect(record.evidenceKind).toBe('sandbox-facts')
-    expect(record.sandbox?.mode).toBe('danger-full-access')
-    expect(record.sandbox?.receipt).toBeUndefined()
+    expect(record.sandbox).toEqual({ mode: 'danger-full-access', denied: false })
     await ctx.fiber.dispose()
   })
 
@@ -283,11 +266,11 @@ describe('native evidence shell observation', () => {
 })
 
 describe.skipIf(!bwrapUsable)('native evidence through real DSH sandbox/shell', () => {
-  it('observes the DSH receipt without changing sandbox argv or enforcement ownership', async () => {
+  it('observes rc.6 sandbox facts without changing sandbox argv or enforcement ownership', async () => {
     const ctx = new Context()
     await ctx.plugin(LocalSandboxProvider, {})
     await ctx.plugin(LocalSubprocessRuntime)
-    await ctx.plugin(SandboxPolicyService, { mode: 'read-only', network: 'none' })
+    await ctx.plugin(SandboxPolicyService, { mode: 'read-only' })
     await ctx.plugin(SandboxBashExecutor, {})
 
     const policy = ctx.sandboxPolicy.resolve()
@@ -295,17 +278,20 @@ describe.skipIf(!bwrapUsable)('native evidence through real DSH sandbox/shell', 
     await ctx.plugin(nativeEvidence, {})
     const argvAfter = ctx.sandbox.confine(['bash', '-c', 'true'], { ...policy, mode: 'read-only' }).argv
     expect(argvAfter).toEqual(argvBefore)
-    expect(argvAfter.filter((value) => value === '--unshare-net')).toHaveLength(1)
 
     const spec = ctx.shell.resolve({ command: 'printf native-evidence', sandboxPolicy: policy })
     const result = await ctx.shell.run(spec)
     expect(result.exitCode).toBe(0)
-    expect(result.sandbox?.receipt?.layers).toContain('network-none')
+    expect(result.sandbox).toMatchObject({
+      mode: 'read-only',
+      denied: false,
+      enforcement: 'full',
+    })
 
     const record = ctx.orcanaLinuxEvidence.ledger.at(-1)!
-    expect(record.evidenceKind).toBe('native-receipt')
-    expect(record.sandbox?.receipt?.layers).toContain('network-none')
-    expect(record.scope).toBeUndefined()
+    expect(record.evidenceKind).toBe('sandbox-facts')
+    expect(record.sandbox).toEqual(snapshotNativeSandbox(result.sandbox))
+    expect(record.policy).toEqual(snapshotNativePolicy(policy))
     expect(ctx.orcanaLinuxEvidence.scope.enforcementOwner).toBe('dsh')
     await ctx.fiber.dispose()
   })

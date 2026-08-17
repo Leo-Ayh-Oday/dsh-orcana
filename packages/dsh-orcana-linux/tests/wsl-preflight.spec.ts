@@ -12,7 +12,7 @@ function withProfile<T>(run: (home: string) => T): T {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'package.json'), JSON.stringify({
       dependencies: {
-        '@leooday/dsh-governor': '0.1.0-rc.1',
+        '@leooday/dsh-governor': '0.1.0',
       },
       dsh: {
         profile: {
@@ -33,7 +33,7 @@ function withProfile<T>(run: (home: string) => T): T {
 
 const baseExpectation: WslProfileExpectation = {
   dependencies: {
-    '@leooday/dsh-governor': '0.1.0-rc.1',
+    '@leooday/dsh-governor': '0.1.0',
   },
   bundles: [
     '@deepseek-ai/dsh-base',

@@ -41,17 +41,6 @@ class EvidenceShell extends ShellExecutor {
         mode: 'workspace-write',
         denied: false,
         enforcement: 'full',
-        receipt: {
-          layers: ['cgroup-v2', 'network-none'],
-          degraded: [],
-          limitsMechanism: 'cgroup-v2',
-          cgroupPath: '/sys/fs/cgroup/dsh/test',
-          memoryPeakBytes: 4096,
-          cpuUsageUs: 123,
-          pidsPeak: 2,
-          cleanupVerified: true,
-          live: { current: 0, peak: 1, total: 1 },
-        },
       },
     }
   }
@@ -81,8 +70,6 @@ async function runCorrelated(
     sandboxPolicy: {
       mode: 'workspace-write',
       workspaceRoot: '/repo',
-      network: 'none',
-      resourceLimits: { memoryBytes: 1024 },
     },
   })
   return await runWithNativeToolCorrelation(identity, () => ctx.shell.run(spec))
@@ -122,31 +109,28 @@ describe('native evidence causal queries', () => {
     const result = await runCorrelated(ctx, identity, 'echo immutable')
     const ledger = ctx.orcanaLinuxEvidence.ledger
     const record = ledger[0]!
-    const receipt = record.sandbox?.receipt
 
     expect(Object.isFrozen(ledger)).toBe(true)
     expect(Object.isFrozen(record)).toBe(true)
     expect(Object.isFrozen(record.correlation)).toBe(true)
     expect(Object.isFrozen(record.policy)).toBe(true)
-    expect(Object.isFrozen(record.policy?.resourceLimits)).toBe(true)
     expect(Object.isFrozen(record.sandbox)).toBe(true)
-    expect(Object.isFrozen(receipt)).toBe(true)
-    expect(Object.isFrozen(receipt?.layers)).toBe(true)
-    expect(Object.isFrozen(receipt?.degraded)).toBe(true)
-    expect(Object.isFrozen(receipt?.live)).toBe(true)
+    expect('receipt' in (record.sandbox ?? {})).toBe(false)
 
     expect(() => { (record as { workdir: string }).workdir = '/tampered' }).toThrow(TypeError)
-    expect(() => { (receipt?.layers as string[]).push('fake-layer') }).toThrow(TypeError)
     expect(ctx.orcanaLinuxEvidence.latest({ sessionId: 's1', callId: 'c1' })?.workdir).toBe('/repo')
 
     // Orcana froze only its detached snapshot. Downstream DSH consumers still
-    // own the real result object and may mutate it without touching evidence.
+    // own the real rc.6 result object and may mutate it without touching evidence.
     expect(Object.isFrozen(result)).toBe(false)
-    expect(Object.isFrozen(result.sandbox?.receipt)).toBe(false)
-    ;(result.sandbox?.receipt?.layers as string[]).push('caller-owned-change')
-    expect(result.sandbox?.receipt?.layers).toContain('caller-owned-change')
-    expect(ctx.orcanaLinuxEvidence.latest({ sessionId: 's1', callId: 'c1' })?.sandbox?.receipt?.layers)
-      .not.toContain('caller-owned-change')
+    expect(Object.isFrozen(result.sandbox)).toBe(false)
+    result.sandbox!.denied = true
+    result.sandbox!.runnerFailed = true
+    expect(ctx.orcanaLinuxEvidence.latest({ sessionId: 's1', callId: 'c1' })?.sandbox).toEqual({
+      mode: 'workspace-write',
+      denied: false,
+      enforcement: 'full',
+    })
 
     await ctx.fiber.dispose()
   })

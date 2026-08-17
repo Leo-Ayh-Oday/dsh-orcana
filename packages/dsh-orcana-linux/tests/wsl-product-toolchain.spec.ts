@@ -17,8 +17,8 @@ describe('dsh-orcana product toolchain authority', () => {
 
   it('rejects an unvalidated DSH package selector for product profiles', () => {
     expect(() => assertSupportedProductToolchainSelectors({
-      ORCANA_WSL_DSH_PACKAGE: '@deepseek-ai/dsh@0.1.0-rc.6',
-    })).toThrow(/0\.1\.0-rc\.5/)
+      ORCANA_WSL_DSH_PACKAGE: '@deepseek-ai/dsh@0.1.0',
+    })).toThrow(/0\.1\.0-rc\.6/)
   })
 
   it('rejects pnpm drift from the validated profile-install toolchain', () => {

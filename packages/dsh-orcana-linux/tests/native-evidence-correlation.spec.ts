@@ -23,13 +23,6 @@ function deferred() {
   return { promise, resolve }
 }
 
-const RECEIPT = {
-  layers: ['network-none'],
-  degraded: [],
-  limitsMechanism: 'none' as const,
-  cleanupVerified: true,
-}
-
 function correlation(id: string): NativeToolCorrelation {
   return {
     sessionId: `session-${id}`,
@@ -52,7 +45,7 @@ class CorrelationShell extends ShellExecutor {
       workdir: request.workdir ?? '/repo',
       timeoutMs: request.timeoutMs ?? 60_000,
       stdoutMaxBytes: request.stdoutMaxBytes ?? 1024,
-      ...(request.sandboxPolicy !== undefined ? { sandboxPolicy: request.sandboxPolicy } : {}),
+      sandboxPolicy: request.sandboxPolicy,
     }
   }
 
@@ -70,7 +63,7 @@ class CorrelationShell extends ShellExecutor {
       sandbox: {
         mode: spec.sandboxPolicy?.mode ?? 'danger-full-access',
         denied: false,
-        ...(spec.sandboxPolicy === undefined ? {} : { enforcement: 'full' as const, receipt: RECEIPT }),
+        ...(spec.sandboxPolicy === undefined ? {} : { enforcement: 'full' as const }),
       },
     }
   }
@@ -82,11 +75,11 @@ class CorrelationShell extends ShellExecutor {
 }
 
 function policy() {
-  return { mode: 'workspace-write' as const, workspaceRoot: '/repo', network: 'none' as const }
+  return { mode: 'workspace-write' as const, workspaceRoot: '/repo' }
 }
 
 describe('native evidence causal correlation', () => {
-  it('keeps concurrent Agent/tool receipts isolated on one runtime-global ledger', async () => {
+  it('keeps concurrent Agent/tool evidence isolated on one runtime-global ledger', async () => {
     const ctx = new Context()
     new CorrelationShell(ctx)
     await ctx.plugin(nativeEvidence, {})
@@ -103,7 +96,7 @@ describe('native evidence causal correlation', () => {
     expect(ctx.orcanaLinuxEvidence.ledger).toHaveLength(2)
     expect(ctx.orcanaLinuxEvidence.ledger.map(row => row.correlation)).toContainEqual(correlation('a'))
     expect(ctx.orcanaLinuxEvidence.ledger.map(row => row.correlation)).toContainEqual(correlation('b'))
-    expect(ctx.orcanaLinuxEvidence.ledger.every(row => row.evidenceKind === 'native-receipt')).toBe(true)
+    expect(ctx.orcanaLinuxEvidence.ledger.every(row => row.evidenceKind === 'sandbox-facts')).toBe(true)
     await ctx.fiber.dispose()
   })
 
@@ -114,7 +107,7 @@ describe('native evidence causal correlation', () => {
 
     await ctx.shell.run(ctx.shell.resolve({ command: 'direct', sandboxPolicy: policy() }))
     expect(ctx.orcanaLinuxEvidence.ledger[0]?.correlation).toBeUndefined()
-    expect(ctx.orcanaLinuxEvidence.ledger[0]?.evidenceKind).toBe('native-receipt')
+    expect(ctx.orcanaLinuxEvidence.ledger[0]?.evidenceKind).toBe('sandbox-facts')
     await ctx.fiber.dispose()
   })
 
@@ -147,7 +140,6 @@ describe('native evidence causal correlation', () => {
       mode: 'workspace-write',
       denied: false,
       enforcement: 'full',
-      receipt: RECEIPT,
     }
     done.resolve()
     await done.promise
@@ -157,7 +149,7 @@ describe('native evidence causal correlation', () => {
     expect(ctx.orcanaLinuxEvidence.ledger[0]).toMatchObject({
       kind: 'background',
       correlation: background,
-      evidenceKind: 'native-receipt',
+      evidenceKind: 'sandbox-facts',
       exitCode: 0,
     })
     await ctx.fiber.dispose()

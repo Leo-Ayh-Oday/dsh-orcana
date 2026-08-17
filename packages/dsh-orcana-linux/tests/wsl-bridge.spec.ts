@@ -68,7 +68,7 @@ describe('WSL bridge argument contract', () => {
 
   it('pins the Orcana bundle release set for --wsl-install', () => {
     expect(DEFAULT_WSL_BUNDLES).toEqual([
-      '@leooday/dsh-bundle@0.1.0-rc.1',
+      '@leooday/dsh-bundle@0.1.0',
       '@leooday/dsh-orcana-linux-bundle@0.3.0',
     ])
     const parsed = parseWslBridgeArgs(['--wsl-install'], {})

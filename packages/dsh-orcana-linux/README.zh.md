@@ -2,13 +2,13 @@
 
 [English](README.md) | 中文
 
-**Orcana 的 DSH 原生执行证据层 + Windows → WSL 单一 Linux 执行世界桥。**
+**Orcana 的 DSH 原生 shell 证据层 + Windows → WSL 单一 Linux 执行世界桥。**
 
-这个包现在承担两个明确职责：
+这个包承担两个明确职责：
 
 1. **Linux / WSL 治理证据** —— DSH 是唯一的 sandbox policy 与原生 enforcement
-   owner；Orcana 读取 DSH 真正产生的 shell result / `SandboxReceipt`，不再重复
-   套第二层资源限制或网络 namespace。
+   owner；Orcana 只观察 rc.6 公开的 shell sandbox facts，不再重复套第二层
+   sandbox、资源限制或网络 namespace。
 2. **Windows → WSL 执行后端** —— `dsh-orcana` 把 Windows 只当启动面；任务开始
    前，整个 DSH + Orcana runtime 已经进入同一个 WSL Linux execution world。
 
@@ -22,19 +22,18 @@ Windows Terminal / PowerShell
        WSL
         │
         ▼
-       DSH
+       DSH rc.6
   sandbox-policy
+  { mode, workspaceRoot, sessionId? }
         │
         ▼
- sandbox-local          ← 唯一原生 enforcement owner
- cgroup / prlimit
- network isolation
+ sandbox-local          ← 唯一原生 confinement owner
         │
         ▼
       ctx.shell
         │
-        ▼
- SandboxReceipt
+        └─ sandbox facts
+           { mode, denied, enforcement?, runnerFailed? }
         │
         ▼
 @leooday/dsh-orcana-linux/native-evidence
@@ -47,20 +46,25 @@ Windows Terminal / PowerShell
 
 ### DSH 负责真正执行限制
 
-当前 DSH 的 `sandbox-policy` 已经正式拥有：
+rc.6 公开的 `SandboxExecutionPolicy` 是文件效果策略，只包含：
 
 - `mode`
 - `workspaceRoot`
-- `resourceLimits.memoryBytes`
-- `resourceLimits.cpuQuotaUs`
-- `resourceLimits.pidsMax`
-- `network: inherit | none`
+- 可选 `sessionId`
 
-DSH 原生 sandbox provider 自己选择实际机制，例如 cgroup v2 或其明确记录语义
-差异的 `prlimit` fallback；它负责进程 attach/detach、cleanup，并最终生成真实的
-`SandboxReceipt`。
+真正 confinement 由 DSH sandbox provider 负责。执行后，
+`ShellRunResult.sandbox` / `ShellProcess.sandbox` 对外提供 Orcana 可以安全观察的事实：
 
-**Orcana 不应再重复执行这一层。** 因此当前组合包加载的是：
+- `mode`
+- `denied`
+- 可选 `enforcement`
+- 可选 `runnerFailed`
+
+rc.6 已经**不再公开**旧的 `SandboxReceipt`、资源限制 policy 或网络 policy/证据
+API。Orcana 不会从 argv、stderr、provider 私有状态或类型断言中把这些已删除的
+结论重新“拼”出来。
+
+当前 bundle 默认加载：
 
 ```text
 @leooday/dsh-orcana-linux/native-evidence
@@ -74,19 +78,26 @@ DSH 原生 sandbox provider 自己选择实际机制，例如 cgroup v2 或其�
 
 - 不修改 `ShellExecSpec`、sandbox policy、argv、lifecycle、result object 或
   process handle；
+- 执行开始前快照 request-time 的 `mode + workspaceRoot`；
 - 前台任务在 `shell.run()` 真正完成后结算证据；
 - 后台任务等待原样返回的 `ShellProcess.done` 完成后再记录；
-- observer reload/HMR 后，已经启动的后台任务证据仍会归入同一**进程内共享
-  ledger**；这个性质不代表跨 DSH 进程重启持久化；
-- 记录 DSH 真 receipt：实际 layers、degraded、limits mechanism、cgroup path、
-  memory/CPU/PID peak、cleanup verification、live usage；
-- `danger-full-access` 只记录真实 sandbox facts，不伪造不存在的 native receipt；
-- 不保存原始 command，只保存 SHA-256 fingerprint 与 UTF-8 byte length，降低
-  command 中 token/secret 落入治理台账的风险；
+- observer reload/HMR 后，已经启动的后台任务仍在同一 DSH 进程内共享 ledger 中
+  结算；
+- 执行后只记录 rc.6 `ShellSandboxInfo` 真实 facts；
+- `danger-full-access` 也只按真实 sandbox facts 记录；
+- 不保存原始 command，只保存 SHA-256 fingerprint 与 UTF-8 byte length；
+- Orcana 自己的 detached snapshot 会递归冻结，但不会 freeze 或修改 DSH 原始
+  result object；
 - ledger 有界，暴露 total / dropped / pending-background；
-- 记录在入账时递归冻结，调用方不能通过拿到 ledger 引用反向篡改审计事实；
-- DSH 原始 `ShellRunResult` / `SandboxReceipt` 保持调用方所有权，不会被 Orcana
-  freeze 或改写。
+- 正常 ToolRuntime 调用会关联到 session/call/root-call/tool identity。
+
+证据类型有意收窄为：
+
+```ts
+type NativeEvidenceKind = 'sandbox-facts' | 'none'
+```
+
+rc.6 下不再保留假的 `native-receipt` 兼容概念。
 
 服务入口：
 
@@ -94,7 +105,7 @@ DSH 原生 sandbox provider 自己选择实际机制，例如 cgroup v2 或其�
 ctx.orcanaLinuxEvidence
 ```
 
-并明确声明自己的 authority：
+并明确声明 authority：
 
 ```ts
 {
@@ -107,7 +118,7 @@ ctx.orcanaLinuxEvidence
 
 ### 因果查询
 
-正常 DSH ToolRuntime 调用会通过 `tools/execute` 上下文关联到：
+正常 DSH ToolRuntime 调用会关联到：
 
 ```text
 sessionId
@@ -116,10 +127,8 @@ rootCallId
 toolName
 ```
 
-并发 tool chain 与嵌套 Code Mode dispatch 使用 AsyncLocalStorage 隔离；直接程序化
-调用 `ctx.shell` 时则诚实保留为无 correlation 的执行证据。
-
-治理层可以直接按当前有界窗口查询，不必自己反复扫并解释 identity：
+多个 selector 是 AND；直接程序化调用 `ctx.shell` 时，则诚实保留为无 correlation
+的执行证据。
 
 ```ts
 const bySession = ctx.orcanaLinuxEvidence.find({ sessionId })
@@ -127,22 +136,8 @@ const byRootCall = ctx.orcanaLinuxEvidence.find({ rootCallId })
 const exact = ctx.orcanaLinuxEvidence.latest({ sessionId, callId })
 ```
 
-多个条件是 AND；空查询会拒绝，调用方如果明确需要整个当前窗口就读取
-`ctx.orcanaLinuxEvidence.ledger`。
-
-### 当前 durability 边界
-
-当前 native evidence 是**进程内证据**：它能跨 observer reload/HMR 和正在运行的
-后台任务结算，但 DSH 进程重启后不会自动恢复。
-
-我们没有直接把新的 `orcana/native-execution` 事件塞进 Session log。原因是当前
-DSH 虽然允许 `SessionEventMap` 被插件扩展，并定义了 `ignorable?: true` 兼容标记，
-但公开 `Session.append()` 还没有让插件 writer 设置这个 marker 的入口。现在直接
-追加一个未知、非 ignorable 的新事件，会让旧 runtime 按协议拒绝恢复这个 session。
-
-因此在 DSH 提供安全的 ignorable plugin-event append seam 之前，**不能把当前内存
-ledger 当成跨进程 durable proof**。未来 Completion Authority 如果要求跨重启证据，
-必须显式检查持久化等级，而不是默认把当前 ledger 当成 Session 持久事实。
+当前 ledger 是**进程内证据**。observer reload 可以保留共享状态，但 DSH 进程重启
+后不会自动恢复成 durable proof。
 
 ## 安装
 
@@ -151,7 +146,8 @@ ledger 当成跨进程 durable proof**。未来 Completion Authority 如果要�
 ```sh
 dsh plugin --profile orcana add \
   @leooday/dsh-bundle \
-  @leooday/dsh-orcana-linux-bundle
+  @leooday/dsh-orcana-linux-bundle \
+  @deepseek-ai/dsh-headless@next
 ```
 
 只装 Linux evidence：
@@ -160,12 +156,11 @@ dsh plugin --profile orcana add \
 dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 ```
 
-组合包默认**不改变执行策略**。安装只建立观察/证据层，不会偷偷打开新的网络
-限制或资源上限。
+组合包默认**不改变执行策略**。安装只建立观察/证据层，不会偷偷打开新的限制。
 
 ### 从旧加固配置升级
 
-Bundle `0.3.0` 保留 `dsh-orcana-linux` row id，但默认目标已经切换到
+Bundle `0.3.0` 保留 `dsh-orcana-linux` row id，但目标已经切换到
 `/native-evidence`。如果已有 profile 仍然给这个行提供旧字段：
 
 ```text
@@ -181,29 +176,9 @@ capabilities
 LEGACY_HARDENING_CONFIG_MOVED
 ```
 
-而不是让 Schemastery 把字段静默剥掉、导致原来的限制升级后悄悄消失。
-`network/resourceLimits` 应迁到 DSH `sandbox-policy`；另外两个旧 Orcana knob 不做
-一一映射，真实 applied/degraded 状态以后由 DSH `SandboxReceipt` 提供。
-
-### 原生资源/网络限制要配 DSH
-
-通过后续 profile/user patch 修改 DSH 已有的 `sandbox-policy` 行。DSH patch 会替换
-该行整个 `config`，所以增加限制时要保留当前 mode 与 workspace root：
-
-```yaml
-- id: sandbox-policy
-  config:
-    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
-    workspaceRoot: !!js process.cwd()
-    network: none
-    resourceLimits:
-      memoryBytes: 536870912
-      pidsMax: 64
-      cpuQuotaUs: 50000
-```
-
-之后 Orcana 消费的是 DSH 真正执行后产生的 receipt，而不是第二份平行的
-“Orcana 估算加固结果”。
+这是故意的。rc.6 没有公开的 resource/network/receipt 等价 API；如果静默删除或
+重新解释旧字段，就会让用户误以为原来的加固仍然存在。应删除旧 Orcana 字段，
+并且只配置当前安装的 DSH rc.6 真正公开的能力。
 
 ### 程序化使用证据适配器
 
@@ -248,10 +223,10 @@ dsh-orcana "修复失败的测试"
 ```
 
 不强制全局安装 `dsh`。launcher 会先验证现有 `dsh` 是否与固定版本匹配；不匹配
-或不存在时才走 pinned npm fallback。v0.4 默认：
+或不存在时才走 pinned npm fallback。v0.4 R5 契约：
 
 ```text
-@deepseek-ai/dsh@0.1.0-rc.5
+@deepseek-ai/dsh@0.1.0-rc.6
 pnpm@11.7.0
 ```
 
@@ -265,8 +240,8 @@ pnpm@11.7.0
    metacharacter 和 DSH 的 `--` 哨兵不会被重新当成用户可控 shell 字符串解析。
 4. **只翻译 DSH 自己拥有的路径字段。** launcher 的 `--patch` 与
    `dsh plugin` 的本地 filesystem spec 会映射；task/app argv 保持 opaque。
-5. **环境变量单向、选择性传递。** 常见模型 key、base URL、代理、DSH
-   bootstrap-only 网络变量、证书路径通过 `WSLENV` 传入；值不会拼到任务 argv。
+5. **环境变量单向、选择性传递。** 常见模型 key、base URL、代理、bootstrap
+   网络变量、证书路径通过 `WSLENV` 传入；值不会拼到任务 argv。
 6. **Windows runtime home 与 WSL 隔离。** 不复用 Windows `DSH_HOME`、`HOME`、
    `PATH`、原生 `node_modules`，避免 ABI/可执行文件污染。
 7. **终端控制走 WSL 原生链。** stdio 和 Windows console cancellation 继续由
@@ -276,7 +251,7 @@ pnpm@11.7.0
 
 ## `--wsl-doctor` 现在检查什么
 
-它已经不是简单的“WSL 在不在”：
+包括：
 
 - WSL2 / kernel 与 Node runtime；
 - pinned DSH / pnpm toolchain；
@@ -287,16 +262,10 @@ pnpm@11.7.0
 - Git worktree 与 user identity；
 - HTTPS credential helper / 可见 credential manager；
 - SSH agent / 默认 key 能力，但不打印 key 文件名；
-- Windows 与 WSL `settings.yaml` / `.credentials.yaml` 的 managed-config parity：
-  只比较 present/absent/hash 状态，**不打印 hash、secret 或文件内容**；
-- WSL `.credentials.yaml` 出现 group/other 权限位时 fail loud（正常目标是 0600）；
 - TTY、UTF-8 locale、路径 roundtrip、文件系统/mount 语义、WSL interop；
 - Windows 挂载目录缺少 DrvFS metadata 时提示 chmod/chown/POSIX 权限差异。
 
-Config parity 的 `host-only` / `different` 默认只是提示：Windows 与 WSL 故意保留
-独立 DSH home，launcher 不会把 managed credentials 偷偷转成环境变量或自动覆盖
-Linux 配置。Parity warning 也只解释“不像原生 Linux”的原因，不会偷偷修改 Git、
-WSL、mount 或凭据配置。
+Parity warning 只解释语义差异，不会偷偷修改 Git、WSL、mount 或凭据配置。
 
 Git/npm/build I/O 很重的项目仍建议放在 WSL Linux filesystem，这是性能与 Linux
 语义最接近原生的路径。
@@ -304,15 +273,11 @@ Git/npm/build I/O 很重的项目仍建议放在 WSL Linux filesystem，这是�
 ## 当前证据覆盖范围
 
 Orcana 自己管理的 `orcana`（headless）和 `orcana-web` 产品 profile 使用 DSH
-普通 shell 执行链，因此前台/后台 shell 都能获得上面的 native evidence。
+普通 shell 执行链，因此前台/后台 shell 可以获得上述 sandbox-facts evidence。
 
-自定义 DSH profile 还可能挂其他 execution capability。当前 DSH 的 persistent
-terminal/PTTY 实现会 confine argv，但没有通过 shell result seam 暴露同等级
-lifecycle receipt。因此 `native-evidence` **暂不宣称 custom terminal/PTTY receipt
-等价**，也不会为了“看起来全覆盖”去伪造证据。
-
-这不是当前 Orcana 默认 headless/web profile 的阻断项；默认产品 closure 并不挂
-persistent terminal-bash。
+自定义 profile 还可能挂不经过这个 shell result seam 的 execution capability。
+`native-evidence` **不宣称这些路径拥有等价证据**，也不会为了“看起来全覆盖”去
+伪造 receipt 或资源/网络 proof。
 
 ## 旧兼容入口
 
@@ -330,8 +295,6 @@ persistent terminal-bash。
 ```text
 @leooday/dsh-orcana-linux/native-evidence
 ```
-
-资源/网络 policy 归 DSH `sandbox-policy` 所有。
 
 ## 已发布 subpath
 
@@ -354,13 +317,9 @@ pnpm --filter @leooday/dsh-orcana-linux build
 pnpm --filter @leooday/dsh-orcana-linux pack
 ```
 
-`prepack` 会跑 typecheck + tests + build。Profile verifier 现在探测的是真实运行
-模块，包括 `@leooday/dsh-orcana-linux/native-evidence`，因此 export map 或
-DSH/Cordis peer 链坏掉时，不会因为 legacy 根入口还能 import 就假通过。
-
-仓库 release contract 也会故意阻断 stale lockfile。当前 `pnpm-lock.yaml` 仍需在
-具备 registry 网络的环境中用仓库固定的 pnpm 重新生成；不要手工把 rc.6 dependency
-snapshot 改成 rc.5 伪造一致性。
+`prepack` 会跑 typecheck + tests + build。Profile verifier 探测真实运行模块，包括
+`@leooday/dsh-orcana-linux/native-evidence`，因此 export map 或 DSH/Cordis peer 链
+坏掉时，不会因为 legacy 根入口还能 import 就假通过。
 
 ## License
 

@@ -21,12 +21,12 @@ describe('Orcana Web companion profile', () => {
       DEFAULT_WSL_BUNDLES,
     )).toEqual({
       dependencies: {
-        '@deepseek-ai/dsh-web-app': '0.1.0-rc.5',
-        '@leooday/governor-core': '0.1.0-rc.1',
-        '@leooday/dsh-governor': '0.1.0-rc.1',
+        '@deepseek-ai/dsh-web-app': '0.1.0-rc.6',
+        '@leooday/governor-core': '0.1.0',
+        '@leooday/dsh-governor': '0.1.0',
         '@leooday/dsh-orcana-linux': '0.4.0',
-        '@leooday/dsh-bundle': '0.1.0-rc.1',
-        '@leooday/dsh-orcana-linux-bundle': '0.2.0',
+        '@leooday/dsh-bundle': '0.1.0',
+        '@leooday/dsh-orcana-linux-bundle': '0.3.0',
       },
       bundles: [
         '@deepseek-ai/dsh-base',
@@ -37,7 +37,7 @@ describe('Orcana Web companion profile', () => {
       importPackages: [
         '@leooday/governor-core',
         '@leooday/dsh-governor',
-        '@leooday/dsh-orcana-linux',
+        '@leooday/dsh-orcana-linux/native-evidence',
       ],
     })
   })

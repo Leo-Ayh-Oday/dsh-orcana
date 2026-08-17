@@ -2,14 +2,14 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-**DSH-native execution evidence + a Windows → WSL execution bridge for Orcana.**
+**DSH-native shell evidence + a Windows → WSL execution bridge for Orcana.**
 
 The package has two product responsibilities:
 
 1. **Linux / WSL governance evidence** — DeepSeek Harness remains the sole owner
-   of sandbox policy and native enforcement. Orcana observes the actual DSH
-   shell result and `SandboxReceipt`; it does not add a second resource limiter
-   or network namespace.
+   of sandbox policy and enforcement. Orcana observes the public rc.6 shell
+   sandbox facts; it does not add a second sandbox, resource limiter, or network
+   namespace.
 2. **Windows → WSL execution transport** — `dsh-orcana` treats Windows as the
    launch surface and starts the whole DSH + Orcana runtime inside one WSL
    Linux execution world before task execution begins.
@@ -24,19 +24,18 @@ Windows Terminal / PowerShell
        WSL
         │
         ▼
-       DSH
+       DSH rc.6
   sandbox-policy
+  { mode, workspaceRoot, sessionId? }
         │
         ▼
- sandbox-local          ← sole native enforcement owner
- cgroup / prlimit
- network isolation
+ sandbox-local          ← sole native confinement owner
         │
         ▼
       ctx.shell
         │
-        ▼
- SandboxReceipt
+        └─ sandbox facts
+           { mode, denied, enforcement?, runnerFailed? }
         │
         ▼
 @leooday/dsh-orcana-linux/native-evidence
@@ -49,21 +48,26 @@ Windows Terminal / PowerShell
 
 ### DSH owns enforcement
 
-Current DSH already owns these policy fields on its `sandbox-policy` row:
+The rc.6 public `SandboxExecutionPolicy` is a file-effect policy:
 
 - `mode`
 - `workspaceRoot`
-- `resourceLimits.memoryBytes`
-- `resourceLimits.cpuQuotaUs`
-- `resourceLimits.pidsMax`
-- `network: inherit | none`
+- optional `sessionId`
 
-Its native sandbox provider chooses the real mechanism (for example cgroup v2
-or its documented `prlimit` fallback), owns process attach/detach, performs
-cleanup, and produces the final `SandboxReceipt`.
+The DSH sandbox provider owns actual confinement. `ShellRunResult.sandbox` and
+`ShellProcess.sandbox` expose the post-execution facts that Orcana can safely
+observe:
 
-**Orcana must not duplicate that enforcement.** The default bundle therefore
-loads:
+- `mode`
+- `denied`
+- optional `enforcement`
+- optional `runnerFailed`
+
+rc.6 does **not** expose the previous `SandboxReceipt`, resource-limit policy,
+or network policy/evidence API on this seam. Orcana does not recover those
+removed claims from argv, stderr, private provider state, or type assertions.
+
+The default bundle loads:
 
 ```text
 @leooday/dsh-orcana-linux/native-evidence
@@ -77,17 +81,28 @@ not the legacy package root.
 
 - leaves `ShellExecSpec`, sandbox policy, argv, lifecycle, result objects and
   process handles unchanged;
+- snapshots request-time `mode` + `workspaceRoot` before execution;
 - records foreground results after `shell.run()` settles;
 - records background results after the exact returned `ShellProcess.done`
   settles;
-- preserves pending background evidence across observer reloads;
-- records DSH's real receipt fields: applied layers, degradations, limit
-  mechanism, cgroup path, peak memory/CPU/PID facts and cleanup verification;
-- records `danger-full-access` honestly as sandbox facts without fabricating a
-  native receipt;
+- preserves pending background accounting across observer reloads within the
+  same DSH process;
+- records only rc.6 `ShellSandboxInfo` facts after execution;
+- records `danger-full-access` honestly as sandbox facts;
 - stores only a SHA-256 command fingerprint and byte length — raw command text
   is not retained in the evidence ledger;
-- keeps a bounded ledger with total/dropped/pending-background counters.
+- deeply freezes Orcana-owned detached snapshots without freezing or mutating
+  DSH's original result objects;
+- keeps a bounded ledger with total/dropped/pending-background counters;
+- correlates normal ToolRuntime work to session/call/root-call/tool identity.
+
+Evidence kind is intentionally narrow:
+
+```ts
+type NativeEvidenceKind = 'sandbox-facts' | 'none'
+```
+
+There is no `native-receipt` compatibility fiction on rc.6.
 
 The service is exposed as:
 
@@ -106,6 +121,29 @@ and declares its authority explicitly:
 }
 ```
 
+### Causal queries
+
+Normal DSH ToolRuntime calls are associated with:
+
+```text
+sessionId
+callId
+rootCallId
+toolName
+```
+
+Multiple selectors are conjunctive. Direct programmatic `ctx.shell` calls are
+recorded honestly without correlation.
+
+```ts
+const bySession = ctx.orcanaLinuxEvidence.find({ sessionId })
+const byRootCall = ctx.orcanaLinuxEvidence.find({ rootCallId })
+const exact = ctx.orcanaLinuxEvidence.latest({ sessionId, callId })
+```
+
+The ledger is process-local evidence. Observer reloads preserve the shared
+in-process state, but a DSH process restart does not make these records durable.
+
 ## Install
 
 Recommended combined Orcana profile:
@@ -113,7 +151,8 @@ Recommended combined Orcana profile:
 ```sh
 dsh plugin --profile orcana add \
   @leooday/dsh-bundle \
-  @leooday/dsh-orcana-linux-bundle
+  @leooday/dsh-orcana-linux-bundle \
+  @deepseek-ai/dsh-headless@next
 ```
 
 Linux evidence only:
@@ -122,29 +161,31 @@ Linux evidence only:
 dsh plugin --profile orcana-linux add @leooday/dsh-orcana-linux-bundle
 ```
 
-Installation is **policy-neutral**. The bundle observes native execution facts;
-it does not silently enable new network or resource restrictions.
+Installation is **policy-neutral**. The bundle observes execution facts; it does
+not silently enable new restrictions.
 
-### Configure native limits through DSH
+### Upgrade from legacy hardening config
 
-Use a later profile/user patch targeting DSH's existing `sandbox-policy` row.
-A DSH row patch replaces that row's whole `config`, so preserve the standing
-mode/root when adding limits:
+Bundle `0.3.0` keeps the `dsh-orcana-linux` row id while switching its target to
+`/native-evidence`. If an existing profile still supplies legacy fields:
 
-```yaml
-- id: sandbox-policy
-  config:
-    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
-    workspaceRoot: !!js process.cwd()
-    network: none
-    resourceLimits:
-      memoryBytes: 536870912
-      pidsMax: 64
-      cpuQuotaUs: 50000
+```text
+network
+resourceLimits
+degradationPolicy
+capabilities
 ```
 
-The resulting DSH receipt — not a parallel Orcana approximation — becomes the
-governance evidence.
+mount fails with:
+
+```text
+LEGACY_HARDENING_CONFIG_MOVED
+```
+
+This is deliberate. rc.6 has no public resource/network/receipt equivalent, so
+silently dropping or reinterpreting the old fields would falsely imply the old
+hardening still exists. Remove the legacy Orcana fields and configure only
+capabilities that the installed DSH rc.6 actually exposes.
 
 ### Programmatic evidence adapter
 
@@ -190,10 +231,10 @@ The target WSL distro must satisfy the pinned DSH Node contract:
 
 A global `dsh` install is optional. The launcher verifies an installed DSH
 before using it and otherwise falls back to its pinned compatible npm release.
-The v0.4 bridge default is:
+The v0.4 R5 bridge contract is:
 
 ```text
-@deepseek-ai/dsh@0.1.0-rc.5
+@deepseek-ai/dsh@0.1.0-rc.6
 pnpm@11.7.0
 ```
 
@@ -209,8 +250,8 @@ pnpm@11.7.0
 4. **DSH-owned paths are translated narrowly** — launcher `--patch` paths and
    local filesystem specs owned by `dsh plugin` are mapped; task/app argv stays
    opaque.
-5. **Environment forwarding is selective and one-way** — common provider keys,
-   base URLs, proxies, bootstrap-only network settings and certificate paths are
+5. **Environment forwarding is selective and one-way** — provider keys, base
+   URLs, proxies, bootstrap networking settings and certificate paths are
    bridged through `WSLENV`; values are not injected into task argv.
 6. **Windows runtime home is isolated** — Windows `DSH_HOME`, `HOME`, `PATH` and
    native `node_modules` are not reused inside WSL.
@@ -223,7 +264,7 @@ pnpm@11.7.0
 
 ## `--wsl-doctor`
 
-The doctor checks more than “does WSL exist?” It currently covers:
+The doctor currently covers:
 
 - WSL2 / kernel and Node runtime compatibility;
 - pinned DSH and pnpm toolchain availability;
@@ -248,14 +289,12 @@ filesystem remains the fast and closest-to-native path.
 ## Current evidence scope
 
 The product-owned `orcana` (headless) and `orcana-web` profiles use the ordinary
-DSH shell execution path, so foreground/background shell executions receive the
-native evidence described above.
+DSH shell execution path, so foreground/background shell executions can expose
+the sandbox-facts evidence described above.
 
-A custom DSH profile may add other execution capabilities. In particular, the
-current DSH persistent-terminal/PTY implementation confines its argv but does
-not yet expose the same lifecycle receipt through the shell result seam.
-`native-evidence` therefore **does not claim terminal/PTTY receipt parity** for
-such custom profiles. It will not fabricate evidence to hide that gap.
+A custom profile may add execution capabilities outside this shell result seam.
+`native-evidence` does **not** claim evidence parity for those paths and will not
+fabricate a receipt or resource/network proof to hide the gap.
 
 ## Legacy compatibility entrypoint
 
@@ -274,8 +313,6 @@ New DSH integrations should use:
 ```text
 @leooday/dsh-orcana-linux/native-evidence
 ```
-
-Native resource/network policy belongs to DSH `sandbox-policy`.
 
 ## Published subpaths
 
@@ -303,11 +340,6 @@ pnpm --filter @leooday/dsh-orcana-linux pack
 runtime modules, including `@leooday/dsh-orcana-linux/native-evidence`, so a
 broken export map or DSH/Cordis peer chain cannot pass merely because the
 legacy package root imports successfully.
-
-The repository release contract also intentionally blocks a stale workspace
-lockfile. Regenerate `pnpm-lock.yaml` with the repository-pinned pnpm in a
-registry-connected environment before release; do not hand-edit DSH dependency
-snapshots.
 
 ## License
 
