@@ -17,13 +17,17 @@ v0.1 governor 范围仍由 [PLAN-v0.1.md](PLAN-v0.1.md) 冻结。Linux/WSL 线�
 现在采用明确的 authority 分工：
 
 ```text
-DSH                         Orcana
+DSH rc.6                    Orcana
 ├ sandbox-policy            ├ Progress / Completion 治理
-├ sandbox-local             ├ Native Execution Evidence
-├ cgroup / prlimit          └ Windows → WSL 执行适配
-└ SandboxReceipt
-      │
-      └──────────────► Orcana 消费事实，不重复执行限制
+│  └ mode/workspaceRoot     ├ Native shell evidence
+├ sandbox-local             └ Windows → WSL 执行适配
+└ ctx.shell
+   └ sandbox facts
+      { mode, denied,
+        enforcement?,
+        runnerFailed? }
+             │
+             └──────────► Orcana 消费事实，不重复执行限制
 ```
 
 详细设计见 [docs/architecture.md](docs/architecture.md)、
@@ -66,7 +70,7 @@ npm scope 为 `@leooday`。完整 Orcana Profile 使用一条命令安装：
 dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bundle @deepseek-ai/dsh-headless@next
 ```
 
-这里明确使用 `@deepseek-ai/dsh-headless@next`：当前 `latest` 线存在依赖链问题。
+这里明确使用 `@deepseek-ai/dsh-headless@next`，作为 R5 已验证的安装路径。
 
 然后运行：
 
@@ -74,10 +78,11 @@ dsh plugin --profile orcana add @leooday/dsh-bundle @leooday/dsh-orcana-linux-bu
 dsh --profile orcana "<task>"
 ```
 
-安装默认**不改变执行策略**。Orcana 负责观察执行事实；资源/网络限制配置在 DSH
-已有的 `sandbox-policy` 行，DSH 最终产生的 `SandboxReceipt` 才是 Orcana 的证据源。
+安装默认**不改变执行策略**。DSH rc.6 负责自己的文件效果 sandbox policy 与
+真正 enforcement；Orcana 只读取公开的执行后 shell sandbox facts，不额外增加
+资源限制、网络隔离或第二层 sandbox。
 
-程序化使用新证据入口：
+程序化使用证据入口：
 
 ```ts
 import nativeEvidence from '@leooday/dsh-orcana-linux/native-evidence'
@@ -128,23 +133,25 @@ Git identity/credential 能力、TTY/UTF-8/path parity、DrvFS metadata 等，�
 
 ## 当前 authority 边界
 
-- **DSH 负责原生 enforcement。** 当前 DSH 已正式拥有 `resourceLimits` / `network`
-  policy、cgroup-v2 / prlimit 机制、进程 lifecycle、cleanup 与 `SandboxReceipt`。
-- **Orcana 负责治理与证据。** 默认 Linux bundle 观察 `ctx.shell` 的前台/后台执行，
-  记录 DSH 真正产生的 receipt。
+- **DSH 负责原生文件 confinement。** rc.6 的 `SandboxExecutionPolicy` 公开
+  `mode`、`workspaceRoot` 与可选 `sessionId`；sandbox provider 负责真正限制，并
+  通过 shell result seam 返回执行事实。
+- **Orcana 负责治理与证据。** 默认 Linux bundle 记录前台/后台 `ctx.shell` 的
+  `ShellSandboxInfo`：`mode`、`denied`，以及可选的 `enforcement`、`runnerFailed`。
+- **不做 receipt 兼容伪装。** rc.6 已不再公开旧的 `SandboxReceipt`、资源限制或
+  网络证据 API。Orcana 不会从 argv、stderr 或 provider 内部信息反推这些结论。
 - **旧 package-root argv-hardening 只是兼容入口。** 当前 bundle 已经不再加载它。
-- **自定义 persistent-terminal/PTTY profile 暂不宣称 receipt 等价。** Orcana 自己的
-  headless/web 产品 profile 默认并不挂这个 capability。
 
 ## 已知限制
 
+- rc.6 的 native evidence 是 **sandbox-facts 证据**，不是资源/网络 accounting
+  proof。治理/完成判定不能把它当成 cgroup、网络隔离、峰值用量、cleanup 或
+  degradation 证据。
 - Workspace generation 仍只观察 mutation 类型工具；shell 内部 mutation 需要未来
-  git-probe receipt 链。
+  git-probe evidence 链。
 - Governor 不直接拥有 Agent kill/cancel authority，当前 steering 有明确上限。
 - 交互式 Ctrl+C 有意继续走 `wsl.exe` / Linux 终端原生语义。未来程序化
   timeout/cancel 应属于 execution control plane，而不是伪造 Windows POSIX signal。
-- `pnpm-lock.yaml` 仍必须在有 registry 网络的环境中使用仓库固定 pnpm 真正重新生成；
-  release contract 会阻止手工伪造 rc.5 dependency snapshot。
 
 ## 贡献
 
