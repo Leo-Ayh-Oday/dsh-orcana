@@ -84,7 +84,7 @@ describe('native-evidence migration safety', () => {
     [{ resourceLimits: { memoryBytes: 1024 } }, ['resourceLimits']],
     [{ degradationPolicy: { network: 'required' as const } }, ['degradationPolicy']],
     [{ capabilities: { platform: 'linux' } }, ['capabilities']],
-  ])('fails closed instead of silently stripping legacy hardening config %#', async (legacy, fields) => {
+  ])('fails closed instead of silently reinterpreting legacy hardening config %#', async (legacy, fields) => {
     const ctx = new Context()
     new ControlledShell(ctx)
 
@@ -98,7 +98,8 @@ describe('native-evidence migration safety', () => {
     expect(error).toBeInstanceOf(LegacyHardeningConfigMovedError)
     expect((error as LegacyHardeningConfigMovedError).code).toBe(LEGACY_HARDENING_CONFIG_MOVED)
     expect((error as LegacyHardeningConfigMovedError).fields).toEqual(fields)
-    expect(String(error)).toContain('sandbox-policy')
+    expect(String(error)).toContain('rc.6 sandbox-policy')
+    expect(String(error)).toContain('no public resourceLimits/network/receipt equivalent')
     await ctx.fiber.dispose()
   })
 
@@ -132,8 +133,6 @@ describe('native-evidence temporal integrity', () => {
       sandboxPolicy: {
         mode: 'workspace-write',
         workspaceRoot: '/repo/original',
-        network: 'none',
-        resourceLimits: { memoryBytes: 1024 },
       },
     })
 
@@ -142,8 +141,7 @@ describe('native-evidence temporal integrity', () => {
     spec.workdir = '/repo/mutated'
     if (spec.sandboxPolicy !== undefined) {
       spec.sandboxPolicy.workspaceRoot = '/repo/mutated'
-      spec.sandboxPolicy.network = 'inherit'
-      spec.sandboxPolicy.resourceLimits = { memoryBytes: 999999 }
+      spec.sandboxPolicy.mode = 'danger-full-access'
     }
     gate.resolve()
     await running
@@ -154,8 +152,6 @@ describe('native-evidence temporal integrity', () => {
     expect(record.policy).toEqual({
       mode: 'workspace-write',
       workspaceRoot: '/repo/original',
-      network: 'none',
-      resourceLimits: { memoryBytes: 1024 },
     })
     await ctx.fiber.dispose()
   })
