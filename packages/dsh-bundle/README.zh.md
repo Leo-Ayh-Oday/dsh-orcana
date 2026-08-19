@@ -9,14 +9,14 @@
 使其成为可安装的 patch 层
 （[bundle 契约](../../deepseek-harness/packages/bundle/README.md)）。
 
-## 安装（官方命令，发布后可用）
+## 安装
 
 ```sh
 dsh plugin --profile orcana add @leooday/dsh-bundle
 ```
 
 `dsh plugin add` 安装组合包并自动激活为 profile 层（`@leooday/dsh-governor`
-和 `@leooday/governor-core` 作为其依赖解析）。发布前，使用
+和 `@leooday/governor-core` 作为其依赖解析）。基于仓库 checkout 开发时，可使用
 [`scripts/dev-install.sh`](../../scripts/dev-install.sh) 或 profile 的
 `pnpm-workspace.yaml` override 指向本地 tarball。
 
