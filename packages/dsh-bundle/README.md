@@ -9,7 +9,7 @@ Contract: the package manifest declares `"dsh": { "bundle": { "patch":
 "./cordis.patch.yml" } }`, making it an installable patch layer
 ([bundle contract](../../deepseek-harness/packages/bundle/README.md)).
 
-## Install (official command, once published)
+## Install
 
 ```sh
 dsh plugin --profile orcana add @leooday/dsh-bundle
@@ -17,9 +17,9 @@ dsh plugin --profile orcana add @leooday/dsh-bundle
 
 `dsh plugin add` installs the bundle and auto-activates it as a profile layer
 (`@leooday/dsh-governor` and `@leooday/governor-core` resolve as its
-dependencies). Before publishing, use
+dependencies). For checkout-based development, use
 [`scripts/dev-install.sh`](../../scripts/dev-install.sh) or profile
-`pnpm-workspace.yaml` overrides against the local tarballs.
+`pnpm-workspace.yaml` overrides against local tarballs.
 
 ## Known Limitations
 
