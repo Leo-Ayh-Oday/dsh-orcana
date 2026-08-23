@@ -11,7 +11,9 @@ Defects found are documented, not repaired.
 Rev.1 corrects per independent audit (`REVISE_R0_C`): a durable marker does
 NOT prove its execution started (`tool/call` durable ≠ body started;
 `tool/code-dispatch-start` durable = pipeline ENTRY recorded only);
-TOOL_OUTCOME_UNKNOWN covers THREE indistinguishable ground states
+TOOL_OUTCOME_UNKNOWN covers three indistinguishable RECOVERY-OBSERVATION
+ground-truth families (pre-body incl. cooperative-abort-loss / during-body /
+post-body-result-lost) — defined by recovery observation, not ground-state count;
 (before-body / during-body / after-body-before-result-survived); cooperative
 abort separated from hard crash; ordinary-path fold-before-append marked
 UNREACHABLE-to-invert vs final-result-bypass REACHABLE; verification→mutation
@@ -86,7 +88,7 @@ Neither "append ⇒ durable" nor "durable only at next checkpoint" is correct.
 | --- | --- | --- | --- | --- | --- | --- |
 | A | LLM request prefix vs dispatch | after flush: full logged request prefix | header/request records between append and flush | in-flight stream chunks beyond committed log | n/a (no tail synthesis for headers) | none directly |
 | B | top-level call record vs body start | after flush RETURNS: the `tool/call` | the call between append and flush-return (write-behind race) | scheduler-preparation state | race selects NOT_STARTED vs OUTCOME_UNKNOWN; OUTCOME_UNKNOWN does NOT imply body started | body-start possible ONLY after flush returns + signal check passes |
-| C | body began → no durable result | the `tool/call` (crossed barrier) | partial output text (process-local) | everything execution-local | TOOL_OUTCOME_UNKNOWN synthetic result | YES — side effects MAY have occurred |
+| C | top-level call durable → no durable completed result | the `tool/call` (crossed barrier) | partial output text (process-local); cooperative-abort outcome (generated ≠ durably surviving) | everything execution-local | TOOL_OUTCOME_UNKNOWN synthetic result; body-start UNKNOWN from history | YES — side effects MAY have occurred |
 | D | result appended → durability timing | depends on sub-state (D1/D2/D3) | THE RESULT ITSELF | post-execute derived governor state | absent result ⇒ OUTCOME_UNKNOWN even if body completed | possible completed-but-unrecorded |
 | E | result durable, Orcana state stale | result | none extra | ALL Orcana engine/adapter state | n/a (result already in history) | inherited from result's own ambiguity status |
 | F | code-mode nested lifecycle | outer run_code `tool/call` (post-barrier) | `-start`/`-dispatch` records individually | worker memory / intermediate values | NO synthetic closers for nested records; `-start` durable = pipeline ENTRY recorded (body may never have run) | YES per unresolved sub-dispatch |
@@ -141,12 +143,19 @@ Sub-states:
 - **B2 — call appended, flush NOT returned**: call CONDITIONALLY durable
   (write-behind race). Repair code depends on surviving bytes: survived ⇒
   OUTCOME_UNKNOWN; lost ⇒ NOT_STARTED. Body not yet invoked either way.
-- **B3a — COOPERATIVE ABORT after flush**: signal aborted at the post-flush
-  check ⇒ policy materializes an ordinary aborted-before-dispatch error
-  result (policy :43–49); loop's cancel path likewise appends skipped-call
-  pairs (tool-calls.ts:248–259, TOOL_ABORTED_BEFORE_DISPATCH). These are
-  OBSERVED outcomes with durable results — ordinary semantics; they prove
-  nothing about hard-crash behavior and must not be used as evidence for it.
+- **B3a — COOPERATIVE ABORT after flush — TWO durability branches**: signal
+  aborted at the post-flush check ⇒ `abortedBeforeDispatchResult()` is
+  GENERATED (policy :43–49); the loop's cancel path likewise GENERATES
+  skipped-call call+result pairs (tool-calls.ts:248–259). Generation is
+  process-local; the outcome becomes recovery-visible ONLY if its
+  `tool/result` record enters the crash-surviving durable prefix:
+  - **B3a-durable**: abort result appended AND persisted ⇒ recovery observes
+    an explicit aborted-before-dispatch result (ordinary result semantics).
+  - **B3a-lost**: crash before the abort result survives ⇒ recovery sees only
+    the durable call with no completed result ⇒ classified
+    TOOL_OUTCOME_UNKNOWN like any other. **Generated outcome ≠ durably
+    surviving outcome**; cooperative-abort behavior proves nothing about
+    hard-crash semantics.
 - **B3b — HARD CRASH after flush returns, before body invocation**: call is
   GUARANTEED durable; body NEVER ran; NO result will ever exist. Post-resume
   this is indistinguishable from B4-with-lost-result — all collapse into
@@ -155,12 +164,16 @@ Sub-states:
 - **B4 — body begins** (flush returned AND signal check passed): world effects
   become possible → Boundary C applies.
 
-TOOL_OUTCOME_UNKNOWN ground states (all REACHABLE on the ordinary top-level
-path, all INDISTINGUISHABLE from surviving history):
+TOOL_OUTCOME_UNKNOWN = RECOVERY OBSERVATION: durable ordinary `tool/call` +
+no durable completed `tool/result`. Illustrative reachable ground truths on
+the ordinary top-level path (all INDISTINGUISHABLE from surviving history;
+not an exhaustive count):
 
-1. crash between flush-return and body invocation (B3b);
-2. crash DURING body execution;
-3. body completed but its result was appended-and-lost (Boundary D1) or never
+1. PRE-BODY hard crash between flush-return and body invocation (B3b);
+2. PRE-BODY cooperative abort whose generated abort outcome did not
+   durably survive (B3a-lost);
+3. crash DURING body execution;
+4. body completed but its result was appended-and-lost (Boundary D1) or never
    appended.
 
 `TOOL_OUTCOME_UNKNOWN = ordinary tool/call survived AND completed result did
@@ -168,24 +181,32 @@ not survive.` It is NOT proof the body started.
 
 ## Boundary C — Body Began, No Durable Result (core ambiguity)
 
-Facts: `tool/call` behind barrier (KNOWN durable). Execution ran for an
-arbitrary duration. Result never entered crash-surviving history.
+Facts (RECOVERY OBSERVATION): `tool/call` belongs to the crash-surviving
+prefix (KNOWN durable); no completed `tool/result` belongs to it. These two
+observations are ALL that recovery knows.
 
-- DSH CAN prove: the call was recorded and started; no completed outcome was
-  durably recorded.
-- DSH CANNOT prove: WHICH ground state produced the missing result —
-  (1) crash after flush-return but BEFORE body invocation; (2) crash DURING
-  body execution; (3) body COMPLETED but its result record did not survive
-  (Boundary D1). All three are REACHABLE and history-indistinguishable.
-- DSH CANNOT prove: whether the operation mutated anything; how far it got.
+- Recovery CAN observe: the call was durably recorded; no completed outcome
+  durably survived.
+- Recovery CANNOT prove: that the body ever began. The observation is equally
+  compatible with pre-body, during-body, and post-body ground truths (below).
+- Recovery CANNOT prove: WHICH ground truth produced the missing result;
+  whether the operation mutated anything; how far it got.
+- Illustrative ground truths compatible with this observation (examples, not
+  an exhaustive count):
+  (1) PRE-BODY hard crash after flush-return but before body invocation;
+  (2) PRE-BODY cooperative abort whose abort outcome was generated but did
+      not durably survive;
+  (3) DURING-body crash;
+  (4) POST-BODY completion whose result record did not survive (Boundary D1).
+  Recovery history cannot distinguish these.
 - Repair emits: synthetic `tool/result`, isError=true, error identity
   `ToolOutcomeUnknownError/TOOL_OUTCOME_UNKNOWN`, model-facing text instructing
   verify-then-retry (repair.ts:100–121; behavioral lock repair.spec.ts:229–261).
-- World: side effects **MAY have occurred** (UNKNOWN — ground states 1/2/3
-  above are history-indistinguishable; even state 3's recorded outcome may have
-  been lost with the result record). Absence of durable success ≠ proof of
-  failure; the synthetic isError=true is a RECOVERY CONVENTION, not an
-  observed outcome.
+- World: side effects **MAY have occurred** (UNKNOWN — every illustrative
+  ground truth above is history-indistinguishable; even a completed outcome's
+  record may have been lost with the result). Absence of durable success ≠
+  proof of failure; the synthetic isError=true is a RECOVERY CONVENTION, not
+  an observed outcome.
 - Orcana projection today: pairs the synthetic result; `mutation=false`
   (isError suppresses); shell verification ⇒ receipt FAIL (UNKNOWN→FAIL
   downgrade, experiment G); generation frozen across the possible mutation (H).
@@ -346,8 +367,8 @@ Crash points and consequences:
 | before settlement N | prior round facts only | round observations (ring-rebuildable parts recover; verdict does not) | resume starts chain=0; first settle polluted (proven) |
 | after endTurn(), before decideSteer | nothing new | verdict + chain delta | resume recomputes — different ladder position possible |
 | after decideSteer(steer), before agent.steer | nothing | decision | resume never steers for that round |
-| **Stage 1: after agent.steer, before claim** | NOTHING (inbox-only) | the steer message | stop that WOULD have been prevented now proceeds |
-| **Stage 2: claimed-but-NOT-appended** | NOTHING — message removed from inbox AND never appended (**KNOWN LOSS WINDOW**: crash during assemble/pre-step before user/message append) | the steer message entirely | same as Stage 1 loss, plus the claim already consumed it |
+| **Stage 1: after agent.steer, before claim** | steer message itself: NONE (inbox-only) | the steer message | stop that WOULD have been prevented now proceeds |
+| **Stage 2: claimed-but-NOT-appended** | **the steer message itself still has NO durable Session representation** (removed from inbox AND user/message not yet appended — **KNOWN LOSS WINDOW**: crash during assemble/pre-step). Other Session facts of this window (e.g., `step/start`) may independently exist/be durable — do not read this row as "no Session fact at all" | the steer message entirely | same as Stage 1 loss, plus the claim already consumed it |
 | **Stage 3: appended-but-not-durable** | CONDITIONAL (write-behind may have drained; barrier may not have run) | possibly the user/message record | partial continuity possible |
 | **Stage 4: durable** | user/message in persisted prefix | — | continuity restored modulo Barrier-D windows |
 
@@ -461,13 +482,17 @@ ordinary runtime-append path and MUST NOT be modeled as
 Persistence/materialization paths (verified):
 
 1. **New seeded session** (coordinator :1283–1293): createCore registers LAZY
-   intent (cursor 0, materialized:false — "No artifact until the first append",
-   :645–658); then `if (seed.length > 0) await appendCore(id, seed)` persists
-   the whole seed batch — INCLUDING the constructor-appended end-seed — via
-   appendBatch/materialize. Crash before that appendCore completes ⇒ NO
-   artifact ⇒ session invisible to `list()` and unrecoverable-by-id (header
-   intent was memory-only). Single semantic boundary: pre-materialization vs
-   materialized.
+   intent (cursor 0, materialized:false — source comment: "Pure lazy: record
+   intent only. No artifact until the first append"; physical durability is
+   governed by the BACKEND DURABLE PUBLISH/COMMIT POINT — e.g. jsonl
+   writeSyncedTempFile → link() publish → dir fsync — NOT by appendCore
+   Promise resolution, which may resolve strictly after the artifact is
+   already crash-durable); then `if (seed.length > 0) await appendCore(id,
+   seed)` persists the whole seed batch — INCLUDING the constructor-appended
+   end-seed — via appendBatch/materialize. Crash before the backend
+   publish/commit point ⇒ NO crash-durable artifact ⇒ session invisible to
+   `list()` and unrecoverable-by-id (header intent was memory-only). Single
+   semantic boundary: pre-publish vs published.
 2. **Resume path** (prepareCore :892–931 → attachPrepared :1185–1207): stored
    balanced events seed the constructor; a fresh end-seed is appended ONLY IF
    the stored log does not already end with one. That fresh marker is
@@ -513,7 +538,9 @@ Two distinct positions, never merge:
    writer domains; replacement doubling).
 6. Assuming no-Orcana-consumer ⇒ irrelevant (request/header, end-seed cases).
 7. Assuming repair codes reveal WHEN or WHETHER the body ran (they reveal only
-   which bytes survived; OUTCOME_UNKNOWN includes before-body).
+   which bytes survived; OUTCOME_UNKNOWN is compatible with pre-body /
+   during-body / post-body ground truths) — includes its corollary:
+   **TOOL_OUTCOME_UNKNOWN ⇒ body ran** ❌.
 8. Assuming a steered next-step message survived (four-stage ladder: lost at
     Stages 1–2 even after a successful agent.steer call).
 9. Assuming EngineSnapshot/snapshot-like surfaces are restorable checkpoints
@@ -524,24 +551,31 @@ Two distinct positions, never merge:
 11. **durable `tool/call` ⇒ body ran** ❌ (B3b hard-crash window exists).
 12. **durable `code-dispatch-start` ⇒ nested body ran** ❌ (prepare/guards/
     pre-execute crash windows exist between start and body).
-13. **claimed next-step ⇒ Session-durable** ❌ (claimed-but-not-appended KNOWN
-    LOSS WINDOW).
+13. **claimed next-step ⇒ durable user/message** ❌ (claimed-but-not-appended
+    KNOWN LOSS WINDOW: other Session facts like step/start may be durable
+    while the steer message itself is not).
 14. **appendCore Promise unresolved ⇒ artifact absent** ❌ (backend publish /
     dir-fsync may precede Promise resolution; use the backend commit point).
 15. **a later event can survive while an earlier-seq event is lost** ❌
     (append-only contiguous prefix; survivor sets are prefix-shaped).
-16. Preserved standing rule: absence of durable result ≠ proof side effect did
+16. **generated abort outcome ⇒ durably surviving abort fact** ❌
+    (generated-in-process ≠ persisted; a non-surviving abort result collapses
+     into TOOL_OUTCOME_UNKNOWN).
+17. Preserved standing rule: absence of durable result ≠ proof side effect did
     not occur.
 
 ## Completion-Impact Summary
 
 False-confidence pathways identified (analysis only): stale-PASS resurrection
-via unknown-outcome mutation (I.2); spurious failing-verification steering via
-unknown→FAIL (I.3); replacement double-application shifting generation (G/J);
-settlement pollution distorting first-round ladder decisions (J). All flow
-through documented projection gaps; all resolutions ultimately require either
-world observation or later-phase design decisions. Nothing here declares any
-current behavior incorrect-by-contract — R0-D owns contracts.
+via unknown-outcome mutation (Boundary I lattice, survivor state L1);
+spurious failing-verification steering when a verification outcome falls into
+crash ambiguity — that finding belongs to the `mutation → later verification`
+family (Boundary H projection rules with generation gaps of G applied), not to
+the PASS→mutation lattice; replacement double-application shifting generation
+(G/J); settlement pollution distorting first-round ladder decisions (J). All
+flow through documented projection gaps; all resolutions ultimately require
+either world observation or later-phase design decisions. Nothing here
+declares any current behavior incorrect-by-contract — R0-D owns contracts.
 
 ## Known / Conditional / Unknown Totals
 
