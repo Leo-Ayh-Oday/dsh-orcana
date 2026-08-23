@@ -1,4 +1,4 @@
-# R0-C — Crash Boundary & Ambiguity Analysis (Rev.3)
+# R0-C — Crash Boundary & Ambiguity Analysis (Rev.4)
 
 Answers, for each semantically distinct lifecycle boundary: what is already
 durable, what may be durable, what remains unknown, what can be reconstructed,
@@ -258,18 +258,71 @@ prior live Orcana fold did not happen" cannot be answered globally from the
 event type alone — reachability depends on the actual producer path.** Same
 Session event type ≠ same live lifecycle producer.
 
-### Producer reachability table
+Rev.4 correction: fold OCCURRENCE and fold EQUIVALENCE are separate axes, and
+Producer A's own fold can be non-final (see three-axis model below).
 
-| # | Producer | Event | Ordinary execution? | Passes tools/post-execute? | Prior equivalent live Orcana fold? | Durable result WITHOUT such fold reachable? | Recovery-only producer? | Evidence |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A | Ordinary scheduler execution result | tool/result | yes | YES — finalize runs the waterfall | YES (fold inside finalize, tool-calls.ts:151–155) | **UNREACHABLE** | no | tool-calls.ts :146–160; dsh-tools :3223–3225,:3359–3388 |
-| B | Scheduler final-result bypass | tool/result | yes (pre-body denial/failure) | NO — finish() skips it | none exists | **REACHABLE** | no | tool-calls.ts :153; dsh-tools :3002 |
-| C | Skipped-call synthetic abort pair | call+result | never executed | NO — loop appends directly via appendToolCall+appendToolResult | none exists | **REACHABLE** | no | tool-calls.ts :248–259 |
-| D | Cold-repair synthetic closers | synthetic tool/result | no (recovery-only) | NO — written by commitRepair during prepare | none in the dead process | **REACHABLE** (durable as part of repair, BEFORE resumed rebuild) | **YES** | coordinator :892–957; repair.ts |
-| E | Compaction surface replacement | tool/result (surfaceOp replace) | no — not a tool-execution outcome at all | NO — pruner appends directly to raw log | none (no live body post-execute fold for the replacement itself) | **REACHABLE** | no | pruner src |
+### Producer reachability table (REV.4)
+
+| # | Producer / subtype | Event | Post-execute phase invoked? | Orcana listener definitely reached? | Intermediate live fold possible? | Final durable result equivalent to folded result? | Body definitely ran? | Body definitely did NOT run? | World side-effect status | Direct Session append? | Recovery-only? | Replay projection today |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A1 | Ordinary execution — body dispatched, completes normally | tool/result | YES | CONDITIONAL ON LISTENER REACH/ORDER/COMPOSITION (an earlier waterfall listener may short-circuit/block/throw without calling next()) | YES when reached — Orcana folds BEFORE await next() (:467–474) | **NOT GUARANTEED** — downstream accept-content/value replacement, block→isError conversion, or definition-owned finalizeContent can all change the fact AFTER the fold | YES (bodyInvoked=true before execute) | no | outcome known as-folded; final durable fact may differ | no (loop appends via appendToolResult :155) | no | folds again from durable record |
+| A2 | Prepare-stage denial/cancel (guard denial, ask-cancel, pre-dispatch abort) | tool/result (post-result kind at PREPARE stage) | YES — still routed through finalizeScheduledExecution | same CONDITIONAL | YES when reached | NOT GUARANTEED (same downstream powers) | **NO — body never dispatched** | YES | none from this call | no | no | folds again |
+| B1 | PREPARE-STAGE final-result (collapsed-direct-call denial, signal-abort-before-dispatch, argument snapshot TypeError, callerCancelled) | tool/result | NO — finish() skips it | n/a | none | n/a (no fold to compare) | **NO — dispatch/body never reached** | YES | none | no (loop appends via finish path, tool-calls.ts :153) | no | first Orcana observation at rebuild |
+| B2 | DISPATCH-STAGE final-result (error thrown inside tools/execute waterfall scope — INCLUDING an around-wrapper throwing AFTER the body completed, or result-normalization failures; index.js :3191–3212 catch) | tool/result | NO | n/a | none — but the BODY MAY HAVE COMPLETED before the throw | n/a | **NOT PROVABLE — body may or may not have run** | NO | UNKNOWN (body side effects possible) | no | no | first Orcana observation at rebuild |
+| C | Skipped-call synthetic abort pair (loop cancel path) | call+result appended directly | NO | n/a | none | n/a (single writer) | NO — never prepared/dispatched | YES | none | YES — direct consecutive appends (:248–259); survival still write-behind/barrier-governed | no | pairs normally |
+| D1 | Cold-repair synthetic — TOOL_OUTCOME_UNKNOWN | synthetic tool/result | NO | n/a | none in dead process; resumed rebuild folds it FIRST (identity loss ⇒ may project FAIL) | n/a | UNKNOWN (three ground states) | no | UNKNOWN | YES — durable via commitRepair before resume | **YES** | pairs with pending call ⇒ 1 EngineEvent |
+| D2 | Cold-repair synthetic — TOOL_NOT_STARTED | synthetic tool/result | NO | n/a | none | n/a | **NO — no durable call by definition** | YES | none | YES — durable via commitRepair | **YES** | ✗ ZERO EngineEvents — orphan-skip (repair Session fact ≠ Orcana projection consumed) |
+| E | Compaction surface replacement | tool/result (surfaceOp replace) | NO | n/a | none — pruner appends directly to raw log; no live body post-execute fold for the replacement itself | n/a | n/a | n/a | n/a | YES — direct raw-log append | no | double-application risk (J) |
 
 Physical durability caveat applies to ALL producers: appended ≠ necessarily
 crash-surviving (write-behind/barrier/backend-commit govern survival).
+
+### Producer-A three axes (REV.4)
+
+- **Axis A — post-execute phase invoked**: YES for ordinary scheduler
+  executions (and also for prepare-stage denials, A2).
+- **Axis B — Orcana listener actually reached/folded**: **CONDITIONAL ON
+  LISTENER REACH/ORDER/COMPOSITION** — the post-execute waterfall lets any
+  earlier listener return a decision WITHOUT calling next(), which ends the
+  chain before later listeners; Orcana folds iff its listener is invoked
+  (:460–484, fold precedes `await next()`).
+- **Axis C — fold equivalent to FINAL durable result**: **NOT GUARANTEED.**
+  After the fold, downstream middleware may block (isError+feedback),
+  replace content or value, and definition-owned `finalizeContent`
+  (`applyFinalContent`, dsh-tools :3034–3036 contentFinalizers) transforms
+  content before materialization.
+
+Verified conceptual sequence for Producer A:
+
+```
+text
+body / execution result
+ ↓
+tools/post-execute waterfall:
+   earlier listeners…
+   ORCANA applyEvent(intermediate result)   ← fold point (if reached)
+   await next()
+   downstream: accept / replace content|value / BLOCK→isError
+ ↓
+finishScheduledExecution()
+ ↓
+applyFinalContent() / definition-owned finalizeContent
+ ↓
+appendToolResult → final tool/result appended
+ ↓
+persistence (write-behind / barrier)
+```
+
+### Producer-A semantic counterexample (source-supported)
+
+Successful mutation: workspace mutation actually succeeds → Orcana folds
+success → generation += 1 → downstream BLOCKS/replaces the final result →
+durable final result isError=true → restart replay: mutation=false ⇒
+generation does NOT advance ⇒ **live generation ≠ rebuilt generation** — with
+an ordinary ROOT tool, no code-mode, no result loss, fully durable result, no
+compaction replacement. Verification analogue: live receipt PASS → downstream
+content replacement/finalizer alters the rendered text (possibly destroying
+exit-status markers) → rebuilt receipt FAIL/different status.
 
 Boundary-E crash consequence per producer: A — no ambiguity beyond which
 records survived (D-family); B/C/D/E — a durable result can exist that the
@@ -332,18 +385,25 @@ EngineEvent.
 
 Once a successful mutation result is durable: live generation already advanced
 (fold precedes append); rebuild advances identically IF the record stays
-replay-visible. Known divergences that break equality: nested code-mode
-mutations (dropped — gen under-counts), surface replacement second application
-(gen OVER-counts, experiment J), unknown-outcome mutations (never counted —
-H). Generation remains a COARSE DERIVED RUNTIME FACT, never workspace
-authority; durable-mutation ⇒ correct-generation is NOT a valid inference.
+replay-visible AND the folded intermediate fact matched the finally-persisted
+fact. Known divergences that break equality: nested code-mode mutations
+(dropped — gen under-counts), surface replacement second application (gen
+OVER-counts, experiment J), unknown-outcome mutations (never counted — H),
+and **Producer-A finalization mismatch** — a success fold whose final durable
+result became isError via downstream block/replace replays as mutation=false
+(gen under-count vs live; Rev.4 counterexample). Generation remains a COARSE
+DERIVED RUNTIME FACT, never workspace authority; durable-mutation ⇒
+correct-generation is NOT a valid inference.
 
 ## Boundary H — Verification Result Observed
 
 Verification result durable ⇒ receipt deterministically reconstructable given
 verifyPatterns (config input). Receipt says "PASS at generation N historically"
-— NEVER "workspace currently valid". If a crash separated the verification
-from subsequent mutations, see Boundary I. Present validity always REQUIRES
+— NEVER "workspace currently valid". TWO caveats: (1) if a crash separated
+the verification from subsequent mutations, see Boundary I; (2) Producer-A
+finalization divergence can change the durable outcome/text versus what the
+live receipt recorded (Rev.4 analogue), so even the SURVIVING receipt may
+disagree with the live-era observation. Present validity always REQUIRES
 WORLD OBSERVATION or a fresh re-run.
 
 ## Boundary I — Verification PASS → Later Mutation → Crash (REV.3: prefix lattice vs execution domain)
@@ -376,14 +436,23 @@ Two DISTINCT questions, kept in two separate tables:
   before any freshness claim. Do NOT read L0 as "workspace pristine" and do
   NOT invert it into "L0 means nothing happened".
 - **L1**: V present; later ordinary-mutation-call-durable-with-lost-result is
-  an L1 witness (NOT L0); rebuilt generation frozen at V's generation ⇒ old
-  PASS presents CURRENT (experiments A/H) ⇒ false-confidence risk unless world
+  an L1 witness (NOT L0); rebuilt generation frozen at V's generation. Old
+  PASS presents CURRENT **CONDITIONALLY**: only if restart-time current
+  `verifyPatterns` still RECOGNIZES V's command — otherwise the receipt may
+  not be reconstructed at all and no stale-PASS presentation occurs (a
+  different failure mode: evidence silently absent). Under the recognized
+  case the false-confidence risk stands (experiments A/H) unless world
   observed.
 - **L2**: staleness computed correctly ONLY IF M is visible and correctly
   recognized by current Orcana replay projection. QUALIFIER preserved:
   code-mode nested mutations are replay-DROPPED and surface replacements are
   DOUBLE-APPLIED (R0-B D1/D6), so physical prefix correctness ≠ Orcana
-  semantic replay completeness.
+  semantic replay completeness. ADDITIONAL divergence (Rev.4): ordinary
+  Producer-A intermediate-fold vs final-durable-result mismatch — a live fold
+  of success (generation advanced) whose final durable result was converted
+  to isError by downstream block/replace or finalizeContent replays as
+  mutation=false ⇒ live generation ≠ rebuilt generation even for an ordinary
+  root tool with the result fully durable.
 
 If the intended scenario is instead `mutation → later verification → crash`,
 that remains a DIFFERENT family analyzed under Boundary H rules with the
@@ -486,33 +555,29 @@ Do not merge the two.
 Historical absence of a job_output query does NOT prove failure, success, or
 completion. No exactly-once guarantee exists or is proposed.
 
-## Compaction / Surface-Replacement Timing Family
+## Compaction / Surface-Replacement Timing Family (REV.4: contiguous-prefix states)
 
 Producer sequence (pruner src): prune pass iterates CURRENT-SURFACE results →
-for each over-budget node APPENDS `compaction/prune` (shadow price) then
-IMMEDIATELY-ADJACENT replacement `tool/result` (surfaceOp replace +
-sourceEventSeqs). Crash points:
+for each over-budget node APPENDS `compaction/prune` (shadow price, P) then
+IMMEDIATELY-ADJACENT replacement `tool/result` (R; surfaceOp replace +
+sourceEventSeqs), with `seq(O) < seq(P) < seq(R)` for original O. Because the
+log is a CONTIGUOUS PREFIX, crash-surviving survivor sets are exactly:
 
-1. **Original durable, pruning not started**: raw=surface=original. Replay
-   single-application. Unambiguous.
-2. **Between the adjacent appends** (prune landed, replacement not):
-   KNOWN — `compaction/prune` is a LOG-ONLY event: no surfaceOp, not a surface
-   node, so the Session Surface remains on the ORIGINAL node and the model-
-   visible projection keeps the full original content. No truth manufactured;
-   only the shadow-price bookkeeping dangles. Current Orcana replay ignores
-   compaction/prune entirely, so replay also stays on the original single
-   application. Unresolved separately: TOKEN-METER CLAIM STATE — whether the
-   metering side can double-count or lose the shadow price across this crash
-   seam (consumer semantics outside audited scope; isolated here so it no
-   longer qualifies the Surface conclusion).
-3. **Replacement appended, not yet durable**: crash loses ONLY the
-   replacement; original remains authoritative-and-durable; post-restart
-   surface derives the ORIGINAL again. Model-visible content reverts to full
-   original — semantically safe (no truth manufactured), though token-bounded
-   benefit lost.
-4. **Replacement durable**: raw contains BOTH records; surface shadows
-   original; current Orcana replay applies BOTH (generation doubling for
-   mutation replacements — experiment J; receipt overwrite for verifications).
+| Surviving prefix | Surface after restart | Current Orcana raw replay sees |
+| --- | --- | --- |
+| O | surface = original node | single application |
+| O + P | surface STILL = original node (**KNOWN** — P is log-only, no surfaceOp, not a surface event) | single application (P unconsumed) |
+| O + P + R | surface = replacement (shadows O) | DOUBLE application of the same logical result (mutation replacements double generation — J; receipt overwrite for verifications) |
+| R without P, or P+R without O | **UNREACHABLE** — contiguous prefix cannot skip or lose earlier seqs while keeping later ones |
+
+Rev.0's "crash loses ONLY the replacement" wording was WRONG (point 3 below
+superseded): if R did not survive, the prefix cut may fall before OR after P —
+P may survive or be lost with it. The Surface conclusion is UNCHANGED and
+KNOWN in every reachable state: whenever R is absent the surface remains on
+the ORIGINAL node (P carries no content). Isolated open question:
+TOKEN-METER CLAIM STATE across an O+P-without-R cut (metering consumer
+semantics outside audited scope; isolated so it does not qualify the Surface
+conclusion).
 
 No dedupe fix designed (out of scope).
 
@@ -553,6 +618,12 @@ Persistence/materialization paths (verified):
      until the parent directory's metadata is synced", jsonl :557–562).
    Single semantic boundary pair to track: S0→S1 (publication) and S1→S2
    (power-loss durability).
+
+   BACKEND SCOPE (Rev.4): these S0/S1/S2 states describe the CURRENT JSONL
+   POSIX `materializePosix` implementation. They are NOT automatically
+   applicable to the Win32 publication path, to other persistence backends
+   (e.g. sqlite), or to future backend implementations. R0-C records current
+   real behavior; it does not define a universal storage contract.
 2. **Resume path** (prepareCore :892–931 → attachPrepared :1185–1207): stored
    balanced events seed the constructor; a fresh end-seed is appended ONLY IF
    the stored log does not already end with one. That fresh marker is
@@ -634,6 +705,18 @@ Two distinct positions, never merge:
     durability awaits dir fsync).
 22. **process death == power loss** ❌ (distinct failure models with distinct
     durability guarantees — S1 vs S2).
+23. **Orcana fold occurred ⇒ fold equals the final durable result** ❌
+    (downstream block/replace and definition-owned finalizeContent can change
+     the fact after the fold; Producer-A axes B/C).
+24. **ordinary post-execute path ⇒ downstream cannot change the result** ❌
+    (same mechanism as #23).
+25. **final-result ⇒ body never ran** ❌ (DISPATCH-STAGE final-result can
+     follow a completed body via around-wrapper post-body throws or
+     normalization failures; only PREPARE-STAGE final-result proves that).
+26. **durable repair result ⇒ Orcana rebuild necessarily consumes it** ❌
+    (D2/TOOL_NOT_STARTED closers orphan-skip to zero EngineEvents).
+27. **L1 V-only ⇒ verification receipt necessarily rebuilds** ❌
+    (requires restart-time verifyPatterns to still recognize V's command).
 
 ## Completion-Impact Summary
 
