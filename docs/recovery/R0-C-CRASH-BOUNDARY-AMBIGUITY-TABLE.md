@@ -1,4 +1,4 @@
-# R0-C — Crash Boundary & Ambiguity Analysis (Rev.5)
+# R0-C — Crash Boundary & Ambiguity Analysis (Rev.6)
 
 Answers, for each semantically distinct lifecycle boundary: what is already
 durable, what may be durable, what remains unknown, what can be reconstructed,
@@ -7,6 +7,17 @@ what requires world re-observation, and what recovery logic must never assume.
 Docs-only failure-boundary analysis over current real sources. No recovery
 implementation, no new durability machinery, no dedupe/replay/fix of any kind.
 Defects found are documented, not repaired.
+
+Rev.6 corrects three residual fact boundaries: (1) Producer-A body
+reachability is split by subtype — post-result/post-execute membership does
+NOT prove body invocation (A3 pre-body abort/resolution results reach
+post-execute with bodyInvoked never set); (2) verification receipt status is
+NOT a function of isError alone — receiptStatus precedence is interrupted >
+exitCode > isError > implicit clean pass, with exitCode/interrupted parsed
+from shell markers in content, so even a SUCCESSFUL content transformation
+can flip receipt status; (3) ctx.jobs (LocalJobRegistry) is a process-local
+in-memory registry that dies with the process — a fresh job-tool query after
+restart is NOT a valid resolver for pre-crash job outcomes.
 
 Rev.5 propagates the Producer-A three-axis model everywhere and fixes residual
 subtype/summary consistency: A1 now includes the caught-body-error ordinary
@@ -276,7 +287,15 @@ Producer A's own fold can be non-final (see three-axis model below).
 
 | # | Producer / subtype | Event | Post-execute phase invoked? | Orcana listener definitely reached? | Intermediate live fold possible? | Final durable result equivalent to folded result? | Body definitely ran? | Body definitely did NOT run? | World side-effect status | Direct Session append? | Recovery-only? | Replay projection today |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A1 | Ordinary post-result candidate — body dispatched, returns OR caught body error (dispatchToolBody catch :3177–3178 → toolErrorResult still flows to post-execute; JSDoc :3168–3170 "Tool and unknown-tool failures still receive post-execute") | tool/result | YES — for BOTH success and caught-error candidates | CONDITIONAL ON LISTENER REACH/ORDER/COMPOSITION (an earlier waterfall listener may short-circuit/block/throw without calling next()) | YES when reached — Orcana folds BEFORE await next() (:467–474); the folded fact is the PRE-post-execute candidate | **NOT GUARANTEED** — downstream accept-content/value replacement, block→isError conversion, throwing listener/failed value validation (:3224–3229 catch), or definition-owned finalizeContent (incl. its failure conversion :3246–3251) can all change the final fact AFTER the fold | YES (bodyInvoked=true before execute) | no | outcome known as-folded; final durable fact may differ in content/hash AND, via error-producing paths, in isError | no (loop appends via appendToolResult :155) | no | folds again from durable record |
+| A1 | Body-success post-result candidate — fused-signal check passed, resolveExecution OK, `bodyInvoked = true`, tool.execute RETURNED (:3170–3176) | tool/result | YES | CONDITIONAL ON LISTENER REACH/ORDER/COMPOSITION (an earlier waterfall listener may short-circuit/block/throw without calling next()) | YES when reached — Orcana folds BEFORE await next() (:467–474); the folded fact is the PRE-post-execute candidate | **NOT GUARANTEED** — downstream accept-content/value replacement, block→isError conversion, throwing listener/failed value validation (:3224–3229 catch), or definition-owned finalizeContent (incl. its failure conversion :3246–3251) can all change the final fact AFTER the fold | **YES** (crossed bodyInvoked=true AND execute returned; createSuccessResult validation failure after a completed body lands in A2's catch) | no | body side effects possible per tool semantics; final durable fact may differ in content/hash, marker-parse, AND via error-producing paths isError | no (loop appends via appendToolResult :155) | no | folds again from durable record |
+| A2 | Body-error post-result candidate — `bodyInvoked = true` THEN tool.execute threw (or createSuccessResult snapshot/schema validation threw AFTER the body completed) → dispatchToolBody catch :3177–3178 → toolErrorResult → still ordinary post-result path (JSDoc :3168–3170 "Tool and unknown-tool failures still receive post-execute") | tool/result | YES | same CONDITIONAL | YES when reached (folds the error candidate) | NOT GUARANTEED (same downstream powers) | **YES** (bodyInvoked=true crossed) / **completed normally: NO** | no | body MAY have executed partially before throwing — world side effects possible per tool semantics | no | no | folds again |
+| A3 | PRE-BODY dispatch-produced result — two source paths, both BEFORE `bodyInvoked = true`: (a) fused signal already aborted at dispatchToolBody entry → returns toolAbortedBeforeDispatchResult() NORMALLY before the try block (:3165–3169); (b) resolveExecution undefined / throws ToolNotFoundError inside try before bodyInvoked (:3172–3173) → same catch :3177–3178 toolErrorResult. Both flow as NORMAL waterfall results → normalizeDispatchResult → post-result → post-execute | tool/result | YES | same CONDITIONAL | YES when reached | NOT GUARANTEED (same downstream powers) | **NO** (bodyInvoked never set; execute never called) | YES | **NONE from this call's tool body** (result is registry-produced: abort/error text) | no | no | folds again |
+
+GLOBAL BODY-REACHABILITY RULE: a `post-result` candidate exists ≠ the tool
+body ran; the post-execute phase being invoked ≠ the tool body ran. Only
+subtypes that verifiably crossed `bodyInvoked = true` / an actual
+`tool.execute()` call (A1/A2) may claim "body definitely ran". Producer A as
+a CLASS has NO single universal body-reachability value.
 | A2 | Prepare-stage POST-RESULT path — pre-execute/approval already progressed, then denial/cancel observed (guard denial :3107–3116; approval-cancelled :3104; late callerCancelled :3122) | tool/result (post-result kind at PREPARE stage) | YES — routed through finalizeScheduledExecution like any post-result | same CONDITIONAL | YES when reached | NOT GUARANTEED (same downstream powers) | **NO — body never dispatched** | YES | none from this call | no | no | folds again |
 | B1 | PREPARE-STAGE final-result (caller already cancelled BEFORE the relevant pre-execute phase :3091; prepare pipeline exception :3131–3136 catch; collapsed-direct-call denial / signal-abort / argument snapshot TypeError in createExecution :3049–3075) | tool/result | NO — finish() skips it | n/a | none | n/a (no fold to compare) | **NO — dispatch/body never reached** | YES | none | no (loop appends via finish path, tool-calls.ts :153) | no | first Orcana observation at rebuild |
 | B2 | DISPATCH-STAGE final-result (error thrown inside tools/execute waterfall scope — INCLUDING an around-wrapper throwing AFTER the body completed, or result-normalization failures; index.js :3191–3212 catch) | tool/result | NO | n/a | none — but the BODY MAY HAVE COMPLETED before the throw | n/a | **NOT PROVABLE — body may or may not have run** | NO | UNKNOWN (body side effects possible) | no | no | first Orcana observation at rebuild |
@@ -301,8 +320,12 @@ crash-surviving (write-behind/barrier/backend-commit govern survival).
   After the fold, two DIFFERENT mechanism families can diverge the final fact:
   - *Successful transformations* — accept-content replacement, accept-value
     replacement (:3380–3390), finalizeContent returning new content
-    (:3256–3264): isError UNCHANGED ⇒ replay mutation boolean unchanged;
-    divergence is CONTENT/HASH/FINGERPRINT-level only.
+    (:3256–3264): isError UNCHANGED ⇒ replay mutation boolean unchanged ⇒ NO
+    generation divergence from this mechanism alone; BUT for shell
+    verification tools the CONTENT change can alter marker-derived parsing
+    (shellExitStatus :176–183: `[exit code: N]` / `[killed by signal: X]`
+    end-anchored, `[timed out after …]`) ⇒ parsed exitCode/interrupted may
+    change ⇒ receipt STATUS may change WITHOUT any isError flip.
   - *Error-producing changes* — post-execute block decision (:3372–3377,
     isError=true+feedback), a throwing post-execute listener or failed value
     re-validation (finalizeScheduledExecution internal catch :3224–3229 →
@@ -347,19 +370,42 @@ mutation=false ⇒ rebuilt generation does NOT advance ⇒ **live generation ≠
 rebuilt generation** — with an ordinary ROOT tool, no code-mode, no result
 loss, fully durable result, no compaction replacement.
 
-Successful transformations do NOT trigger this: content/value replacement
-that succeeds (:3380–3390) or finalizeContent returning content keeps isError
-intact, so the replay mutation boolean is UNCHANGED; their divergence surface
-is the folded-vs-durable CONTENT (resultHash sha256 of content, adapter
-:224) ⇒ ring observations, fingerprints, and receipt hashes recorded live
-can differ from what rebuild derives from the FINAL content.
+Successful transformations do NOT trigger generation divergence: content/
+value replacement that succeeds (:3380–3390) or finalizeContent returning
+content keeps isError intact, so the replay mutation boolean is UNCHANGED
+(adapter :226 keys on isError ONLY). Their divergence surface is broader:
+the folded-vs-durable CONTENT (resultHash sha256 of content, adapter :224)
+⇒ ring observations and fingerprints recorded live can differ from what
+rebuild derives from the FINAL content; AND for shell tools the marker-parse
+divergence below.
 
-**Verification divergence — two distinct levels**: (a) content/hash level —
-a successful transform between fold and persist changes receipt resultHash,
-so live-recorded hash ≠ rebuilt hash while STATUS stays identical; (b)
-status level — ONLY error-producing paths (block, throwing listener/failed
-validation/throwing finalizer) flip final isError ⇒ live PASS intermediate →
-rebuilt FAIL. Do not collapse (a) into (b).
+**Verification divergence — receipt status is NOT a function of isError
+alone**: `receiptStatus` (governor-core :208–217) precedence is
+`interrupted → unknown`, else `exitCode !== undefined → pass iff 0`, else
+`isError → fail`, else implicit clean pass; exitCode/interrupted are PARSED
+FROM CONTENT by `shellExitStatus` (:176–183, markers owned by dsh-shell),
+and only for SHELL_TOOLS (non-shell events get exitCode=undefined,
+interrupted=false ⇒ status decided by isError alone).
+
+Source-supported verification counterexamples:
+1. Live intermediate content ends `...\n[exit code: 1]` ⇒ exitCode=1 ⇒
+   FAIL receipt. A SUCCESSFUL downstream content replacement removes that
+   trailing marker while isError stays false ⇒ final durable content has no
+   exit marker ⇒ replay parses exitCode=undefined, interrupted=false,
+   isError=false ⇒ **PASS**. Live FAIL ↔ rebuilt PASS with NO error-producing
+   path involved.
+2. Conversely a successful transform APPENDING/altering a `[timed out after
+   …]` or terminal `[killed by signal: X]` line flips interrupted=true ⇒
+   status becomes UNKNOWN (PASS/FAIL → UNKNOWN). Marker strings are those of
+   the real dsh-shell contract (:178–180); no invented formats are used.
+3. Status divergence via ERROR-PRODUCING paths (block / throwing listener /
+   failed validation / throwing finalizer) remains as previously documented:
+   final isError=true where the fold saw success ⇒ FAIL.
+
+Mutation/generation rules and verification rules are DIFFERENT LAYERS:
+mutation = f(isError) only (:226); verification status = f(interrupted,
+exitCode-from-content, isError) (:208–217). Do not port mutation-layer
+conclusions to verification status or vice versa.
 
 Boundary-E crash/rebuild consequence per producer: for Producer A, divergence
 depends on AT LEAST six factors — (1) which Session records survived; (2)
@@ -367,7 +413,14 @@ whether the Orcana listener was actually reached; (3) what intermediate
 result it folded; (4) how downstream post-execute changed that result; (5)
 how finalizeContent changed final content; (6) what final result was durably
 persisted. Therefore complete record survival does NOT imply
-live state == rebuilt state. B/C/E — producer-specific semantics; may produce
+live state == rebuilt state. Body-reachability is part of this divergence
+surface: Producer-A3 pre-body results reach post-execute with NO tool-body
+execution, so "ordinary post-result ⇒ world side effect attempted" is NOT a
+valid inference; only A1/A2 subtypes carry possible tool-body side effects.
+All pre-body/abort/error constructors are isError=true (:3472–3482,
+:3551–3561), so conversely an isError=false durable ordinary result DOES
+imply the A1 body-success path. B/C/E — producer-specific semantics; may
+produce
 durable results without an equivalent prior live tool-execution fold. D1
 OUTCOME_UNKNOWN — first resumed rebuild fold. D2 NOT_STARTED — durable
 Session result exists, but the current translator emits ZERO EngineEvents
@@ -450,15 +503,20 @@ NOT a valid inference.
 ## Boundary H — Verification Result Observed
 
 Verification result durable ⇒ receipt deterministically reconstructable given
-verifyPatterns (config input). Receipt says "PASS at generation N historically"
-— NEVER "workspace currently valid". THREE caveats: (1) if a crash separated
-the verification from subsequent mutations, see Boundary I; (2)
-Producer-A CONTENT divergence — successful transforms between fold and
-persist change receipt resultHash ⇒ live-recorded hash ≠ rebuilt hash while
-status stays identical; (3) Producer-A STATUS divergence — ONLY error-
-producing paths (block, throwing listener / failed value validation /
-throwing finalizeContent) flip final isError ⇒ live PASS intermediate can
-rebuild as FAIL. Do not infer status flips from mere content changes.
+verifyPatterns (config input). Receipt says "PASS/FAIL/UNKNOWN at generation N
+historically" — NEVER "workspace currently valid". FOUR caveats: (1) if a
+crash separated the verification from subsequent mutations, see Boundary I;
+(2) Producer-A CONTENT divergence — successful transforms between fold and
+persist change receipt resultHash ⇒ live-recorded hash ≠ rebuilt hash;
+(3) Producer-A STATUS divergence — receipt status depends on content-derived
+`interrupted`/`exitCode` AND isError (:208–217), so a successful transform
+that alters shell markers can change reconstructed status WITHOUT isError
+flipping (live FAIL ↔ rebuilt PASS; PASS/FAIL ↔ UNKNOWN — see counterexamples
+in the Producer-A section); error-producing paths (block, throwing listener /
+failed validation / throwing finalizer) remain the OTHER status-divergence
+route via isError=true; (4) the intermediate Orcana receipt status (folded
+from pre-post-execute candidate) and the receipt rebuilt from FINAL durable
+content may therefore DISAGREE even when every record survived.
 Present validity always REQUIRES
 WORLD OBSERVATION or a fresh re-run.
 
@@ -503,13 +561,17 @@ Two DISTINCT questions, kept in two separate tables:
   recognized by current Orcana replay projection. QUALIFIER preserved:
   code-mode nested mutations are replay-DROPPED and surface replacements are
   DOUBLE-APPLIED (R0-B D1/D6), so physical prefix correctness ≠ Orcana
-  semantic replay completeness. ADDITIONAL divergence family (Rev.5):
-  ordinary Producer-A intermediate-fold vs final-durable-result mismatch,
-  split by mechanism — (a) successful transform ⇒ content/hash/fingerprint
-  divergence only; (b) error-producing downstream change (block / throwing
+  semantic replay completeness. ADDITIONAL divergence family: ordinary
+  Producer-A intermediate-fold vs final-durable-result mismatch —
+  (a) successful transform ⇒ content/hash/fingerprint divergence PLUS, for
+  shell verification tools, parsed-exitCode divergence, parsed-interrupted
+  divergence, and RECEIPT-STATUS divergence (marker parse changes; no isError
+  flip needed); (b) error-producing downstream change (block / throwing
   listener / failed value validation / throwing finalizeContent) ⇒ isError
   flips ⇒ replay mutation=false ⇒ live generation ≠ rebuilt generation even
-  for an ordinary root tool with the result fully durable.
+  for an ordinary root tool with the result fully durable. Generation
+  divergence remains tied ONLY to final isError classification changes;
+  verification-status divergence is NOT limited to that route.
 
 If the intended scenario is instead `mutation → later verification → crash`,
 that remains a DIFFERENT family analyzed under Boundary H rules with the
@@ -575,7 +637,12 @@ attempts to finish; process dies before normal termination.
   generation-based claims (they inherit Boundaries C/I ambiguities).
 - Completion impact: a task that WAS effectively complete may resume with
   degraded/incorrect derived inputs (see I) and re-steer or mis-assert —
-  analysis only.
+  analysis only. Receipt-consumed completion inputs inherit the Boundary-H
+  status caveat: rebuilt receipt status can differ from the live-folded
+  status (PASS↔FAIL, PASS/FAIL↔UNKNOWN) when final durable content's shell
+  markers parse differently — even with isError unchanged — so restart
+  eligibility recomputation may run on different verification evidence than
+  the live decision did.
 
 ## Boundary M — Background / Interruptible Operation (REVISED)
 
@@ -600,14 +667,26 @@ jobs-local :416–434). Two separate durability channels exist:
 Crash stages of the notice itself reuse the Boundary-J ladder: settled →
 notice queued (inbox) → claimed → user/message appended → persisted. A crash
 before Stage 4 loses the notice even though **the real process/job world has
-a terminal outcome** — post-resume Session history cannot pretend to know it
-(REQUIRES WORLD OBSERVATION or a fresh job-tool query against the live
-registry).
+a terminal outcome** — post-resume Session history cannot pretend to know it.
+Valid recovery resolvers for a pre-crash old job's terminal outcome are
+EXACTLY: (A) the completion notice already reached durable Stage 4; (B)
+independent external world/process observation (the child may still exist in
+the OS: PID/process probe, filesystem/log output, external service state —
+at this abstraction level only, no new probe designed here); (C) separately
+durable/external evidence. **INVALID resolver (Rev.6 correction): a fresh
+job_output/job-tool query after restart** — `ctx.jobs` is the LocalJobRegistry
+(jobs-local/src/index.ts :91–127): an in-memory Map store (:102), one
+process-wide instance (:113). Hard process death destroys that instance and
+its tracked job state; the restarted process constructs a NEW EMPTY registry
+that has NO knowledge of pre-crash jobs. A post-resume query is only
+meaningful while the ORIGINAL registry/process still exists (same-process
+steer/wait flows); it is NOT a cross-restart recovery authority.
 
 Graceful disposal vs hard death: graceful agent/service disposal CANCELS
 owned jobs and awaits termination (observable stopping→settled transitions);
-hard SIGKILL leaves children per OS semantics with NO notice path at all.
-Do not merge the two.
+hard SIGKILL leaves children per OS semantics with NO notice path at all,
+AND destroys the registry that recorded any pre-death settlement. Do not
+merge the two.
 
 Historical absence of a job_output query does NOT prove failure, success, or
 completion. No exactly-once guarantee exists or is proposed.
@@ -778,6 +857,21 @@ Two distinct positions, never merge:
     (D2/TOOL_NOT_STARTED closers orphan-skip to zero EngineEvents).
 27. **L1 V-only ⇒ verification receipt necessarily rebuilds** ❌
     (requires restart-time verifyPatterns to still recognize V's command).
+28. **post-result / post-execute membership ⇒ tool body definitely ran** ❌
+    (Producer-A3 pre-body abort/resolution results reach post-execute without
+    bodyInvoked ever being set; only A1/A2 crossed tool.execute).
+29. **successful content transformation ⇒ verification status unchanged** ❌
+    (status parses content-derived interrupted/exitCode markers; removing or
+    adding them via a successful transform can flip FAIL↔PASS↔UNKNOWN with
+    isError untouched).
+30. **verification fail iff isError** ❌ (receiptStatus precedence:
+    interrupted → unknown beats exitCode beats isError beats implicit clean
+    pass — governor-core :208–217).
+31. **post-resume new ctx.jobs ⇒ can query old process-local job outcome** ❌
+    (LocalJobRegistry is an in-memory per-process Map; hard death destroys it;
+    the restarted process gets a NEW empty registry with no pre-crash
+    knowledge — valid resolvers are durable Stage-4 notices / external
+    world-process observation / separately durable evidence).
 
 ## Completion-Impact Summary
 
@@ -802,14 +896,21 @@ declares any current behavior incorrect-by-contract — R0-D owns contracts.
   original); IF the Orcana listener is reached, its intermediate fold precedes
   downstream/finalization/final append (reach CONDITIONAL on composition/
   order; final equivalence NOT guaranteed); five-producer
-  tool/result topology and per-producer fold reachability; prefix lattice
+  tool/result topology and per-producer fold reachability; Producer-A SUBTYPE
+  body reachability differs (A1/A2 ran; A3 never did yet still reaches
+  post-execute); receiptStatus precedence interrupted > exitCode > isError >
+  implicit clean pass; shell marker parsing rules; old ctx.jobs disappears on
+  hard process death; prefix lattice
   L0/L1/L2 reachable + L3 unreachable; S0/S1/S2 end-seed physical states.
 - CONDITIONALLY KNOWN: any single record's survival between append and next
   barrier; replacement durability (compaction point 3); steer-message survival
-  (Stages 1–3 of the ladder); OUTCOME_UNKNOWN ground-state identity.
+  (Stages 1–3 of the ladder); OUTCOME_UNKNOWN ground-state identity;
+  successful-content-transformation status change occurs only when the
+  transform changes marker-derived exitCode/interrupted parsing semantics.
 - UNKNOWN: interrupted-execution world effects and ground states; background
-  eventual outcomes absent Stage-4 notices/job-tool queries; downtime world
-  drift; token-meter claim state across orphan prunes.
+  old-process job terminal outcomes absent durable Stage-4 notice/evidence
+  (resolvable ONLY via external world/process evidence, not the new process-
+  local registry); downtime world drift; token-meter claim state across orphan prunes.
 - UNRESOLVED: token-meter claim-state semantics (isolated); deployed-version
   equivalence.
 - REQUIRES WORLD OBSERVATION: all Boundary C/I/M world questions.
@@ -835,7 +936,11 @@ declares any current behavior incorrect-by-contract — R0-D owns contracts.
 | Pruner adjacency (prune+replacement synchronous) | compaction-tool-result-pruner/src/index.ts @15148dbd9a | verified |
 | Steer/stop-path; four-stage steer ladder incl. claimed-but-not-appended loss window | agent-loop agent.ts:120–132, :281–284 (claim), :295–301 @15148dbd9a | verified |
 | IF listener reached: fold precedes downstream decisions/finalization/append (reach conditional); final equivalence NOT guaranteed | dsh-governor src :460–484 (applyEvent before next()); index.js :3223–3230 (finalize internal catch), :3240–3253 (finish + applyFinalContent), :3372–3390 (postExecute block/replace) | verified |
-| Producer-A mutation/isError replay coupling | adapter :226 (mutation = MUTATION_TOOLS && !isError); governor-core :276–277 (generation advance gated on event.mutation); receiptStatus fail iff isError (:209–213) | verified |
+| Producer-A mutation/isError replay coupling | adapter :226 (mutation = MUTATION_TOOLS && !isError); governor-core :276–277 (generation advance gated on event.mutation) | verified |
+| receiptStatus precedence: interrupted → unknown; exitCode → pass iff 0; isError → fail; else implicit clean pass | governor-core receiptStatus :208–217 | verified |
+| Shell marker parsing (content → exitCode/interrupted): `[exit code: N]` end-anchored, `[killed by signal: X]` end-anchored, `[timed out after …]` anywhere; absent markers = clean exit 0; SHELL_TOOLS only | dsh-governor shellExitStatus :176–183 + toEngineEvent :196–230 (markers owned by @deepseek-ai/dsh-shell) | verified |
+| Producer-A subtype body reachability differs: A1/A2 bodyInvoked=true crossed; A3 pre-body abort/resolution results never set it yet still reach post-execute | index.js dispatchToolBody :3160–3183 (fused check :3165–3169; resolveExecution :3172–3173; bodyInvoked :3174; catch :3177–3178); toolAbortedBeforeDispatchResult/toolErrorResult isError=true (:3551–3561/:3472–3482) | verified |
+| ctx.jobs LocalJobRegistry is process-local in-memory Map; gone on hard process death | deepseek-harness jobs-local/src/index.ts :91–127 (store = new Map :102; "one process-wide instance" :113; disposeAll teardown :125–126) | verified |
 | Automatic completion notice: onJobDone → inject(busy)/followup(idle+wakeBudget); first-wins; disposal discards | rc.6 jobs/tool-jobs/src/index.ts:283–302; jobs-local settle() :416–434 | verified |
 | Orcana projection behaviors (FAIL-downgrade, frozen-gen, double-apply, pollution) | experiments /tmp/r0a-{rev3,experiment,experiment2}.mts; suites 42+11 PASS | executor-runtime-proven |
 | NO resume-path behavioral test in Orcana repo | grep dsh-governor tests | 0 hits |
