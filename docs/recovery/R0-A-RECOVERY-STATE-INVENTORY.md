@@ -1,584 +1,552 @@
-# R0-A Recovery State Inventory (Rev.2)
+# R0-A Recovery State Inventory (Rev.3)
 
-Factual audit only: what exists, what reads it, what writes it, what rebuild
-currently does, what it currently misses, what remains unknown. Not a
-correctness contract, not an R0-B classification, not an R1 design.
+Factual audit only: what exists, what reads it, what writes it, what cold
+resume currently does, what rebuild currently does, what each layer currently
+misses, what remains unknown. Not a correctness contract, not an R0-B
+classification, not an R1 design.
 
-Rev.2 corrects overstatements found by independent review of Rev.1
-(`b10f694`): the "single mutable state holder" and "sole input currency"
-framing, a WRONG turn-local-state recovery verdict (rebuild actually leaves a
-populated TurnState — runtime-proven below), an unproven "cannot drift by
-construction" claim, code-mode divergence that was acknowledged in one section
-but not propagated into capability verdicts, and several SUPPORTED claims that
-only held for a narrower scope than stated.
+Revision history: Rev.1 (`b10f694`) established the inventory; Rev.2
+(`18bc39e`) corrected state-container framing, proved TurnState rebuild
+pollution, and introduced three-level live/replay analysis; Rev.3 (this
+revision) adds the previously missing DSH **cold crash-repair layer** and
+**Session raw-log vs surface semantics**, and corrects every recovery claim
+that depended on them. Rev.2 conclusions that survive re-verification are
+kept unchanged.
 
 ## Baseline
 
 - Branch: `research/durable-recovery-r0-a`
-- Starting HEAD for this revision: `b10f694bf6869ffc00f8e5056685d73177e33828`
-- Prior-revision starting HEAD: `f8a45cd10568dd2a457cd14f4b23629dac3dc690`
-  (`packages/governor-core`, `packages/dsh-governor`, `docs/` are
-  byte-identical between `f8a45cd` and `origin/main@3754220`, so source-level
-  observations hold for main as well)
-- Only file changed by either revision:
+- Starting HEAD for this revision: `18bc39efbf6de8dfd6df11218f69b56ccc0c892a`
+- Only file changed across all revisions:
   `docs/recovery/R0-A-RECOVERY-STATE-INVENTORY.md`
-- Lockfile (`pnpm-lock.yaml`) pins all audited DSH packages to
-  **0.1.0-rc.6**; DSH semantics cited below were verified against the rc.6
-  artifacts installed in this workspace AND the harness monorepo's rc.6
-  release commit (`deepseek-harness@15148dbd9a`, tag lineage
-  `release/dsh-0.1.0-rc.6`). Where this checkout has moved to rc.7, rc.6 was
-  read via `git show 15148dbd9a:<path>`.
-- Input gap: `/DSH/Architecture/ORCANA-DURABLE-EXECUTION-EVIDENCE-RECOVERY-MASTER-PLAN-v0.1.md`
-  does not exist on this machine (searched `/DSH`, `$HOME`, worktrees). The
-  revision principles quoted in the task directive (Model-First,
-  Runtime-Verified; Minimum Necessary Governance; Persist facts, not
-  decisions) were applied as stated; Master-Plan-specific cross-references
-  could not be re-verified and are flagged where relevant.
-- Audit method note: every load-bearing behavioral claim below was either read
-  directly from locked-version source or reproduced at runtime with
-  `node --experimental-strip-types` against the real engine source
-  (`/tmp/r0a-experiment*.mts`, commands in Evidence Index). No claim rests on
-  comments alone.
+- Lockfile pins all audited DSH packages to **0.1.0-rc.6**; every DSH semantic
+  cited below was verified against rc.6 artifacts installed in this workspace
+  and/or the harness monorepo's rc.6 release commit
+  (`deepseek-harness@15148dbd9a`, read via `git show` where the checkout has
+  moved on). Master was NOT used as a substitute.
+- Execution environment note: the project Master Plan document
+  (`ORCANA-DURABLE-EXECUTION-EVIDENCE-RECOVERY-MASTER-PLAN-v0.1.md`) is not
+  present on this machine (checked `/DSH/Architecture`, `$HOME`, worktrees).
+  It is an existing external input to the program, not a runtime ambiguity,
+  so it is recorded here rather than under Unknowns; its taxonomy/decision-rule
+  cross-references could not be re-read this pass. The governing principles
+  quoted in the task directives were applied as stated.
+- Method note: behavioral claims are backed by locked-version source reading
+  plus runtime experiments against the real engine/translator sources
+  (`node --experimental-strip-types`; scripts and outputs indexed at the end).
 
 ## Current Architecture Map
 
-Two packages, one dependency direction:
+Two Orcana packages, one dependency direction:
 
 ```
-governor-core/src/index.ts (743 lines, imports only node:crypto)
-  ProgressFactEngine          — per-agent mutable fact state (fields below)
-    applyEvent / observeTurn / endTurn / beginTurn / resetChains
-    snapshot / restore / static rebuild
-  classifyObservation, receiptStatus, render*, steer* — pure functions
+governor-core/src/index.ts (pure; imports only node:crypto)
+  ProgressFactEngine          — per-agent mutable fact state
+    applyEvent / observeTurn / endTurn / beginTurn(uncalled) / resetChains
+    snapshot / restore(uncalled in prod) / static rebuild
         ↑ EngineEvent — unified input of the TOOL-OBSERVATION path ONLY
-dsh-governor/src/index.ts (556 lines, Cordis plugin)
-  toEngineEvent            — the one DSH→core translation (shared by both paths)
-  apply(ctx, config):
-    engines: WeakMap<Agent, ProgressFactEngine>   ← adapter-local mutable state
-    forced:  WeakMap<Agent, number>               ← adapter-local mutable state
-    listeners:
-      tools/post-execute   → live observation → applyEvent (+ consumeInlineReminder)
-      agent/pre-step       → user-source interjection → engine.resetChains() + forced.delete
-      agent/turn-stopping  → endTurn settle → ladder steer | completion guard steer
-      agent/session-start  → source==='resume'|'compact' → rebuild(translate(...)) + forced.delete
-      agent/created        → router restrict({allow}) via ctx.tools.restrict
-      ctx.inject systemPrompt → verification-state rendering (snapshot().receipts read-only)
+dsh-governor/src/index.ts (Cordis plugin)
+  engines: WeakMap<Agent, ProgressFactEngine>   ← adapter-local mutable state
+  forced:  WeakMap<Agent, number>               ← adapter-local mutable state
+  listeners:
+    tools/post-execute   → live fold (+ consumeInlineReminder ride-along)
+    agent/pre-step       → user-source interjection reset
+    agent/turn-stopping  → round settle | ladder steer | completion guard
+    agent/session-start  → source==='resume'|'compact' → rebuild + forced.delete
+    agent/created        → router restrict({allow})
+    ctx.inject systemPrompt → verification-state rendering (read-only)
 ```
 
 Mutable Orcana runtime state lives in TWO containers plus lifecycle/config
-state owned elsewhere:
+state owned elsewhere (engine private fields; adapter WeakMaps; the router
+restriction inside DSH's tools service scoped to the agent; Cordis listener
+registrations). Non-EngineEvent transitions exist (`endTurn`, `resetChains`,
+uncalled `beginTurn`, forced/engines map writes, restriction install/dispose):
+`EngineEvent` is the tool-observation input currency only.
 
-1. governor-core per-engine private fields (below);
-2. dsh-governor adapter-local `engines` / `forced` WeakMaps;
-3. the tool restriction installed into DSH's tools service at `agent/created`
-   (owned and disposed by the agent scope, config-driven — no
-   governor-side memory);
-4. plugin listener registrations themselves (Cordis lifecycle).
+Below Orcana sits the DSH durability stack this revision adds to the map:
 
-Non-EngineEvent state transitions exist and are part of the runtime contract:
-`endTurn()` (chain advance/reset), `resetChains()` (chain+turn clear),
-`beginTurn()` (exported, currently called by nobody), `forced` WeakMap writes/
-deletes, `engines.set/delete`, and the router restriction install/dispose.
-`EngineEvent` is therefore the unified input of the tool-observation path —
-NOT the sole input currency of the whole runtime.
-
-Durability substrate: the DSH session log (append-only zstd JSONL). Neither
-Orcana package imports `node:fs` or any storage API (grep-verified).
+```
+DSH cold resume (rc.6):
+  AgentLoop.resume → persistence.prepare(id)
+    PersistenceCoordinator.prepare
+      → serialize(prepareCore):
+          backend.loadStored            (raw durable events, possibly crash tail)
+          interruptedTurnClosers(events) (session/src/repair.ts)
+      → serialize(commitPrepared):
+          commitRepair(meta, tornMarker, closers)  ← synthetic closers become DURABLE
+      → Session seeded with balanced = [...storedEvents, ...closers]
+  → agent publish: agents.announce (= agent/created)
+  → agent/session-start {source:'resume'}
+  → Orcana listener reads agent.session.events  (RAW balanced log)
+```
 
 ## Live Event Path
 
-Construction site: the `tools/post-execute` waterfall listener
-(dsh-governor src/index.ts:460).
+Unchanged from Rev.2 (verified again against rc.6):
 
-1. Locked rc.6 pipeline (`@deepseek-ai/dsh-tools/lib/index.js`): scheduler →
-   `completeScheduledExecution` (2997–3004) → `finalizeScheduledExecution`
-   (3223) → `postExecute` (3359) → waterfall `"tools/post-execute"` with
-   `(exec: ToolExecution, result: ToolExecutionResult)`.
-2. The governor folds BEFORE calling `next()`: `applyEvent(toEngineEvent(exec,
-   result))`, then `consumeInlineReminder()` rides `additionalContexts`.
-3. Field derivation (toEngineEvent, src/index.ts:206–236): bash-only
-   `command` (background acks excluded); `resultHash =
-   sha256(JSON.stringify(result.content))`; `exitCode/interrupted` parsed from
-   rendered-text markers; `mutation = MUTATION_TOOLS.has(name) && !isError`.
-
-Live-path facts measured in locked rc.6 code:
-
-- `MUTATION_TOOLS = {write, edit, str_replace_editor}` (src/index.ts:158).
-  `bash` is NOT a mutation tool regardless of effect.
-- Nested code-mode sub-dispatches ARE observed live: the `run_code` bridge
-  schedules nested executions through the same registry path ("Programs call
-  the registry's agent-visible tools through nested executions scheduled under
-  the native concurrency contract", dsh-tools lib/index.js:884–891;
-  `createExecution` preserves the INNER tool name and sets `parent`,
-  index.js:3008–3029; nested bypasses collapse, index.js:2880–2891), and their
-  outcomes traverse the same `finalizeScheduledExecution → postExecute`
-  waterfall (index.js:2999, 3223–3225). So a nested `write` reaches the
-  governor with `exec.name === 'write'`, `mutation === true`.
-- Scheduler `final-result` outcomes BYPASS post-execute entirely
-  (dsh-tools lib/index.js:3002 + types/index.d.ts:301–303 "a final-result
-  bypasses it") — never observed live.
-- Downstream waterfall listeners may replace content or block after the
-  governor already folded (`postExecute`, index.js:3359–3388: decision
-  `{kind:'accept', content}` replaces the materialized result; block flips
-  `isError` to true with feedback content).
+- Construction site: `tools/post-execute` waterfall (dsh-governor :460);
+  governor folds BEFORE `next()`.
+- rc.6 pipeline: scheduler → `finalizeScheduledExecution` (dsh-tools
+  index.js:3223) → `postExecute` (:3359); scheduler `final-result` outcomes
+  bypass post-execute entirely (index.js:3002; types 301–303).
+- Nested code-mode sub-dispatches ARE observed live with their INNER tool name
+  (run_code bridge schedules nested executions through the same registry path;
+  `createExecution` keeps `name`, sets `parent`; dsh-tools index.js:884–891,
+  3008–3029) → a nested `write` reaches the governor as `mutation=true`.
+- Downstream listeners may replace content or block after the fold
+  (index.js:3359–3388).
+- `MUTATION_TOOLS = {write, edit, str_replace_editor}` (:158): bash is never a
+  mutation tool regardless of effect.
 
 ## Replay Event Path
 
-Construction site: `agent/session-start` listener, gated to
-`source === 'resume' || 'compact'` (src/index.ts:394–407).
+Construction site: `agent/session-start` gated to `'resume' | 'compact'`
+(dsh-governor :394–407). On rc.6 resume the flow is:
 
-1. `sessionReplayEvents(agent.session.events)` keeps only `tool/call` and
-   `tool/result`, in log order (src/index.ts:258–268).
-2. `translateSessionEvents` pairs results to calls via
-   `callId = message.source.callId ?? block.callId ?? block.toolCallId`;
-   orphan results are skipped (`continue`) (src/index.ts:274–305). The pending
-   Map is NEVER deleted from: a duplicate result record would pair twice.
-3. A dangling `tool/call` (crash before its result was logged) produces NO
-   EngineEvent at all — nothing is emitted for it, ever.
-4. Paired events go through THE SAME `toEngineEvent`, then
-   `ProgressFactEngine.rebuild(events)` = fresh engine + N × `applyEvent`,
-   then `engines.set(agent, rebuilt); forced.delete(agent)`.
+1. DSH persistence has ALREADY repaired the loaded log (see previous section):
+   by the time the governor runs, `agent.session.events` is the BALANCED raw
+   log — original events plus durable synthetic closers where the tail was
+   open.
+2. Governor reads `agent.session.events` (:396) — the RAW append-only log,
+   NOT the model-facing surface projection (see Raw Log vs Surface below).
+3. `sessionReplayEvents` keeps only `tool/call` and `tool/result` records in
+   log order (:258–268) — synthetic closers of type step/end|turn/end are
+   ignored; synthetic tool/results ARE consumed.
+4. `translateSessionEvents` pairs results to pending calls via
+   `message.source.callId ?? block.callId ?? block.toolCallId` (:274–305);
+   pending entries are never deleted; only `{content, isError ?? false}` is
+   forwarded to `toEngineEvent` (:296–300).
+5. `ProgressFactEngine.rebuild` = fresh engine + N × `applyEvent` (core
+   src:439–442) — no round boundaries during replay.
 
-Lifecycle publication order, verified in LOCKED rc.6 sources:
+Publication order on resume is unchanged from Rev.2: `agent/created` fires
+synchronously BEFORE `agent/session-start(resume)` (agent-loop publish order
+@15148dbd9a), so the router restriction re-applies first. rc.6 reserves
+`'clear'`/`'compact'` in `SessionStartSource` with no emitter yet — the
+compact rebuild branch is dead code under lockfile semantics.
 
-- `AgentRegistry.announce(agent)` emits `agent/created` (agent src/index.ts,
-  rc.6 commit: announce body dispatches `['agent/created', {agent}]`).
-- Resume flow: `AgentLoop.resumeWith` → `setupAndPublish(..., 'resume')` →
-  `publish('resume')` performs `agents.enter` → `sessions.announce` →
-  `agents.announce` (= `agent/created`) → THEN
-  `emitAgentEvent(..., 'agent/session-start', {source})`
-  (agent-loop src/index.ts @15148dbd9a lines ~556–568, 699–703; README states
-  the same order: "announce session/created then agent/created; emit
-  agent/session-start; and only then start the driver").
-- Therefore on rc.6 resume, `agent/created` fires synchronously BEFORE
-  `agent/session-start(resume)` → the router's restriction is re-applied on
-  every resumed agent. (Deployment caveat applies only if a deployment ran a
-  DSH version other than the lockfile pin.)
-- rc.6 reserves `'clear'` and `'compact'` in `SessionStartSource` with NO
-  emitter ("reserves 'clear'/'compact' with no emitter yet", agent README
-  @15148dbd9a:121). Consequences measured on the governor:
-  - the `'compact'` rebuild branch is DEAD CODE under lockfile semantics
-    (compaction cannot trigger a rebuild through this event in rc.6);
-  - ignoring `'clear'` is currently unobservable (nothing emits it), though
-    the code path would keep any existing cached engine if a future emitter
-    reused the same Agent object.
+## DSH Cold-Resume Repair Layer (rc.6)
 
-The pairing shape itself matches real logs: `tool/result.data.message.source =
-{kind:'tool', callId}`, single-block tuple content, `isError` boolean present
-in inspected samples (executor-observed, see Evidence Index).
+Native recovery facts produced by `packages/core/session/src/repair.ts`
+(`interruptedTurnClosers`), invoked from
+`packages/session/session-persistence/src/coordinator.ts` `prepareCore`
+(coordinator.ts:892–931) and made durable by `commitRepair` (:934–957):
+
+- Two distinct interruption codes exist:
+  - `TOOL_NOT_STARTED` — an assistant tool request whose durable `tool/call`
+    record never landed (crash between assistant message and call append;
+    `callSeq === undefined` in the repair scan).
+  - `TOOL_OUTCOME_UNKNOWN` — a durable `tool/call` EXISTS but no completed
+    `tool/result` was durably recorded before the crash (`callSeq` present).
+  These are different interruption classes and must not be conflated.
+- For every pending tail call the repair appends a SYNTHETIC `tool/result`:
+  - `isError: true`;
+  - distinct guidance text per class ("interrupted after it was recorded…
+    outcome is unknown… verify external state…" vs "interrupted before the
+    Harness recorded it as started…");
+  - `data.error = {name:'ToolOutcomeUnknownError', code:'TOOL_OUTCOME_UNKNOWN'}`
+    or `{name:'ToolNotStartedError', code:'TOOL_NOT_STARTED'}`;
+  - `surfaceOp: 'append'`, `sourceEventSeqs: [callSeq]` for started calls.
+- It then synthesizes `step/end` (if a step was open) and
+  `turn/end {reason:{kind:'interrupted'}}`.
+- These closers are appended to the DURABLE log via `commitRepair` and then
+  seed the resumed Session — they are first-class durable history, not
+  in-memory-only patches. Owner boundary: these are DSH Session/Persistence
+  native recovery facts, NOT an Orcana private ledger.
+
+Consequence for this inventory: after a REAL cold resume there is no such
+thing as an unpaired dangling `tool/call` for tail calls of the last turn —
+each has a paired synthetic result. What remains true: earlier-turn dangling
+calls cannot exist (turn boundaries clear them), and the repair only covers
+the OPEN TAIL turn.
+
+## Raw Session Event Log vs Session Surface
+
+Two different things, both called "session" colloquially:
+
+- **Raw Session Event Log** — `session.events`: readonly, append-only,
+  deep-frozen authoritative history ("neither a cast nor ordinary JavaScript
+  can rewrite durable history", dsh-session types index.d.ts:170–174). Both
+  the ORIGINAL and any REPLACEMENT of a result remain in it.
+- **Session Surface** — derived projection (`SessionSurface.nodes`,
+  `replaceGeneration`; `foldSurface`). When compaction replaces a result, it
+  APPENDS a new record citing the old one (`surfaceOp:{op:'replace'}`,
+  `sourceEventSeqs:[seq]`); the surface fold makes the replacement SHADOW the
+  original for future model-facing history while raw history keeps both.
+- Verified compaction mechanism (rc.6
+  `compaction-tool-result-pruner/src/index.ts` `pruneSession`): iterates
+  CURRENT-SURFACE `tool/result` nodes, appends a `compaction/prune`
+  shadow-price event, then appends the replacement `tool/result` with
+  identical data except content, citing `surfaceOp replace`. NO rewrite of
+  prior records occurs ("retaining the full original event in the append-only
+  session log", pruner README). The pruner does NOT filter by tool type — any
+  over-budget surface result qualifies, including successful mutation-tool
+  results (compaction-basic invokes it under pressure;
+  compaction-basic/src/index.ts:281–309).
+- **Orcana consumes the RAW LOG**: the resume handler reads
+  `agent.session.events` (:396), so both original and replacement records are
+  visible to replay. Orcana has no surface awareness today.
 
 ## Live vs Replay Proven Equivalence
 
-Three distinct levels must not be conflated:
+Three levels, unchanged from Rev.2 and re-verified:
 
-A. Shared transition function — YES, proven: both paths call the same
-   `toEngineEvent` (src/index.ts:206; live caller :462; replay caller :296)
-   and feed the same `ProgressFactEngine.applyEvent` (core src:267; replay
-   loop inside `static rebuild`, core src:439–442).
+A. Shared transition function — YES (same `toEngineEvent`, same `applyEvent`).
+B. Event domain equivalence — NO (divergences below).
+C. Full runtime semantic equivalence — NOT PROVEN; contradicted below.
 
-B. Event domain equivalence — NO. The event SETS differ (next section).
-
-C. Full runtime semantic equivalence — NOT PROVEN, and contradicted by the
-   divergences below plus adapter-local state handling (forced budget reset;
-   TurnState pollution). The source comment "so resumed state cannot drift by
-   construction" is therefore NOT inherited by this inventory: shared function
-   ≠ shared event domain ≠ full runtime equivalence.
-
-What CAN be said precisely: for a root-call-only session whose log content
-was never rewritten, whose results carried explicit isError values, and
-ignoring round boundaries, replay reproduces generation/ring/receipts
-identically (this is exactly what the synthetic fixture tests pin:
-adapter.spec.ts:105–143, 168–176; core.spec.ts:232–246). Those tests compare
-`snapshot()` outputs only — i.e., they prove SNAPSHOT-VISIBLE PROJECTION
-EQUALITY, not full runtime semantic equivalence (chain, turn, forced, and
-lifecycle state are outside the projection).
+Snapshot-equality tests pin projection equality only (adapter.spec.ts:120,
+176; core.spec.ts:245); the projection excludes chain, TurnState, forced
+budget, lifecycle state, and structured recovery identities.
 
 ## Known Live vs Replay Divergences
 
-Each item is a current-behavior fact, not a defect ruling:
+Reorganized this revision (D5/D6 split per mechanism; each item is current
+behavior, not a defect ruling):
 
-D1. Code-mode sub-dispatch effects (structural):
-    live sees nested `write`/`edit`/`str_replace_editor`/bash executions as
-    individual post-execute events (mutation/verification included); replay
-    consumes only root `tool/call|tool/result` records — sub-dispatch outcomes
-    are logged as `tool/code-dispatch-start|tool/code-dispatch`, which
-    `sessionReplayEvents` filters out (types/index.d.ts:62–75 names the
-    durable record type; executor-observed real-log counts: 48 code-dispatch
-    vs 32 tool/call in one run_code-heavy session).
+D1. Code-mode sub-dispatch effects: live sees nested executions individually;
+    their durable records (`tool/code-dispatch*`) are filtered out of replay.
+    (executor-observed real-log counts: 48 code-dispatch vs 32 tool/call in
+    one run_code-heavy session.)
 
-D2. Minimal semantic counterexample (recorded as current divergence; runtime
-    half proven in /tmp experiments):
+D2. Stale-PASS resurrection via missed nested mutation (runtime-proven):
+    PASS@gen0 → run_code nested write (live gen→1) → crash/resume → replay
+    ignores code-dispatch → rebuilt gen=0 → historical PASS presents CURRENT.
 
-    ```
-    1. bash `npm test` PASS           → receipt pass @generation 0
-    2. run_code └ nested write(...)   → LIVE: post-execute sees mutation
-                                        generation → 1, old PASS now stale
-    3. crash / resume
-    4. replay ignores code-dispatch   → rebuilt events: [bash pass, run_code(non-mutation)]
-    5. rebuilt generation stays 0     → RUNTIME-VERIFIED (experiment A)
-    6. historical pass@0 == current gen 0 → stale PASS presents as CURRENT
-       (isStale === false; STALE flag absent from evidence rendering;
-        completion-guard rule 1 satisfied incorrectly)
-    ```
+D3. Post-execute replacement/block by downstream listeners: live folds
+    PRE-decision content; the durable record is POST-decision. Mechanism
+    proven; deployed frequency unmeasured.
 
-D3. Post-execute replacement/block: governor hashes PRE-decision content;
-    the durable log stores POST-decision content (accept-content replacement
-    or block feedback). Any downstream listener doing so changes replay hashes
-    vs live hashes. Mechanism proven in rc.6 dsh-tools; occurrence frequency
-    in deployed stacks unknown.
+D4. Replay-only events: `final-result` pipeline failures bypass post-execute
+    live yet still materialize logged `tool/result`s.
 
-D4. Replay-only events: scheduler `final-result` failures bypass post-execute
-    live but still materialize into logged `tool/result` records → rebuild
-    processes observations live never saw.
+D5. **Surface replacement semantics (corrected)**: compaction does NOT
+    rewrite raw history. It legitimately produces a SECOND durable
+    `tool/result` for the SAME callId (append + shadow). Any claim of "hash
+    drift caused by rewriting" resolves to this append mechanism.
 
-D5. Compaction rewriting `tool/result` content: declared authoritative-current
-    in code comments and PLAN; hash drift vs live-era observations accepted.
-    Note additionally that under rc.6 lockfile semantics compaction does not
-    emit `session-start('compact')` at all (no emitter yet), so a mid-session
-    compaction leaves the live engine untouched while the log is rewritten;
-    drift surfaces only at the next actual resume.
+D6. **Replay treats a valid replacement as another result (runtime-proven)**:
+    because pending entries are never deleted and raw-log both-records are
+    fed in, ONE logically-replaced call yields TWO EngineEvents
+    (experiment I: 2 events from [original, replacement]). For a replaced
+    MUTATION success this DOUBLES the generation advance: one logical write
+    replays as generation += 2 (experiment J). Replacement also increments
+    TurnState observations twice, can overwrite a same-command receipt with
+    the replacement hash (verification case), and can alter trailing inline
+    streak state.
 
-D6. Duplicate `tool/result` records: pairing never removes the pending entry
-    (no `pending.delete(callId)`), so duplicates replay as DUPLICATE
-    EngineEvents. Runtime-proven effect: one duplicated successful mutation
-    advances generation TWICE (experiment D: gen=2 after one write applied
-    twice). Also double-counts ring entries and TurnState observations, and
-    overwrites receipts. Live cannot produce this shape; frequency in real
-    logs unknown (none found in inspected samples).
+D7. **Accidental physical duplicates** (persistence bug/malformed log):
+    mechanism consequences identical to D6 at the governor layer, frequency
+    UNKNOWN (none found in inspected samples). Current translator cannot
+    distinguish a valid surface replacement from an accidental duplicate —
+    both collapse into the same double-application behavior; the distinguishing
+    metadata (`surfaceOp`, `sourceEventSeqs`, `compaction/prune`) exists in
+    the raw record shape but is outside `ReplayEvent`.
 
-D7. Round-boundary asymmetry: live rounds are delimited by adapter
-    `endTurn()` at `turn-stopping`; `rebuild()` replays ALL history with no
-    boundary — everything folds into ONE TurnState (see Turn / Round State
-    Reality).
+D8. Structured recovery identity loss: DSH's synthetic results carry
+    `data.error.{name,code}` (`TOOL_OUTCOME_UNKNOWN`/`TOOL_NOT_STARTED`);
+    `ReplayEvent` models only `message`, and translation forwards only
+    `{content, isError}` — the codes never reach `EngineEvent`. DSH truth is
+    preserved; the Orcana projection drops the identity.
 
 ## State Inventory
 
-governor-core per-engine private fields (class `ProgressFactEngine`,
-src/index.ts:223–232):
+Column set deliberately avoids forward-looking classification labels; it
+records owner, flow, lifetime, today's durability, today's replay behavior,
+and observed caveats.
 
-| State | Defined / written | Read | Lifetime | Classification (observed) |
-| --- | --- | --- | --- | --- |
-| `generation` (:228) | `onMutation()`; `applyEvent` on mutation | `currentGeneration` → evidence render, guard, classify, isStale | per engine instance | DERIVED_STATE (from replay-visible root mutation tools only) |
-| ring `RingEntry[]` window 8 (:229) | push/shift in `applyEvent`; prune on mutation (:281–285) | `classifyObservation`, `snapshot()` | sliding window | DERIVED_STATE |
-| receipts `Map<command,Receipt>` latest-wins (:230) | `recordReceipt` via verification branch (:290–303); public setter (:406) | `receiptFor/isStale/snapshot().receipts` → systemPrompt render, guard | per engine | DERIVED_STATE |
-| zero-progress chain (`chain` :231) | `endTurn` (+1/→0), `resetChains`(=0) | verdicts, ladder policy | process | EPHEMERAL_STATE (never snapshotted; rebuild leaves 0; whether preservation matters is unresolved) |
-| turn `TurnState` (:232, interface :545) | lazily `??= newTurnState()` in `observeTurn` (:319); cleared by beginTurn/endTurn/resetChains | inline reminder, settle verdicts | one ROUND when driven by boundaries; UNBOUNDED across rebuild | EPHEMERAL_STATE (but see Turn Reality: rebuild populates it) |
+governor-core per-engine fields (class at core src:223; fields 224–232):
 
-TurnState fields (all within the above container): observations, mutation,
-significant, verifyNew, verifyPass, inlineStreak, inlineFingerprint,
-inlineReminder, inlineReminderFired, repeatedPattern.
+| State | Written by | Read by | Lifetime | Durability today | Replay behavior today | Observed caveat |
+| --- | --- | --- | --- | --- | --- | --- |
+| generation (:228) | `onMutation()`; applyEvent when `event.mutation` | render/guard/classify/isStale | engine instance | none (in-memory) | rebuilt from replay-visible mutation results | live writer domain ⊃ replay writer domain (nested code-mode mutations lost; unknown-outcome mutations not counted — see H) |
+| ring (:229, window 8) | push/shift/prune in applyEvent | classify, snapshot | sliding window | none | rebuilt; hashes follow raw-log content incl. replacements (double observations, D6) | replacement duplicates occupy window slots |
+| receipts (:230, latest-wins per command) | verification branch (:290–303); setter (:406) | render, guard | engine instance | none | recomputed; a replaced verification result OVERWRITES the receipt with the replacement hash/status | unknown-outcome verifications land as FAIL (G), not UNKNOWN |
+| zero-progress chain (:231) | endTurn/resetChains | ladder verdicts | process | none | rebuild leaves 0; whether preservation matters unresolved | first post-resume settle judges polluted aggregate |
+| turn/TurnState (:232, iface :545) | lazy create in observeTurn (:319); cleared by endTurn/beginTurn/resetChains | reminder, settle | one round when boundary-driven; UNBOUNDED across rebuild | none | rebuild folds ALL history into one unsettled TurnState (sticky flags; armed reminder survives) | runtime-proven pollution |
+
+Adapter-local state (dsh-governor :370–372):
+
+| State | Written | Read | Cleared | Durability today | Replay behavior today | Caveat |
+| --- | --- | --- | --- | --- | --- | --- |
+| engines WeakMap | lazy create; rebuild swap (:402) | all handlers+inject | GC w/ Agent | none | replaced wholesale at session-start(resume) | 'clear'/'compact' have no emitters in rc.6 |
+| forced budget WeakMap | +1 per steer (:506,:532) | budget checks | user pre-step (:489); resume (:403) | none | deleted at resume; logged plugin steers exist but unused | |
+
+Router restriction: installed per agent at `agent/created` (:441–455) into
+DSH tools service; agent-scope-owned disposal; config-driven; verified to
+re-fire before session-start(resume) on rc.6. Config knobs (schema :96–152 +
+bundle row) are mount-time configuration. Plugin registrations are
+Cordis-owned (:333,:534–536).
+
+Generation writer domains (explicitly split):
+
+- LIVE writer set: every post-execute EngineEvent with `mutation=true` —
+  root write/edit/str_replace_editor AND nested code-mode ones (inner-name
+  dispatches).
+- REPLAY writer set: successful mutation results visible after
+  `sessionReplayEvents` filtering — root records only (code-dispatch filtered),
+  PLUS each surface replacement counted again (D6), and EXCLUDING
+  unknown-outcome mutations (synthetic isError=true ⇒ mutation=false).
+  Therefore rebuilt-generation ≠ live-generation whenever nested mutations or
+  replaced mutation results exist; the State Inventory and the code-mode
+  divergence say the same thing and do not contradict each other.
 
 ## Adapter-Local State
 
-dsh-governor `apply()` closure state (src/index.ts:370–372):
-
-| State | Written | Read | Cleared | Lifetime |
-| --- | --- | --- | --- | --- |
-| `engines: WeakMap<Agent,ProgressFactEngine>` | lazy create (:381–385); rebuild swap (:402) | all listeners + inject (:420–430) | GC with Agent object | process |
-| `forced: WeakMap<Agent,number>` | +1 on ladder steer and guard steer (:506, :532) | budget checks (:503, :518) | user pre-step (:489); resume (:403) | process |
-
-Router restriction: installed once per agent at `agent/created`
-(:441–455) into DSH's tools service; disposer owned by agent scope lifecycle.
-Config-driven; no governor-side persistent memory; VERIFIED to re-fire before
-session-start(resume) on rc.6 (publication order above). Plugin listener
-registrations and disposal are Cordis-owned (:333, :534–536). Config knobs
-(schema :96–152; bundle row `cordis.patch.yml`) are mount-time CONFIGURATION.
+Covered in the table above; no other mutable module-level state exists in
+either package (no timers/caches/fs).
 
 ## DSH-Native Durable Facts
 
-Verified against rc.6 type definitions and (where noted) real logs:
+Facts Orcana reads (or could read) from the locked-version stack:
 
-- `tool/call {turn, step, callId, name, arguments(raw JSON string)}`
-  (dsh-session types.d.ts:283–290) — replay identity + argument source.
-- `tool/result {message{source{kind:'tool',callId}, content:[ToolResultBlock]},
-  error?, meta?}` (types.d.ts:299–310; dsh-llm message.d.ts:140–144,
-  types.d.ts:69–74) — replay hashing/isError; `source.callId` required,
-  block `isError` optional.
-- Exit-status markers `[exit code: N]` / `[killed by signal: X]` /
-  `[timed out after …]` — owned by dsh-shell renderers (dsh-shell
-  lib/index.js:13–14, 32–37); the governor mirrors them read-only.
-- `assistant/message` texts — rule-3 claim input (`lastAssistantText`
-  backward scan, dsh-governor src:303–330).
-- `user/message` source kinds — interjection-reset predicate (:486–493).
-- `turn/end` reason incl. crash-tolerant `'interrupted'` ("events recorded
-  before the crash remain intact", dsh-session types.d.ts:162–166) — present
-  but unconsumed by Orcana.
-- `tool/code-dispatch-start|tool/code-dispatch` — the durable record type for
-  sub-dispatch outcomes (dsh-tools types/index.d.ts:62–75); unconsumed by
-  Orcana replay (divergence D1).
-- `session/end-seed`, request headers, compaction brackets — unconsumed.
-- Checkpoint/durability ownership: `dsh-session-checkpoint-policy` (per
-  SessionEventMap docs); Orcana neither forces nor observes checkpoints.
+- `tool/call {turn,step,callId,name,arguments(raw string)}` (dsh-session types
+  283–290).
+- `tool/result {message{source{kind:'tool',callId},content:[ToolResultBlock]},
+  error?,meta?}` (types 299–310; dsh-llm message/types) — `error` carries
+  structured failure identity INCLUDING recovery codes on synthetic results.
+- Synthetic recovery records (repair.ts): synthetic tool/result with
+  `TOOL_OUTCOME_UNKNOWN` / `TOOL_NOT_STARTED` + `data.error` identity +
+  sourceEventSeqs citation; synthetic `step/end`; synthetic
+  `turn/end{interrupted}` — made durable by coordinator `commitRepair`.
+- Surface replacement protocol: appended `tool/result` with
+  `surfaceOp:{op:'replace',start,end}` + `sourceEventSeqs:[origSeq]`,
+  preceded by adjacent `compaction/prune` shadow-price event (pruner src).
+- Exit-status markers `[exit code:N]` / `[killed by signal:X]` /
+  `[timed out after…]` — dsh-shell renderer contract (lib/index.js:13–14,
+  32–37). NOTE: synthetic recovery text contains NONE of these markers.
+- `assistant/message` texts (guard rule 3 input), `user/message` source kinds
+  (interjection predicate), crash-tolerant `turn/end{interrupted}` reason
+  (present, unconsumed by Orcana).
+- `session/end-seed`, request headers — unconsumed.
+- Checkpoint flush ownership lives in `dsh-session-checkpoint-policy`
+  (not audited here).
 
-Real-log evidence discipline: the pcba session sample (identity, command,
-counts, shapes listed in Evidence Index) is EXECUTOR-OBSERVED on this machine
-— not independently reproducible from the repository alone. Repository-only
-proof covers shapes/types via pinned dependencies; the concrete counts are
-local observations.
+Real-log evidence discipline: the pcba session sample cited in the Evidence
+Index is EXECUTOR-OBSERVED locally, not reproducible from the repository
+alone; repository-only proofs come from pinned dependency artifacts.
 
 ## EngineSnapshot Reality
 
-`EngineSnapshot = {generation, ring, receipts}` (core src:82–87).
+Unchanged from Rev.2, re-verified:
 
-Correct conclusions retained from Rev.1:
-
-- NOT durable storage: no fs/db/session writer exists anywhere; created only
-  as a READ MODEL (`snapshot().receipts` at dsh-governor :426 inject and
-  :529 guard input) and in tests; `restore()` has zero production callers
-  (tests only, core.spec.ts:227–228). Exactly one durable truth (the log) and
-  one reconstruction path (rebuild) exist.
-
-Proof boundary corrected in Rev.2:
-
-- The snapshot PROJECTION omits: chain, TurnState, forced budget, router/
-  plugin lifecycle state, world state, and outstanding ambiguous (dangling)
-  calls. Therefore `expect(replayed.snapshot()).toEqual(live.snapshot())`
-  (adapter.spec.ts:120,176; core.spec.ts:245) proves snapshot-visible
-  projection equality ONLY. It cannot establish full live/replay runtime
-  semantic equivalence — and indeed the projection can match while turn state
-  differs (projection excludes turn entirely).
+- `{generation,ring,receipts}` (core src:82–87) is NOT durable storage: no
+  fs/db/session writer exists; production uses are read-models
+  (snapshot().receipts at dsh-governor :426 inject and :529 guard); `restore()`
+  is test-only. One durable truth (raw log + its durable repairs) and one
+  reconstruction path (rebuild) exist.
+- Projection omits chain, TurnState, forced budget, lifecycle state, world
+  state, and structured recovery identities — so snapshot equality proves
+  projection equality only.
 
 ## Existing Recovery Capability
 
-Fine-grained matrix. Verdicts reflect CURRENT behavior under rc.6 lockfile
-semantics, including the divergences above — not idealized root-only sessions.
+Fine-grained matrix under rc.6 semantics. New rows cover this revision's
+scope; prior rows re-verified.
 
-| Capability | Verdict |
+| Capability | Current result |
 | --- | --- |
-| DSH session durable history exists and is append-only/crash-tolerant-prefix | SUPPORTED (rc.6 types + real logs) |
-| Root tool call/result reconstruction from log | PARTIAL (shape verified; isError optional with silent false-default; content may have been rewritten by compaction or post-execute decisions) |
-| Generation rebuild from replay-visible ROOT mutation-tool successes | SUPPORTED (write/edit/str_replace_editor successes replay deterministically; experiment: gen=1 after rebuild) |
-| Complete workspace-mutation reconstruction | NOT_SUPPORTED (code-mode nested mutations invisible to replay — D1/D2; bash-side mutations never counted at all — see World Boundaries) |
-| Verification receipts from replay-visible ROOT bash results | SUPPORTED (statuses/generations recomputed identically; experiment) |
-| Complete live verification-state reconstruction | PARTIAL (root-bash receipts recover; nested-in-run_code verifications and post-execute-replaced results do not) |
-| Freshness relative to INTERNAL generation | SUPPORTED (isStale comparison deterministic; STALE rendering off rebuilt state) |
-| Freshness relative to ACTUAL workspace/world | PARTIAL (internal freshness is only as good as generation; both bash mutations and code-mode mutations break the link — experiments A/E) |
-| Ring reconstruction | PARTIAL (structure/window semantics rebuild; hashes drift when content rewritten — D3/D5) |
-| Zero-progress chain recovery | NOT_SUPPORTED (not in snapshot; rebuild starts at 0; current behavior resets it — whether preservation matters is unresolved) |
-| Clean turn-local reset at resume | NOT_SUPPORTED — CONTRADICTED BY CURRENT REBUILD (rebuild populates TurnState; see next section) |
-| Forced-continuation budget recovery | NOT_SUPPORTED (deleted at resume; raw material EXISTS in logged plugin steers but nothing counts it back) |
-| Completion DECISION recomputation after resume | SUPPORTED (guard is stateless per stop: generation+receipts rebuilt, lastAssistantText read from durable log) |
-| Completion CORRECTNESS after resume | PARTIAL (inputs can be wrongly rebuilt: missed nested mutations make rule 1 pass when it should fire — counterexample A; unknown-outcome omissions reduce rule coverage) |
-| Recorded timeout/signal outcomes → unknown receipts | SUPPORTED (markers persist in rendered text; receiptStatus maps interrupted → 'unknown') |
-| Dangling dispatched-execution ambiguity preserved | NOT_SUPPORTED (call-without-result is silently omitted — see Unknown/Ambiguous Execution) |
-| Code-mode nested effects reconstruction | NOT_SUPPORTED (D1/D2) |
-| Router reapplication on rc.6 resume | SUPPORTED (VERIFIED publication order: agent/created precedes agent/session-start(resume); lockfile-pinned version) |
-| Real crash/resume correctness (end-to-end, production conditions) | NOT_SUPPORTED as a proven property (no test drives apply()+session-start; multiple divergences above are unmeasured in the wild) |
+| DSH cold-resume repair of open tail (synthetic closers, durable) | SUPPORTED (repair.ts + coordinator prepareCore/commitRepair; rc.6) |
+| DSH distinction TOOL_NOT_STARTED vs TOOL_OUTCOME_UNKNOWN | SUPPORTED (distinct codes/texts/sourceEventSeqs behavior) |
+| DSH TOOL_OUTCOME_UNKNOWN preservation across resume | SUPPORTED (closers committed durably, then seeded) |
+| Orcana preservation of recovery error identity (codes) | NOT_SUPPORTED (ReplayEvent/translation drop `data.error`; D8) |
+| Dangling-call fact survival into Orcana replay | PARTIAL (pairing survives via synthetic result; identity/class does not) |
+| Unknown verification outcome projection | FAILS TODAY: DSH UNKNOWN projects to receipt status `fail` (experiment G) — interrupted=false (no markers), exitCode absent, isError=true ⇒ 'fail' |
+| Unknown mutation effect reconstruction | NOT_SUPPORTED as ambiguity: synthetic isError ⇒ mutation=false ⇒ generation unchanged; side effect MAY have occurred but is invisible (H) |
+| Root tool call/result reconstruction | PARTIAL (shapes verified; isError optional default-false; replacement double-count D6) |
+| Generation from replay-visible ROOT mutation successes | SUPPORTED (deterministic) |
+| Complete workspace-mutation reconstruction | NOT_SUPPORTED (code-mode loss D1/D2; unknown-mutation invisibility H; bash-class effects never counted) |
+| Verification receipts from replay-visible ROOT bash results | SUPPORTED (with D6 overwrite caveat) |
+| Complete live verification-state reconstruction | PARTIAL (nested-in-run_code verifications and replaced results deviate) |
+| Freshness vs INTERNAL generation | SUPPORTED (deterministic comparison/rendering) |
+| Freshness vs ACTUAL workspace/world | PARTIAL (generation gaps: bash effects, nested effects, unknown effects) |
+| Ring reconstruction | PARTIAL (structure yes; contents shifted by replacements D6 and content drift) |
+| Zero-progress chain recovery | NOT_SUPPORTED (resets; significance unresolved) |
+| Clean turn-local reset at resume | NOT_SUPPORTED — CONTRADICTED BY CURRENT REBUILD (Rev.2 runtime proof stands) |
+| Forced-continuation recovery | NOT_SUPPORTED (deleted; logged steers unused) |
+| Completion DECISION recomputation | SUPPORTED (stateless per stop; inputs from rebuilt state + durable text) |
+| Completion CORRECTNESS after resume | PARTIAL (inputs degraded by D1/D2/D6/D8/G/H) |
+| Recorded timeout/signal → unknown receipts | SUPPORTED (marker contract intact in real result text) |
+| Session raw-log awareness | SUPPORTED as consumption (Orcana reads raw events) — but without distinguishing raw-vs-surface roles |
+| Session surface replacement awareness | NOT_SUPPORTED (no surfaceOp/sourceEventSeqs consumption anywhere in Orcana) |
+| Compaction replacement-aware replay | NOT_SUPPORTED (replacement replays as second event; D6) |
+| Accidental duplicate handling | NOT_SUPPORTED (indistinguishable from replacement at governor layer; D7) |
+| Valid same-call replacement handling | NOT_SUPPORTED as distinct handling (collapses into double-apply; D6) |
+| Router reapplication on rc.6 resume | SUPPORTED (VERIFIED publication order) |
+| Real crash/resume end-to-end correctness (production) | NOT_SUPPORTED as a proven property (no apply()-level resume test; divergences above unmeasured in wild) |
 
 ## Turn / Round State Reality
 
-This section replaces Rev.1's wrong claim ("first post-resume round starts
-empty"). Runtime-verified mechanics:
-
-- `static rebuild(events)` = fresh engine + `for (event of events)
-  applyEvent(event)` with NO beginTurn/endTurn (core src:439–442).
-- `applyEvent` ALWAYS ends in `observeTurn`, which lazily creates the round
-  aggregate: `const turn = this.turn ??= newTurnState()` (core src:319).
-- Therefore after replaying N≥1 historical events, `this.turn` is a SINGLE
-  accumulated TurnState spanning the entire history, with sticky fields:
-  - `mutation=true` iff ANY historical event was a mutation (sticky forever
-    until a settle);
-  - `significant=true` iff ANY non-verification observation classified
-    progress/new-evidence/first-observation — which includes the FIRST
-    historical observation of any non-verification tool;
-  - `verifyNew/verifyPass` set by first-ever verification / any pass receipt;
-  - `inlineStreak/inlineFingerprint` = trailing same-fingerprint run;
-    `inlineReminder` ARMED (and `inlineReminderFired=true`) if the history
-    ENDED with ≥ threshold consecutive identical inline-tool observations;
-  - `repeatedPattern` = last repeated observation of history.
-- Runtime proof (experiments B/B2, /tmp/r0a-experiment.mts):
-  - After rebuilding a history containing [reads, write-mutation, npm-test
-    pass], the FIRST post-resume live round consisting purely of two repeats
-    of an already-known read settles as `zeroProgress:false, chainLength:0`
-    — the genuinely zero-progress round is INVISIBLE because the aggregate
-    carries historical mutation/significance.
-  - With a history ending in two identical reads, `consumeInlineReminder()`
-    returns the reminder text ON THE FIRST post-resume live observation:
-    the model receives "You are repeating the exact same call…" about
-    PRE-CRASH calls.
-- Consequently the first post-resume `turn-stopping` settles a MIXED
-  TurnState (history + new round): the chain restarts from 0 based on
-  polluted inputs, and `verdict.repeatedPattern` may name a historical
-  pattern. The pollution persists until the first settle (endTurn clears) or
-  a user-interjection `resetChains`.
-- Field-state table after rebuild of non-empty history: observations=N;
-  mutation/significant/verifyNew/verifyPass as sticky rules above;
-  inlineStreak/inlineFingerprint=trailing run; inlineReminder=armed iff
-  trailing run crossed threshold; inlineReminderFired=sticky true once armed;
-  repeatedPattern=last historical repeat. Q&A: (1) `this.turn` is NOT empty;
-  (2) yes — without boundaries all history folds into one TurnState; (3–11)
-  as listed; (12) YES — a history-armed reminder is consumed by the first
-  live execution; (13) YES — the first settle judges a mixed aggregate.
-
-These are recorded runtime facts. Whether the mixed-aggregate settle or the
-history-armed reminder matters for governance quality is unresolved here.
+Rev.2 findings stand (re-verified, unchanged): rebuild has no boundaries
+(core :439–442); observeTurn lazily creates ONE accumulated TurnState
+(:319); sticky mutation/significant/verifyNew/verifyPass; trailing streak
+arms inlineReminder which SURVIVES resume and fires on the first live
+observation; first settle judges the mixed aggregate
+(`zeroProgress:false,chainLength:0` for a genuinely pure-repeat first round).
+Whether this matters for governance quality is unresolved here.
 
 ## Completion-State Reality
 
-- Mechanism: completion eligibility is NOT a durable boolean. At every
-  `turn-stopping`, violations are RECOMPUTED from
+- Mechanism: eligibility recomputed per stop from
   `{generation, receipts} ∪ lastAssistantText(session)` (dsh-governor
-  :499–534; core `completionViolations` :697+). Recomputation itself is
-  deterministic and survives resume structurally.
-- Correctness boundary: each input inherits the divergences above —
-  generation misses code-mode/bash mutations (A/E), receipts inherit hash/
-  inclusion gaps (D1/D3/D4/D6), unknown-outcome omission shrinks evidence
-  (below). Hence: mechanism recomputation SUPPORTED; correctness after
-  resume PARTIAL.
-- Rule-3 text input is read from the durable log backward scan — resume-safe
-  as a mechanism.
+  :499–534; completionViolations core :697+). Recomputation is
+  resume-structural.
+- Correctness boundary widened by Rev.3: an unknown verification outcome
+  enters as FAIL (G), which additionally triggers guard RULE 2
+  ("verification X is failing") against a DSH-UNKNOWN command — a false-
+  failing assertion layered on the freshness gaps already documented. Inputs
+  otherwise inherit D1/D2/D3/D4/D6/D8. Mechanism SUPPORTED; correctness
+  PARTIAL.
 
 ## World State Boundaries
 
-- Actual filesystem/git/process/external-service state is WORLD state; Orcana
-  holds no model of it beyond `generation`.
-- `generation` is a COARSE RUNTIME FACT derived solely from recognized
-  mutation-TOOL successes ({write, edit, str_replace_editor}, non-error). It
-  is not an authoritative workspace version: runtime-proven examples where
-  the workspace changes while generation does not: `bash "sed -i …"`,
-  `bash rm/git-checkout/script` (experiment E: sed -i left generation at 0
-  while a prior npm-test receipt remained "fresh"), and nested code-mode
-  writes (visible live, lost on replay — A).
-- Conversely a recognized mutation success says nothing about what the write
-  DID to the world. Internal-vs-world freshness is therefore split explicitly
-  in the capability matrix.
-- Background shells alive at crash time, external side effects without a
-  logged result, and clock/env/provider state are outside any reconstruction
-  path in this repository.
+- Filesystem/git/process/external services are world state; Orcana's only
+  linkage is `generation` — a COARSE RUNTIME FACT derived from recognized
+  mutation-tool SUCCESSES, not a workspace version. Proven gap cases: bash
+  mutations (never counted), nested code-mode mutations (live-only), and
+  CRASHED mutations whose outcome DSH preserves as UNKNOWN (side effect may
+  have occurred; Orcana sees neither success nor ambiguity — experiment H).
+  Outcome ambiguity must be stated as "may": the synthetic record asserts
+  nothing about what the interrupted execution did.
+- Background processes, unlogged external effects, clock/env/provider state:
+  outside any reconstruction path here.
 
 ## Unknown / Ambiguous Execution
 
-Two distinct ambiguity classes behave differently today:
+Corrected two-case picture:
 
-- Case A — outcome recorded as ambiguous: a durable `tool/result` carrying
-  `[timed out after …]` or `[killed by signal: X]` reconstructs to
-  `status:'unknown'` (interrupted dominates exit markers; core
-  `receiptStatus`). Ambiguity remains ambiguity. SUPPORTED.
-- Case B — existence recorded, outcome absent: a durable `tool/call` whose
-  result never landed (crash mid-execution) yields NO EngineEvent —
-  `translateSessionEvents` only emits on results, so the ATTEMPT is silently
-  omitted from reconstruction (runtime-checked: 0 events produced). "Unknown
-  execution fact" is NOT recovered as unknown; it disappears. These are not
-  the same property, and the difference is recorded here as fact.
+- Case A — outcome durably AMBIGUOUS with markers: a real `tool/result`
+  containing `[timed out after …]`/`[killed by signal: X]` reconstructs to
+  status `'unknown'` (interrupted dominates). Ambiguity preserved as
+  ambiguity. SUPPORTED.
+- Case B — outcome unknown BY CRASH (this revision's correction): the REAL
+  resume path repairs the tail with a synthetic `tool/result`
+  (isError=true + `TOOL_OUTCOME_UNKNOWN`/`TOOL_NOT_STARTED` identity), so the
+  FACT of "started-but-unknown" survives durably. What fails is the ORCANA
+  PROJECTION: the identity is dropped (D8) and the rendered text matches no
+  interruption marker, so `receiptStatus` degrades UNKNOWN→FAIL for shell
+  verifications (G) and mutation-truth becomes invisible for mutation tools
+  (H). Rev.2's "silently omitted" described only unrepaired RAW traces fed
+  directly to the translator — not the production resume path.
+
+## Counterexample Register (all executor-runtime-proven unless noted)
+
+| ID | Scenario | Observed current result |
+| --- | --- | --- |
+| A | PASS@gen0 → run_code nested write → crash/resume | rebuilt gen=0; stale PASS presents CURRENT |
+| B | history ends with ≥2 identical reads; resume | armed reminder fires on FIRST live observation; first settle judges mixed aggregate (`zeroProgress:false` for genuinely pure-repeat round) |
+| C | dangling `tool/call` fed as RAW unrepaired trace | 0 EngineEvents (translator-only view; superseded for real resumes by G/H — see Case B) |
+| D | duplicate tool/result for one mutation | generation +2 for one logical mutation; ring/turn double-count |
+| E | `bash sed -i …` workspace change | generation unchanged; internal freshness unaffected (receipt stays "fresh") |
+| F | downstream post-execute replace/block | live hash ≠ durable hash (mechanism proven in rc.6 code; frequency unmeasured) |
+| G | repaired UNKNOWN verification (`npm test` call durable, crash, TOOL_OUTCOME_UNKNOWN closer) | Orcana receipt status = **FAIL**, interrupted=false, exitCode=undefined |
+| H | PASS@gen0 → `write` call durable → crash → TOOL_OUTCOME_UNKNOWN repair | generation stays 0; pass@gen0 still "fresh"; side effect may have occurred — invisible either way |
+| I | one logical call + surface replacement (two durable results) | translateSessionEvents emits **2** EngineEvents |
+| J | mutation success + its surface replacement | 2 mutation events applied → rebuilt generation = **2** for one logical write |
 
 ## Unknowns
 
-1. Whether the DEPLOYED harness runtime matches the lockfile-pinned rc.6 for
-   lifecycle publication order and code-dispatch logging (verification here
-   is against rc.6 sources/artifacts; deployments running other versions
-   inherit their own semantics).
-2. Checkpoint-policy flush timing relative to post-execute (how much tail a
-   crash can lose between live observation and durable record) — owner
-   package (`dsh-session-checkpoint-policy`) not audited in this pass.
-3. Frequency of post-execute content replacement/blocking by downstream
-   listeners in deployed stacks (mechanism certain, occurrence unmeasured).
-4. Frequency of duplicate `tool/result` records in real logs (none found in
-   inspected samples; mechanism consequences runtime-proven).
-5. Whether background completions produce later observable result events
-   (background acks are excluded from verification identity by design; their
-   eventual status is invisible to the engine).
-6. Master Plan document unavailable on this machine (path in Baseline);
-   taxonomy/decision-rule cross-references could not be re-verified against
-   it this pass.
+1. Checkpoint-policy flush timing relative to post-execute (tail-loss bound).
+2. Background eventual-result semantics (whether later observable result
+   events exist for background acks).
+3. Deployed frequency of downstream post-execute replacement/blocking.
+4. Frequency of ACCIDENTAL physical duplicates in real logs (valid
+   replacements are mechanism-VERIFIED; see D6 vs D7).
+5. Deployment/version skew vs lockfile rc.6 (lifecycle order, repair layer,
+   pruner behavior are rc.6-verified; other versions inherit their own
+   semantics).
+
+Execution environment note (not a runtime unknown): Master Plan document not
+present locally this pass — see Baseline.
 
 ## Candidate Gaps
 
-Factual gaps only — no fix design:
+Factual gaps only; no design proposed:
 
-1. Rebuild populates a never-settled TurnState; first post-resume round is
-   judged as a mixed aggregate, and a history-armed inline reminder fires on
-   the first resumed observation (runtime-proven).
-2. Code-mode nested mutations/verifications are live-observed but
-   replay-filtered; conversely final-result pipeline failures are
-   replay-visible but never live-observed (two structural domain
-   asymmetries around the shared-transition claim).
-3. `translateSessionEvents` neither deduplicates repeated results nor
-   consumes pending entries (duplicate replay double-counts; runtime-proven
-   generation inflation).
-4. Dangling `tool/call`s are silently dropped rather than represented as
-   unknown-outcome facts.
-5. `docs/architecture.md` still describes resume wiring as "pending (H1)"
-   although the listener shipped; it also predates these divergence facts.
-6. `benchmark/runner/analyze.mjs` keeps a second translation copy: own
-   pairing (also without pending-delete), extra `step/end` round boundary,
-   raw `block.isError` without false-default, no code-dispatch consumption —
-   benchmark replay metrics are NOT equivalent to production resume
-   semantics and should not be treated as a recovery authority.
-7. `EngineSnapshot.restore()` and `beginTurn()` are exported surface with
-   zero production callers.
-8. Snapshot-equality tests bound the proven property to projection equality;
-   chain/turn/forced/lifecycle are outside every consistency test.
-9. Forced-continuation history exists in the log (plugin-source steers) but
-   is discarded at resume.
-10. rc.6 `'compact'`/`'clear'` emitters do not exist; the governor's compact
-    rebuild branch is dead code under lockfile semantics (relevant the day
-    those subsystems land).
+1. Orcana replay drops DSH's structured recovery identity
+   (`TOOL_OUTCOME_UNKNOWN`/`TOOL_NOT_STARTED`): current projection preserves
+   neither the code nor the unknown-ness for shell verifications.
+2. Unknown verification outcome lands as FAIL receipt → feeds completion-guard
+   rule 2 as a failing verification (G).
+3. Unknown mutation outcome leaves generation frozen; freshness assertions
+   built on it are insensitive to possible side effects (H).
+4. Valid surface replacements replay as additional full observations (I/J):
+   duplicated ring entries, receipt overwrite, doubled generation advance for
+   replaced mutation successes.
+5. Replacement vs accidental duplicate are indistinguishable at the governor
+   layer; distinguishing metadata exists in raw records but outside
+   ReplayEvent.
+6. Orcana consumes the raw log without any surface-role modeling; shadowed
+   originals are replayed alongside their replacements.
+7. Carried from Rev.2 (still true): architecture.md stale "pending H1";
+   benchmark analyze.mjs second translation (own pairing, step/end boundary,
+   raw isError, no code-dispatch, no replacement awareness) — not a recovery
+   authority; restore()/beginTurn() uncalled; forced history discarded at
+   resume; snapshot tests bound to projection equality; no apply()-level
+   resume test.
 
 ## Evidence Index
 
-Repository (branch `research/durable-recovery-r0-a`):
+Repository (`research/durable-recovery-r0-a`):
 
-| Conclusion | path | symbol / lines |
+| Conclusion | path | location |
 | --- | --- | --- |
-| Engine fields incl. chain/turn | packages/governor-core/src/index.ts | 223–232; TurnState 545+ |
-| Lazy TurnState creation | packages/governor-core/src/index.ts | `observeTurn` 312–319 (`this.turn ??=`) |
-| rebuild has no boundaries | packages/governor-core/src/index.ts | `static rebuild` 439–442 |
-| endTurn settle semantics | packages/governor-core/src/index.ts | 367–382 |
-| beginTurn/consumeInlineReminder | packages/governor-core/src/index.ts | 356–359, 397–403 |
-| snapshot contents & restore | packages/governor-core/src/index.ts | 82–87, 421–437 |
-| MUTATION_TOOLS/SHELL_TOOLS | packages/dsh-governor/src/index.ts | 155–163 |
-| toEngineEvent | packages/dsh-governor/src/index.ts | 206–236 |
+| Engine fields/observeTurn/endTurn/rebuild | packages/governor-core/src/index.ts | 223–232, 312–319, 367–382, 439–442 |
+| snapshot/restore; EngineSnapshot | packages/governor-core/src/index.ts | 82–87, 421–437 |
+| completionViolations | packages/governor-core/src/index.ts | 697+ |
+| MUTATION_TOOLS/toEngineEvent | packages/dsh-governor/src/index.ts | 155–163, 206–236 |
+| ReplayEvent WITHOUT data.error field | packages/dsh-governor/src/index.ts | 243–256 |
 | sessionReplayEvents filter | packages/dsh-governor/src/index.ts | 258–268 |
-| translateSessionEvents (pairing, orphan skip, NO pending.delete) | packages/dsh-governor/src/index.ts | 274–305 (esp. 279, 285) |
-| engines/forced WeakMaps | packages/dsh-governor/src/index.ts | 370–372 |
-| session-start gate resume/compact + forced.delete | packages/dsh-governor/src/index.ts | 394–407 |
-| router at agent/created | packages/dsh-governor/src/index.ts | 441–455 |
-| post-execute handler (fold before next; reminder ride-along) | packages/dsh-governor/src/index.ts | 460–484 |
-| pre-step user reset | packages/dsh-governor/src/index.ts | 486–493 |
-| turn-stopping ladder + guard | packages/dsh-governor/src/index.ts | 499–534 |
-| Projection-equality tests only | packages/dsh-governor/tests/adapter.spec.ts; governor-core/tests/core.spec.ts | 120, 176; 245 (and 227–228 restore-in-tests) |
-| No session-start behavior test | packages/dsh-governor/tests/apply.spec.ts | covers post-execute/pre-step/turn-stopping/created only |
-| Second translation in benchmark | benchmark/runner/analyze.mjs | filter 186; pairing 199–204; raw isError 208; step/end boundary 223–227 |
-| Stale architecture doc | docs/architecture.md | Durability/replay rows ("pending — H1") |
-| Lockfile pins | pnpm-lock.yaml | dsh-* @ 0.1.0-rc.6 (lines 36–47, 130+) |
+| pairing, NO pending.delete, forwards only {content,isError??false} | packages/dsh-governor/src/index.ts | 274–305 (279, 285, 296–300) |
+| resume handler reads RAW agent.session.events | packages/dsh-governor/src/index.ts | 394–407 (396) |
+| engines/forced; router; pre-step; turn-stopping | packages/dsh-governor/src/index.ts | 370–372, 441–455, 486–493, 499–534 |
+| projection-equality-only tests | adapter.spec.ts / core.spec.ts | 120,176 / 245 (restore test-only 227–228) |
+| benchmark second translation | benchmark/runner/analyze.mjs | 186–227 |
+| lockfile pins | pnpm-lock.yaml | dsh-* @0.1.0-rc.6 |
 
-Locked rc.6 dependencies (installed artifacts under
-packages/dsh-governor/node_modules/@deepseek-ai/, corroborated by harness
-monorepo `git show 15148dbd9a:` where noted):
+Locked rc.6 dependencies & monorepo @15148dbd9a:
 
 | Conclusion | artifact | location |
 | --- | --- | --- |
-| postExecute waterfall; accept-content/block replacement AFTER listeners | dsh-tools lib/index.js | 3359–3388 |
-| finalize/bypass scheduling (final-result skips post-execute) | dsh-tools lib/index.js + types/index.d.ts | 2997–3004, 3223–3225; types 301–303, 121–124 |
-| code-mode nested executions share the registry path; inner name preserved; parent token | dsh-tools lib/index.js | 884–891, 2880–2891, 3008–3029 |
-| sub-dispatch durable record = tool/code-dispatch | dsh-tools lib/types/index.d.ts | 62–75 |
-| SessionEventMap shapes; raw arguments string; interrupted turn-end | dsh-session lib/types/types.d.ts | 223–354 (283–290, 162–166) |
-| ToolResultMessage/source/isError optionality | dsh-llm lib/types/{message,types}.d.ts | message 22–25, 140–144, 185–189; types 69–74 |
-| SessionStartSource incl. reserved clear/compact | dsh-agent lib/types/runtime-types.d.ts (installed); agent README @15148dbd9a:121 (no emitter yet) | 57–61 |
-| announce emits agent/created; resume publish order created → session-start(resume) | harness monorepo @15148dbd9a | agent/src/index.ts announce body; agent-loop/src/index.ts 556–568, 699–703 |
-| exit-marker owner | dsh-shell lib/index.js | 13–14, 32–37 |
+| TOOL_NOT_STARTED / TOOL_OUTCOME_UNKNOWN constants; synthetic closers incl. data.error identity, texts, sourceEventSeqs; step/end + interrupted turn/end | packages/core/session/src/repair.ts (@15148dbd9a) | whole file (13–16, 19–133) |
+| prepareCore invokes interruptedTurnClosers; balanced seed; commitRepair persists closers | packages/session/session-persistence/src/coordinator.ts (@15148dbd9a) | 720–768, 892–931, 934–957 |
+| session.events = readonly append-only frozen raw log | dsh-session lib/types/index.d.ts (installed) | 170–174 |
+| SessionSurface.nodes/replaceGeneration; foldSurface | dsh-session lib/types/surface.d.ts (installed) | 80–95 |
+| pruner APPENDS replacement (surfaceOp replace + sourceEventSeqs) after shadow-price event; original retained; NO tool-type filter | packages/compaction/compaction-tool-result-pruner/src/index.ts (@15148dbd9a) | pruneSession body; README:5 |
+| compaction-basic invokes pruneSession under pressure | packages/compaction/compaction-basic/src/index.ts (@15148dbd9a) | 281–309 |
+| postExecute replace/block; final-result bypass; nested inner-name dispatches | dsh-tools lib/index.js + types (installed) | 3359–3388; 2997–3004,301–303; 884–891,3008–3029 |
+| SessionEventMap shapes; interrupted turn-end | dsh-session lib/types/types.d.ts | 223–354 |
+| announce→agent/created precedes session-start(resume); clear/compact reserved w/o emitter | harness monorepo @15148dbd9a | agent/src/index.ts announce; agent-loop/src/index.ts 556–568,699–703; agent README:121 |
+| exit-marker owner | dsh-shell lib/index.js | 13–14,32–37 |
 
-Runtime experiments (executor-run on this machine; reproducible against the
-repo with node ≥22.6):
+Runtime experiments (executor-run; scripts import the real repo sources):
 
 | Experiment | Command | Result |
 | --- | --- | --- |
-| B/B2: polluted first-round settle; armed reminder crosses resume | `node --experimental-strip-types /tmp/r0a-experiment.mts` (imports governor-core src directly) | first pure-repeat round → `{zeroProgress:false,chainLength:0}`; `consumeInlineReminder()` returns reminder text on first post-resume event |
-| D: duplicated mutation doubles generation | same file | one write applied twice → generation 2 |
-| A/E/C: stale-PASS resurrection; bash mutation invisible; dangling call silent | `node --experimental-strip-types /tmp/r0a-experiment2.mts` | rebuilt gen 0 with `isStale(pass@0)===false`; sed -i leaves gen 0; dangling call → 0 events |
+| G | `/tmp/r0a-rev3.mts` (case G) via `node --experimental-strip-types` | 1 EngineEvent; isError=true; interrupted=false; exitCode=undefined; receipt npm-test = **FAIL** |
+| H | same script (case H) | generation 0; pass@gen0 stale?=false |
+| I | same script (case I) | 2 EngineEvents from one logical replaced call |
+| J | same script (case J) | 2 mutation events; rebuilt generation = 2 |
+| A/B/C/D/E (Rev.2 set) | `/tmp/r0a-experiment*.mts` (still on disk) | unchanged results, re-confirmed this pass |
 
-Executor-observed local data (NOT reproducible from the repository alone):
-real session log `~/.dsh/sessions/--home-fuqiang-projects-pcba--/3f326596-f2e7-4c7e-9701-48da608a908e/session.jsonl.zstd`,
-read with `zstd -dc <file>` + python JSON line scan; event-type counts
-included `tool/call:32, tool/result:32, tool/code-dispatch-start:48,
-tool/code-dispatch:48, assistant/message:33`; sampled shapes matched the fixed
-ReplayEvent model (`message.source={kind:'tool',callId}`,
-block `{type:'tool-result',toolCallId,isError:true|false}`).
+Executor-observed local data (not repository-reproducible): pcba session log
+`~/.dsh/sessions/--home-fuqiang-projects-pcba--/3f326596-f2e7-4c7e-9701-48da608a908e/session.jsonl.zstd`
+(counts: 48 code-dispatch vs 32 tool/call; shapes match pinned types).
 
 ## R0-A Status
 
-Revision complete: all audit findings addressed with fresh source reading and
-runtime verification; report structure, capability granularity, and proof
-boundaries corrected as specified. Remaining items are listed under Unknowns
-(including the unavailable Master Plan document). Independent re-audit is
-owed the final judgment; this revision claims readiness for it, nothing more.
+Rev.3 complete: cold-resume repair layer, recovery codes, raw-log/surface
+boundary, and replacement semantics integrated; all four required
+counterexamples (G/H/I/J) runtime-proven; capability matrix extended; Rev.2
+conclusions re-verified and retained except where corrected above. Answers to
+the standing self-check: (1) DSH repairs the tail before publish and commits
+closers durably; (2) dangling calls appear in `agent.session.events` as
+paired synthetic results carrying error identity; (3) DSH UNKNOWN arrives at
+Orcana as FAIL for shell verifications — projection downgrade; (4) compaction
+appends replacements, raw history untouched; (5) Orcana consumes the RAW log
+(`agent.session.events`), not the surface; (6) twice per replaced call;
+(7) indistinguishable at the governor layer today; (8) YES — live ⊋ replay
+(nested losses, replacement doublings, unknown exclusions); (9) no R0-B
+classification frozen; (10) no implementation design proposed. Independent
+re-audit owes the next judgment.
