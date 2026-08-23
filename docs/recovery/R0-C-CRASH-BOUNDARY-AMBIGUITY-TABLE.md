@@ -1,4 +1,4 @@
-# R0-C — Crash Boundary & Ambiguity Analysis (Rev.1)
+# R0-C — Crash Boundary & Ambiguity Analysis (Rev.3)
 
 Answers, for each semantically distinct lifecycle boundary: what is already
 durable, what may be durable, what remains unknown, what can be reconstructed,
@@ -11,13 +11,13 @@ Defects found are documented, not repaired.
 Rev.1 corrects per independent audit (`REVISE_R0_C`): a durable marker does
 NOT prove its execution started (`tool/call` durable ≠ body started;
 `tool/code-dispatch-start` durable = pipeline ENTRY recorded only);
-TOOL_OUTCOME_UNKNOWN covers three indistinguishable RECOVERY-OBSERVATION
+TOOL_OUTCOME_UNKNOWN covers indistinguishable RECOVERY-OBSERVATION
 ground-truth families (pre-body incl. cooperative-abort-loss / during-body /
-post-body-result-lost) — defined by recovery observation, not ground-state count;
-(before-body / during-body / after-body-before-result-survived); cooperative
+post-body-result-lost) — defined by recovery observation; cooperative
 abort separated from hard crash; ordinary-path fold-before-append marked
 UNREACHABLE-to-invert vs final-result-bypass REACHABLE; verification→mutation
-survival rewritten as a contiguous-prefix lattice; post-steer four-stage
+survival rewritten as a contiguous-prefix lattice with execution-domain
+distinction; post-steer four-stage
 ladder added (incl. the claimed-but-not-appended KNOWN LOSS WINDOW); background
 automatic completion-notice path added; end-seed persistence rewritten as
 attachPrepared direct-suffix persistence bounded by the BACKEND COMMIT POINT
@@ -82,6 +82,22 @@ semantic checkpoints = explicit barriers layered on top:
 
 Neither "append ⇒ durable" nor "durable only at next checkpoint" is correct.
 
+## Crash Model (Rev.3)
+
+Two failure models with DIFFERENT durability guarantees — never conflate:
+
+- **Process death** (SIGKILL / runtime termination; OS and machine remain
+  alive): everything already written to the filesystem — including a linked-
+  but-not-yet-dir-fsynced artifact (S1) — REMAINS visible and readable.
+  In-memory state is lost.
+- **Machine / power loss**: durability depends on fsync guarantees; artifacts
+  published without their directory-entry fsync (S1) may be lost entirely.
+
+The program's recovery focus (restart after process death) means S1 artifacts
+ARE usable there; only the stronger power-loss model requires S2. Every
+durability statement in this document should be read against the model it
+cites.
+
 ## Master Crash Boundary Table (summary)
 
 | ID | Boundary | Guaranteed-durable once past | Conditionally durable | Non-durable/process-local | Repair interpretation | World ambiguity |
@@ -94,11 +110,12 @@ Neither "append ⇒ durable" nor "durable only at next checkpoint" is correct.
 | F | code-mode nested lifecycle | outer run_code `tool/call` (post-barrier) | `-start`/`-dispatch` records individually | worker memory / intermediate values | NO synthetic closers for nested records; `-start` durable = pipeline ENTRY recorded (body may never have run) | YES per unresolved sub-dispatch |
 | G | mutation result observed | the mutation result (once durable) | pre-barrier window | live generation increment | rebuilt gen tracks only SURVIVING visible mutations | workspace truth ≠ generation |
 | H | verification result observed | the verification result (once durable) | pre-barrier window | receipt in engine map | unknown-outcome verifications project FAIL | present validity needs world |
-| I | PASS → later mutation → crash | contiguous-prefix lattice L0/L1/L2 (L3 UNREACHABLE); staleness correct ONLY IF mutation replay-visible | lost later records; projection gaps | derived staleness view | repair may freeze generation ⇒ stale-PASS resurrection | HIGH — freshness unknowable without observation |
+| I | PASS → later mutation → crash | prefix lattice L0/L1/L2 (L3 UNREACHABLE); execution-domain witness table separates ordinary vs nested/live-only vs bash domains; L2 staleness correct ONLY IF replay-visible | projection gaps may freeze/miscount rebuilt generation | derived staleness view | repair may freeze generation ⇒ stale-PASS resurrection | HIGH — freshness unknowable without observation |
 | J | mid-turn heuristic settlement | steer messages at Stage-4 (durable) ONLY — see four-stage ladder | Stages 1–3 of the steer message itself | TurnState/ring/chain/budget/inbox entries | settlements leave NO durable trace; steer loss window = KNOWN | none directly |
 | K | before completion decision | prior durable facts only | none | violation set, guard decision | recomputed next stop | as per underlying evidence |
 | L | completion facts produced → dies pre-exit | the verification/fact records | any unbarriered appends | the "allowed" decision (never durable) | recomputed | per underlying facts |
 | M | background/interruptible op | dispatch ack (ordinary result); terminal status/detail ONCE the automatic completion notice reaches Stage-4 | full output (needs explicit job_output); notice Stages 1–3 | ctx.jobs registry; unclaimed notices | no dedicated repair | outcome unknown w/o query/world; graceful-disposal vs hard-death differ |
+| — | producer topology note: five tool/result producers exist (ordinary/final-result/skipped-call/repair-closer/replacement) with per-producer fold reachability — see Producer Reachability table | | | | | |
 
 ## Boundary A — Before LLM Dispatch
 
@@ -234,21 +251,35 @@ of a genuine unknown (documented; not repaired here). See also the E-split:
 for ordinary results the loss window after fold is UNREACHABLE; for
 final-result bypass records there is no live fold at all.
 
-### E-split — Result durability vs live Orcana fold (two paths)
+## Boundary E — `tool/result` PRODUCER TOPOLOGY & fold reachability (REVISED)
 
-The ordering differs by scheduler outcome kind, so "durable result but Orcana
-never folded it live" splits into an UNREACHABLE and a REACHABLE case:
+Core principle (Rev.3): **"a durable `tool/result` exists while the equivalent
+prior live Orcana fold did not happen" cannot be answered globally from the
+event type alone — reachability depends on the actual producer path.** Same
+Session event type ≠ same live lifecycle producer.
 
-- **Ordinary post-execute path** (`needsPost=true` → `scheduler.finalize`,
-  tool-calls.ts:151–155): the finalize step RUNS the `tools/post-execute`
-  waterfall — Orcana `applyEvent` happens INSIDE it (:460–484) — and only
-  after finalize returns does `appendToolResult` append the durable record.
-  ⇒ **durable ordinary final result + zero prior live fold = UNREACHABLE.**
-- **final-result bypass** (`needsPost=false` → `scheduler.finish`,
-  tool-calls.ts:153; dsh-tools :3002): finish SKIPS tools/post-execute
-  entirely, then the result is appended. ⇒ **durable result + ZERO live
-  Orcana fold = REACHABLE.** Post-resume rebuild folds these for the first
-  time (replay-only observations, R0-B D4).
+### Producer reachability table
+
+| # | Producer | Event | Ordinary execution? | Passes tools/post-execute? | Prior equivalent live Orcana fold? | Durable result WITHOUT such fold reachable? | Recovery-only producer? | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A | Ordinary scheduler execution result | tool/result | yes | YES — finalize runs the waterfall | YES (fold inside finalize, tool-calls.ts:151–155) | **UNREACHABLE** | no | tool-calls.ts :146–160; dsh-tools :3223–3225,:3359–3388 |
+| B | Scheduler final-result bypass | tool/result | yes (pre-body denial/failure) | NO — finish() skips it | none exists | **REACHABLE** | no | tool-calls.ts :153; dsh-tools :3002 |
+| C | Skipped-call synthetic abort pair | call+result | never executed | NO — loop appends directly via appendToolCall+appendToolResult | none exists | **REACHABLE** | no | tool-calls.ts :248–259 |
+| D | Cold-repair synthetic closers | synthetic tool/result | no (recovery-only) | NO — written by commitRepair during prepare | none in the dead process | **REACHABLE** (durable as part of repair, BEFORE resumed rebuild) | **YES** | coordinator :892–957; repair.ts |
+| E | Compaction surface replacement | tool/result (surfaceOp replace) | no — not a tool-execution outcome at all | NO — pruner appends directly to raw log | none (no live body post-execute fold for the replacement itself) | **REACHABLE** | no | pruner src |
+
+Physical durability caveat applies to ALL producers: appended ≠ necessarily
+crash-surviving (write-behind/barrier/backend-commit govern survival).
+
+Boundary-E crash consequence per producer: A — no ambiguity beyond which
+records survived (D-family); B/C/D/E — a durable result can exist that the
+live process NEVER folded, so post-resume rebuild is its FIRST Orcana
+observation, and any pre-crash derived-state continuity claim for that fact is
+unfounded.
+
+No other `tool/result` producer was located in rc.6 sources (repair closers,
+skipped-call pairs, pruner replacement, scheduler ordinary/bypass are
+exhaustive for this audit).
 
 Ordering note (qualified): on the ORDINARY path the governor folds results at
 post-execute BEFORE the loop appends the result, so durable ordinary results
@@ -315,30 +346,48 @@ verifyPatterns (config input). Receipt says "PASS at generation N historically"
 from subsequent mutations, see Boundary I. Present validity always REQUIRES
 WORLD OBSERVATION or a fresh re-run.
 
-## Boundary I — Verification PASS → Later Mutation → Crash (high priority; REVISED as contiguous-prefix lattice)
+## Boundary I — Verification PASS → Later Mutation → Crash (REV.3: prefix lattice vs execution domain)
 
-Persistence history is an APPEND-ONLY CONTIGUOUS PREFIX. With `seq(V) < seq(M)`
-(earlier verification PASS V, later mutation result M), the crash-surviving
-survivor set is exactly one of:
+Two DISTINCT questions, kept in two separate tables:
 
-| Survivor state | Reachable? | Rebuilt consequence |
+1. **Durable-prefix lattice** — which historical Session event combinations
+   can survive a crash? (append-only contiguous prefix ⇒ L0/L1/L2 reachable,
+   L3 UNREACHABLE — unchanged)
+2. **Execution-domain reachability** — given a survivor shape, could a REAL
+   side effect have occurred in that world?
+
+### Prefix lattice (unchanged)
+
+`seq(V) < seq(M)`; survivors are exactly one of: **L0** neither / **L1** V only /
+**L2** V+M; **L3 = M-only is UNREACHABLE**.
+
+### Execution-domain witness table (REVISED)
+
+| Witness kind | Which prefix states can carry it? | Notes |
 | --- | --- | --- |
-| L0: neither V nor M | REACHABLE (both pre-prefix or lost) | neither fact exists post-resume |
-| L1: V only | REACHABLE | receipt present at its generation; mutation absent ⇒ rebuilt generation FROZEN at V's generation ⇒ old PASS presents CURRENT (experiments A/H) — **false-confidence risk unless world observed** |
-| L2: V + M both durable | REACHABLE | staleness computed correctly **ONLY IF** M belongs to the replay-visible recognized-mutation domain. QUALIFIER: code-mode nested mutations are replay-DROPPED and surface replacements are DOUBLE-APPLIED (R0-B D1/D6), so physical prefix correctness ≠ Orcana semantic replay completeness |
-| L3: M only (V lost) | **UNREACHABLE** — contiguous append-only prefix cannot contain a later record while missing an earlier one | DELETE this case from any reasoning |
+| Ordinary top-level mutation whose CALL survived durably but RESULT was lost | **L1 ONLY** | `seq(V) < seq(call)` + contiguous prefix ⇒ V necessarily survived too; an L0 witness via ordinary durable mutation call is **UNREACHABLE** |
+| Code-mode nested / live-only execution domain (nested op executes; its `-start`/`-dispatch` records fail to survive, or the domain produces no surviving per-mutation marker in required form) | L0, L1, or L2 (independent of V/M survival) | real world effect POSSIBLE inside L0 — an empty durable prefix does NOT prove an unmutated workspace |
+| bash-class workspace change | any state | never produces a recognized mutation marker at all (MUTATION_TOOLS excludes bash) |
 
-Additional sub-case inside L0/L1 boundaries: the mutation EXECUTION may itself
-be in Boundary C/D ambiguity (call durable, result lost → synthetic
-OUTCOME_UNKNOWN, still not counted). And if the intended scenario is instead
-`mutation → later verification → crash`, that is a DIFFERENT family: the
-later verification then runs against a possibly-mutated workspace whose
-generation may or may not have advanced — analyze per Boundary H rules with
-the generation gaps of G applied; do not fold it into this lattice.
+### Consequences per lattice state
 
-Only survivor-state L2 on fully-visible recognized mutations is fully correct
-today; L1 and the qualified corners of L2 are documented divergence families,
-not defects repaired here.
+- **L0**: no V, no M in history — but a real mutation MAY still have occurred
+  via the nested/live-only or bash domains above ⇒ REQUIRES WORLD OBSERVATION
+  before any freshness claim. Do NOT read L0 as "workspace pristine" and do
+  NOT invert it into "L0 means nothing happened".
+- **L1**: V present; later ordinary-mutation-call-durable-with-lost-result is
+  an L1 witness (NOT L0); rebuilt generation frozen at V's generation ⇒ old
+  PASS presents CURRENT (experiments A/H) ⇒ false-confidence risk unless world
+  observed.
+- **L2**: staleness computed correctly ONLY IF M is visible and correctly
+  recognized by current Orcana replay projection. QUALIFIER preserved:
+  code-mode nested mutations are replay-DROPPED and surface replacements are
+  DOUBLE-APPLIED (R0-B D1/D6), so physical prefix correctness ≠ Orcana
+  semantic replay completeness.
+
+If the intended scenario is instead `mutation → later verification → crash`,
+that remains a DIFFERENT family analyzed under Boundary H rules with the
+generation gaps of G applied.
 
 ## Boundary J — Mid-Turn Heuristic / Settlement State (REVISED with post-steer ladder)
 
@@ -347,8 +396,7 @@ dispatches (agent.ts:295–296); they emit NO durable record; one DSH turn can
 contain many settlements. A steer enqueues to the NEXT-STEP INBOX and reaches
 durable Session history only through a FOUR-STAGE ladder:
 
-```
-text
+```text
 agent.steer(msg)
  → Stage 1: next-step inbox entry        (process-local)
  → inbox.claim() removes from inbox
@@ -489,10 +537,22 @@ Persistence/materialization paths (verified):
    Promise resolution, which may resolve strictly after the artifact is
    already crash-durable); then `if (seed.length > 0) await appendCore(id,
    seed)` persists the whole seed batch — INCLUDING the constructor-appended
-   end-seed — via appendBatch/materialize. Crash before the backend
-   publish/commit point ⇒ NO crash-durable artifact ⇒ session invisible to
-   `list()` and unrecoverable-by-id (header intent was memory-only). Single
-   semantic boundary: pre-publish vs published.
+   end-seed — via appendBatch/materialize. The materialization path has THREE
+   physically distinct states (jsonl materializePosix :529–562):
+   - **S0 — pre-link**: `link(tmp, finalPath)` not yet completed ⇒ final
+     artifact path ABSENT. Crash here ⇒ session invisible to `list()` and
+     unrecoverable-by-id (header intent was memory-only).
+   - **S1 — post-link / pre-directory-fsync**: link() SUCCEEDED — the final
+     path is PUBLISHED. Under PROCESS DEATH (SIGKILL/runtime termination with
+     OS alive) the path EXISTS and is visible/readable — process death does
+     not roll back a completed link(). POWER-LOSS durability is NOT YET
+     guaranteed: without the parent-directory fsync a machine crash may lose
+     the directory entry.
+   - **S2 — post-directory-fsync**: the backend's declared POWER-LOSS DURABLE
+     publication guarantee is reached ("the new link is not crash-durable
+     until the parent directory's metadata is synced", jsonl :557–562).
+   Single semantic boundary pair to track: S0→S1 (publication) and S1→S2
+   (power-loss durability).
 2. **Resume path** (prepareCore :892–931 → attachPrepared :1185–1207): stored
    balanced events seed the constructor; a fresh end-seed is appended ONLY IF
    the stored log does not already end with one. That fresh marker is
@@ -563,6 +623,17 @@ Two distinct positions, never merge:
      into TOOL_OUTCOME_UNKNOWN).
 17. Preserved standing rule: absence of durable result ≠ proof side effect did
     not occur.
+18. **ordinary durable tool/result always implies prior live Orcana fold** ❌
+    (only Producer A; bypass/skipped/repair/replacement producers fold-free).
+19. **all tool/result producers share the scheduler post-execute lifecycle** ❌
+    (five distinct producer topologies — see Producer Reachability table).
+20. **an ordinary later-mutation durable call can coexist with a lost earlier
+    verification V** ❌ (contiguous prefix forces L1, never L0).
+21. **post-link/pre-dir-fsync artifact is necessarily invisible after
+    SIGKILL** ❌ (published path survives process death; only power-loss
+    durability awaits dir fsync).
+22. **process death == power loss** ❌ (distinct failure models with distinct
+    durability guarantees — S1 vs S2).
 
 ## Completion-Impact Summary
 
@@ -584,7 +655,9 @@ declares any current behavior incorrect-by-contract — R0-D owns contracts.
   creation-materialization path AND attachPrepared direct-suffix persistence;
   header materialization; code-mode producer vocabulary & fields; write-behind/
   flush contract; orphan-prune Surface behavior (log-only ⇒ surface stays
-  original); ordinary-path fold-before-append ordering.
+  original); ordinary-path fold-before-append ordering; five-producer
+  tool/result topology and per-producer fold reachability; prefix lattice
+  L0/L1/L2 reachable + L3 unreachable; S0/S1/S2 end-seed physical states.
 - CONDITIONALLY KNOWN: any single record's survival between append and next
   barrier; replacement durability (compaction point 3); steer-message survival
   (Stages 1–3 of the ladder); OUTCOME_UNKNOWN ground-state identity.
@@ -608,6 +681,9 @@ declares any current behavior incorrect-by-contract — R0-D owns contracts.
 | requestHeader fold + buildRequest consumption + resume/change append | session/src/index.ts:657–680; agent-loop agent.ts:413–467 @15148dbd9a | verified |
 | end-seed producer + lazy creation + seed persist | session/src/index.ts:539–547; coordinator.ts:645–658,1283–1293 @15148dbd9a | verified |
 | end-seed attachPrepared direct-suffix persistence; backend commit point vs Promise resolution | coordinator.ts:1185–1207 (storedCursor/slice/appendCore); jsonl materializePosix :529–562 (writeSyncedTempFile → link() publish → dir fsync → cleanup) | verified |
+| end-seed compaction consumers | compaction-basic region.ts:286–300,517–552 @15148dbd9a | verified |
+| S0/S1/S2 physical states: pre-link absent; post-link published/process-death-visible; post-dir-fsync power-loss durable | rc.6 jsonl materializePosix :529–562 (link-then-syncDir sequence + comments) | SOURCE-PROVEN; NO TARGETED TEST LOCATED for the S1-vs-S2 distinction specifically |
+| Five tool/result producers + fold reachability | tool-calls.ts :146–160,:248–259; coordinator :892–957; pruner src | producer-path verified per row |
 | end-seed compaction consumers | compaction-basic region.ts:286–300,517–552 @15148dbd9a | verified |
 | Background ack/jobs/outcome vocabulary | shell/tool-bash/src/index.ts:71–73; tool-bash/background.ts:16–36 @15148dbd9a | verified |
 | Pruner adjacency (prune+replacement synchronous) | compaction-tool-result-pruner/src/index.ts @15148dbd9a | verified |
