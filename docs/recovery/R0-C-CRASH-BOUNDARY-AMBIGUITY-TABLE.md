@@ -1,4 +1,4 @@
-# R0-C — Crash Boundary & Ambiguity Analysis
+# R0-C — Crash Boundary & Ambiguity Analysis (Rev.1)
 
 Answers, for each semantically distinct lifecycle boundary: what is already
 durable, what may be durable, what remains unknown, what can be reconstructed,
@@ -7,6 +7,19 @@ what requires world re-observation, and what recovery logic must never assume.
 Docs-only failure-boundary analysis over current real sources. No recovery
 implementation, no new durability machinery, no dedupe/replay/fix of any kind.
 Defects found are documented, not repaired.
+
+Rev.1 corrects per independent audit (`REVISE_R0_C`): a durable marker does
+NOT prove its execution started (`tool/call` durable ≠ body started;
+`tool/code-dispatch-start` durable = pipeline ENTRY recorded only);
+TOOL_OUTCOME_UNKNOWN covers THREE indistinguishable ground states
+(before-body / during-body / after-body-before-result-survived); cooperative
+abort separated from hard crash; ordinary-path fold-before-append marked
+UNREACHABLE-to-invert vs final-result-bypass REACHABLE; verification→mutation
+survival rewritten as a contiguous-prefix lattice; post-steer four-stage
+ladder added (incl. the claimed-but-not-appended KNOWN LOSS WINDOW); background
+automatic completion-notice path added; end-seed persistence rewritten as
+attachPrepared direct-suffix persistence bounded by the BACKEND COMMIT POINT
+(not Promise resolution); orphan-prune Surface behavior upgraded to KNOWN.
 
 ## Baseline & Version Assumption
 
@@ -72,18 +85,18 @@ Neither "append ⇒ durable" nor "durable only at next checkpoint" is correct.
 | ID | Boundary | Guaranteed-durable once past | Conditionally durable | Non-durable/process-local | Repair interpretation | World ambiguity |
 | --- | --- | --- | --- | --- | --- | --- |
 | A | LLM request prefix vs dispatch | after flush: full logged request prefix | header/request records between append and flush | in-flight stream chunks beyond committed log | n/a (no tail synthesis for headers) | none directly |
-| B | top-level call record vs body start | after flush: the `tool/call` | the call between append and flush (write-behind race) | scheduler-preparation state | write-behind race selects TOOL_NOT_STARTED vs TOOL_OUTCOME_UNKNOWN | side effects impossible yet (body not started) |
+| B | top-level call record vs body start | after flush RETURNS: the `tool/call` | the call between append and flush-return (write-behind race) | scheduler-preparation state | race selects NOT_STARTED vs OUTCOME_UNKNOWN; OUTCOME_UNKNOWN does NOT imply body started | body-start possible ONLY after flush returns + signal check passes |
 | C | body began → no durable result | the `tool/call` (crossed barrier) | partial output text (process-local) | everything execution-local | TOOL_OUTCOME_UNKNOWN synthetic result | YES — side effects MAY have occurred |
 | D | result appended → durability timing | depends on sub-state (D1/D2/D3) | THE RESULT ITSELF | post-execute derived governor state | absent result ⇒ OUTCOME_UNKNOWN even if body completed | possible completed-but-unrecorded |
 | E | result durable, Orcana state stale | result | none extra | ALL Orcana engine/adapter state | n/a (result already in history) | inherited from result's own ambiguity status |
-| F | code-mode nested lifecycle | outer run_code `tool/call` (post-barrier) | `-start`/`-dispatch` pairs individually | worker memory / intermediate values | NO synthetic closers for nested records (repair scans tool/call only) | YES per unresolved sub-dispatch |
+| F | code-mode nested lifecycle | outer run_code `tool/call` (post-barrier) | `-start`/`-dispatch` records individually | worker memory / intermediate values | NO synthetic closers for nested records; `-start` durable = pipeline ENTRY recorded (body may never have run) | YES per unresolved sub-dispatch |
 | G | mutation result observed | the mutation result (once durable) | pre-barrier window | live generation increment | rebuilt gen tracks only SURVIVING visible mutations | workspace truth ≠ generation |
 | H | verification result observed | the verification result (once durable) | pre-barrier window | receipt in engine map | unknown-outcome verifications project FAIL | present validity needs world |
-| I | PASS → later mutation → crash | whichever records crossed barriers | the later records | derived staleness view | repair may freeze generation ⇒ stale-PASS resurrection | HIGH — freshness unknowable without observation |
-| J | mid-turn heuristic settlement | steer messages ONLY once claimed into a step | nothing else heuristic | TurnState/ring/chain/budget/inbox entries | settlements themselves leave NO durable trace | none directly |
+| I | PASS → later mutation → crash | contiguous-prefix lattice L0/L1/L2 (L3 UNREACHABLE); staleness correct ONLY IF mutation replay-visible | lost later records; projection gaps | derived staleness view | repair may freeze generation ⇒ stale-PASS resurrection | HIGH — freshness unknowable without observation |
+| J | mid-turn heuristic settlement | steer messages at Stage-4 (durable) ONLY — see four-stage ladder | Stages 1–3 of the steer message itself | TurnState/ring/chain/budget/inbox entries | settlements leave NO durable trace; steer loss window = KNOWN | none directly |
 | K | before completion decision | prior durable facts only | none | violation set, guard decision | recomputed next stop | as per underlying evidence |
 | L | completion facts produced → dies pre-exit | the verification/fact records | any unbarriered appends | the "allowed" decision (never durable) | recomputed | per underlying facts |
-| M | background/interruptible op | dispatch ack (ordinary result) | eventual outcome UNLESS job-tool queried later | ctx.jobs registry | no dedicated repair | outcome unknown w/o query/world |
+| M | background/interruptible op | dispatch ack (ordinary result); terminal status/detail ONCE the automatic completion notice reaches Stage-4 | full output (needs explicit job_output); notice Stages 1–3 | ctx.jobs registry; unclaimed notices | no dedicated repair | outcome unknown w/o query/world; graceful-disposal vs hard-death differ |
 
 ## Boundary A — Before LLM Dispatch
 
@@ -113,35 +126,45 @@ Unsafe assumption: treating an in-memory `requestHeader()` fold as durable.
 Orcana impact: none directly (no consumer); DSH resume configuration semantics
 affected only at A1.
 
-## Boundary B — Before Top-Level Tool Execution
+## Boundary B — Before Top-Level Tool Execution (REVISED)
 
-Chain (source): assistant/message appended (with tool-call blocks) → loop calls
-`appendToolCall` (:262–265) → scheduler prepare/dispatch → `tools/execute`
-waterfall: checkpoint-policy flushes (:70–76) → body runs.
+Verified chain (checkpoint-policy :70–76): `tools/execute` listener (top-level
+only) → `await session.flush()` → **flush returns** → abort/signal check →
+`next()` → scheduler prepare/dispatch → tool body.
 
-Sub-states and repair mapping (repair = `interruptedTurnClosers`, which marks
-pendingCalls from assistant blocks and upgrades them when a `tool/call` seq is
-present):
+Sub-states:
 
-- **B1 — assistant block durable, `tool/call` NOT appended** (crash between
-  message append and call append): repair emits synthetic result with
-  `TOOL_NOT_STARTED` (KNOWN — repair.spec.ts:50–81). No execution began ⇒ no
-  world side effect from THIS call. Retry guidance differs by design.
-- **B2 — `tool/call` appended, pre-body flush NOT completed**: the call is
-  CONDITIONALLY durable — the write-behind race decides. If it survived ⇒
-  repair sees `callSeq` ⇒ `TOOL_OUTCOME_UNKNOWN`; if not ⇒ `TOOL_NOT_STARTED`.
-  **This is a semantically distinct boundary pair precisely because the repair
-  code differs.** The choice is NOT knowable from wall-clock order alone
-  post-crash — only from surviving bytes.
-- **B3 — flush completed, body not started / aborting**: call guaranteed
-  durable; abort path materializes aborted-before-dispatch error result
-  (policy :43–49) — ordinary result semantics apply.
-- **B4 — body begins**: call is behind the explicit barrier (KNOWN). World
-  effects become possible → Boundary C applies.
+- **B1 — assistant block durable, `tool/call` NOT appended**: repair emits
+  synthetic result with `TOOL_NOT_STARTED` (repair.spec.ts:50–81). For the
+  ordinary top-level path: no durable call ⇒ the flush gate had not passed ⇒
+  **body could not have started** (premise scoped to this verified path).
+- **B2 — call appended, flush NOT returned**: call CONDITIONALLY durable
+  (write-behind race). Repair code depends on surviving bytes: survived ⇒
+  OUTCOME_UNKNOWN; lost ⇒ NOT_STARTED. Body not yet invoked either way.
+- **B3a — COOPERATIVE ABORT after flush**: signal aborted at the post-flush
+  check ⇒ policy materializes an ordinary aborted-before-dispatch error
+  result (policy :43–49); loop's cancel path likewise appends skipped-call
+  pairs (tool-calls.ts:248–259, TOOL_ABORTED_BEFORE_DISPATCH). These are
+  OBSERVED outcomes with durable results — ordinary semantics; they prove
+  nothing about hard-crash behavior and must not be used as evidence for it.
+- **B3b — HARD CRASH after flush returns, before body invocation**: call is
+  GUARANTEED durable; body NEVER ran; NO result will ever exist. Post-resume
+  this is indistinguishable from B4-with-lost-result — all collapse into
+  TOOL_OUTCOME_UNKNOWN. This legal boundary is why **durable call ≠ body
+  started**.
+- **B4 — body begins** (flush returned AND signal check passed): world effects
+  become possible → Boundary C applies.
 
-Repair-code premise note: `TOOL_NOT_STARTED`'s precondition is "assistant
-request survived, call did not"; `TOOL_OUTCOME_UNKNOWN`'s is "call survived".
-Both premises are about SURVIVING BYTES, not about when the crash happened.
+TOOL_OUTCOME_UNKNOWN ground states (all REACHABLE on the ordinary top-level
+path, all INDISTINGUISHABLE from surviving history):
+
+1. crash between flush-return and body invocation (B3b);
+2. crash DURING body execution;
+3. body completed but its result was appended-and-lost (Boundary D1) or never
+   appended.
+
+`TOOL_OUTCOME_UNKNOWN = ordinary tool/call survived AND completed result did
+not survive.` It is NOT proof the body started.
 
 ## Boundary C — Body Began, No Durable Result (core ambiguity)
 
@@ -150,13 +173,19 @@ arbitrary duration. Result never entered crash-surviving history.
 
 - DSH CAN prove: the call was recorded and started; no completed outcome was
   durably recorded.
+- DSH CANNOT prove: WHICH ground state produced the missing result —
+  (1) crash after flush-return but BEFORE body invocation; (2) crash DURING
+  body execution; (3) body COMPLETED but its result record did not survive
+  (Boundary D1). All three are REACHABLE and history-indistinguishable.
 - DSH CANNOT prove: whether the operation mutated anything; how far it got.
 - Repair emits: synthetic `tool/result`, isError=true, error identity
   `ToolOutcomeUnknownError/TOOL_OUTCOME_UNKNOWN`, model-facing text instructing
   verify-then-retry (repair.ts:100–121; behavioral lock repair.spec.ts:229–261).
-- World: side effects **MAY have occurred** (UNKNOWN). Absence of durable
-  success ≠ proof of failure; the synthetic isError=true is a RECOVERY
-  CONVENTION, not an observed outcome.
+- World: side effects **MAY have occurred** (UNKNOWN — ground states 1/2/3
+  above are history-indistinguishable; even state 3's recorded outcome may have
+  been lost with the result record). Absence of durable success ≠ proof of
+  failure; the synthetic isError=true is a RECOVERY CONVENTION, not an
+  observed outcome.
 - Orcana projection today: pairs the synthetic result; `mutation=false`
   (isError suppresses); shell verification ⇒ receipt FAIL (UNKNOWN→FAIL
   downgrade, experiment G); generation frozen across the possible mutation (H).
@@ -180,13 +209,30 @@ Recovery ambiguity: after restart you observe result-present or result-absent;
 in the ABSENT case you cannot distinguish "operation failed/was killed" from
 "operation completed but its record lost". DSH's UNKNOWN classification is
 therefore exactly right, and Orcana's FAIL projection is a semantic downgrade
-of a genuine unknown (documented; not repaired here).
+of a genuine unknown (documented; not repaired here). See also the E-split:
+for ordinary results the loss window after fold is UNREACHABLE; for
+final-result bypass records there is no live fold at all.
 
-Also note ordering (E-relevant): the governor folds results at post-execute,
-BEFORE the loop appends the result — so every result that reached durability
-was necessarily already folded live; replay-vs-live result differences come
-from projection/domain, not from missed live observations (except final-result
-bypass cases, which reach the log WITHOUT ever being folded live).
+### E-split — Result durability vs live Orcana fold (two paths)
+
+The ordering differs by scheduler outcome kind, so "durable result but Orcana
+never folded it live" splits into an UNREACHABLE and a REACHABLE case:
+
+- **Ordinary post-execute path** (`needsPost=true` → `scheduler.finalize`,
+  tool-calls.ts:151–155): the finalize step RUNS the `tools/post-execute`
+  waterfall — Orcana `applyEvent` happens INSIDE it (:460–484) — and only
+  after finalize returns does `appendToolResult` append the durable record.
+  ⇒ **durable ordinary final result + zero prior live fold = UNREACHABLE.**
+- **final-result bypass** (`needsPost=false` → `scheduler.finish`,
+  tool-calls.ts:153; dsh-tools :3002): finish SKIPS tools/post-execute
+  entirely, then the result is appended. ⇒ **durable result + ZERO live
+  Orcana fold = REACHABLE.** Post-resume rebuild folds these for the first
+  time (replay-only observations, R0-B D4).
+
+Ordering note (qualified): on the ORDINARY path the governor folds results at
+post-execute BEFORE the loop appends the result, so durable ordinary results
+were necessarily already folded live; final-result bypass records reach the
+log WITHOUT any live fold (see E-split).
 
 ## Boundary E — Durable Result, Orcana Process State Not Updated
 
@@ -198,27 +244,37 @@ derivation itself adds no new ambiguity beyond the known projection gaps
 (code-dispatch drop, replacement double-application, unknown→FAIL). No
 taxonomy restated here per scope.
 
-## Boundary F — Code-Mode Nested Execution
+## Boundary F — Code-Mode Nested Execution (REVISED)
 
 Vocabulary (producer-verified): outer `run_code` = ORDINARY root `tool/call`;
 each launched nested operation appends `tool/code-dispatch-start`
-{rootCallId,parentCallId,subCallId,name,arguments} at pipeline entry
-(code-mode.ts:535–541) and settles with `tool/code-dispatch`
-(+isError,content,:510–521). Queued-and-abandoned operations log NEITHER.
+{rootCallId,parentCallId,subCallId,name,arguments} at PIPELINE ENTRY
+(code-mode.ts:535–541), then `scheduler.prepare` (guards/pre-execute) →
+`dispatch` (body) or a pre-body final-result → commit-time `finalize/finish` →
+settle appends `tool/code-dispatch` (+isError,content; :510–521,
+:543–577). Queued-and-abandoned operations log NEITHER.
 
-Sub-states:
+**`-start` durable ⇒ nested pipeline ENTRY was recorded. It does NOT prove the
+nested body ran**: after `-start`, the pipeline may crash during prepare /
+guards / pre-execute (body never runs), or the body may run with its
+settlement record lost. History cannot distinguish:
 
-| Sub-state | Raw history shows | DSH proves | Repair acts? | Orcana replay | World |
-| --- | --- | --- | --- | --- | --- |
-| F1 start not durable, no settle | outer call only | nothing about the nested op | NO synthetic closer (repair scans tool/call only) | nothing | side effect MAY have occurred — fully UNKNOWN |
-| F2 start durable, settle absent | identity+args survive (name/args provable!) | sub-dispatch STARTED | none (not scanned) | dropped by filter | outcome UNKNOWN; effect may have occurred |
-| F3 start+settle durable | full nested outcome | outcome (isError/content) | none needed | STILL dropped (gap stands) | resolved to the extent the content describes |
-| F4 outer result absent | outer dangling → TOOL_OUTCOME_UNKNOWN closer | outer outcome unknown | yes (Boundary C rules) | inner records still filtered | compound ambiguity |
+- **F1 — `-start` not durable, no settle**: raw shows outer call only;
+  nothing provable about the nested op (body may never have launched).
+- **F2 — `-start` durable, settle absent**: sub-dispatch ENTRY proven
+  (name/args known); body-ran vs never-ran UNKNOWN; outcome UNKNOWN.
+  Repair emits NO synthetic closer for nested records (repair scans
+  tool/call only).
+- **F3 — start+settle durable**: nested outcome (isError/content) proven;
+  still dropped by Orcana replay filter (gap stands).
+- **F4 — outer result absent**: outer dangling → TOOL_OUTCOME_UNKNOWN closer
+  (with all Boundary-C ground-state caveats); inner records still filtered;
+  compound ambiguity.
 
-Nesting identity: survives IN RAW HISTORY (rootCallId/parentCallId/subCallId)
-but has no representation in Orcana EngineEvent. Whether `-start`-without-
-`-dispatch` could ever drive richer recovery is a later-phase question — no
-mechanism proposed.
+World status for F1/F2: side effects UNKNOWN unless another durable fact or
+world observation resolves them. Nesting identity survives IN RAW HISTORY
+(rootCallId/parentCallId/subCallId) but has no representation in Orcana
+EngineEvent.
 
 ## Boundary G — Mutation Result Observed
 
@@ -238,45 +294,65 @@ verifyPatterns (config input). Receipt says "PASS at generation N historically"
 from subsequent mutations, see Boundary I. Present validity always REQUIRES
 WORLD OBSERVATION or a fresh re-run.
 
-## Boundary I — Verification PASS → Later Mutation → Crash (high priority)
+## Boundary I — Verification PASS → Later Mutation → Crash (high priority; REVISED as contiguous-prefix lattice)
 
-Sub-cases by survival:
+Persistence history is an APPEND-ONLY CONTIGUOUS PREFIX. With `seq(V) < seq(M)`
+(earlier verification PASS V, later mutation result M), the crash-surviving
+survivor set is exactly one of:
 
-1. Both records durable: rebuild yields advanced generation; old receipt
-   correctly STALE. Correct behavior (fixture-pinned domain).
-2. Verification durable; mutation RESULT lost (Boundary D1-style):
-   repair synthesizes unknown-outcome (mutation=false) ⇒ rebuilt generation
-   FROZEN at the verification's generation ⇒ old PASS presents CURRENT
-   (experiments A/H). Completion-guard rule 1 then PASSES although the
-   workspace may have changed — false-confidence risk. UNSAFE TO ASSUME
-   freshness; REQUIRES WORLD OBSERVATION.
-3. Mutation durable; later verification lost: spurious FAIL projection
-   (unknown→FAIL) may fire guard rule 2 against a genuinely-unknown command.
-4. Neither survives: both vanish; earliest earlier evidence governs —
-   potentially stale by an entire unknown epoch.
+| Survivor state | Reachable? | Rebuilt consequence |
+| --- | --- | --- |
+| L0: neither V nor M | REACHABLE (both pre-prefix or lost) | neither fact exists post-resume |
+| L1: V only | REACHABLE | receipt present at its generation; mutation absent ⇒ rebuilt generation FROZEN at V's generation ⇒ old PASS presents CURRENT (experiments A/H) — **false-confidence risk unless world observed** |
+| L2: V + M both durable | REACHABLE | staleness computed correctly **ONLY IF** M belongs to the replay-visible recognized-mutation domain. QUALIFIER: code-mode nested mutations are replay-DROPPED and surface replacements are DOUBLE-APPLIED (R0-B D1/D6), so physical prefix correctness ≠ Orcana semantic replay completeness |
+| L3: M only (V lost) | **UNREACHABLE** — contiguous append-only prefix cannot contain a later record while missing an earlier one | DELETE this case from any reasoning |
 
-Only case 1 is fully correct today; cases 2–4 are documented divergence
-families, not defects repaired here.
+Additional sub-case inside L0/L1 boundaries: the mutation EXECUTION may itself
+be in Boundary C/D ambiguity (call durable, result lost → synthetic
+OUTCOME_UNKNOWN, still not counted). And if the intended scenario is instead
+`mutation → later verification → crash`, that is a DIFFERENT family: the
+later verification then runs against a possibly-mutated workspace whose
+generation may or may not have advanced — analyze per Boundary H rules with
+the generation gaps of G applied; do not fold it into this lattice.
 
-## Boundary J — Mid-Turn Heuristic / Settlement State
+Only survivor-state L2 on fully-visible recognized mutations is fully correct
+today; L1 and the qualified corners of L2 are documented divergence families,
+not defects repaired here.
+
+## Boundary J — Mid-Turn Heuristic / Settlement State (REVISED with post-steer ladder)
 
 Verified lifecycle: settlements occur ONLY inside `agent/turn-stopping`
-dispatches (agent.ts:295–296); they emit NO durable record; a steer enqueues
-to nextStep and becomes a durable `user/message` ONLY when the driver claims it
-into a step (:281–284). One DSH turn can contain many settlements.
+dispatches (agent.ts:295–296); they emit NO durable record; one DSH turn can
+contain many settlements. A steer enqueues to the NEXT-STEP INBOX and reaches
+durable Session history only through a FOUR-STAGE ladder:
+
+```
+text
+agent.steer(msg)
+ → Stage 1: next-step inbox entry        (process-local)
+ → inbox.claim() removes from inbox
+ → Stage 2: CLAIMED, not yet appended    (message exists nowhere durable;
+   systemPrompt.assemble / agent/pre-step    crash here = KNOWN LOSS WINDOW)
+ → step/start append
+ → Stage 3: user/message APPENDED to live Session (CONDITIONAL durability:
+   write-behind may persist; explicit barrier guarantees)
+ → Stage 4: DURABLE (recovery can re-observe it)
+```
 
 Crash points and consequences:
 
 | Crash point | Durable | Lost/reset | Stop/continue consequence |
 | --- | --- | --- | --- |
-| before settlement N | prior round facts only | round observations (ring-rebuildable parts recover; verdict does not) | next resume starts chain=0; first settle polluted (proven) |
-| after endTurn(), before decideSteer | nothing new | verdict + chain delta | resume recomputes from scratch — different ladder position possible |
-| after decideSteer(steer) , before agent.steer | nothing | decision | resume never steers for that round |
-| after agent.steer, before claim | NOTHING (inbox-only) | the steer message itself | stop that WOULD have been prevented now proceeds — control-flow difference vs no-crash |
-| after claim (step started) | user/message (conditional on next barrier) | — | continuity restored modulo Barrier-D windows |
+| before settlement N | prior round facts only | round observations (ring-rebuildable parts recover; verdict does not) | resume starts chain=0; first settle polluted (proven) |
+| after endTurn(), before decideSteer | nothing new | verdict + chain delta | resume recomputes — different ladder position possible |
+| after decideSteer(steer), before agent.steer | nothing | decision | resume never steers for that round |
+| **Stage 1: after agent.steer, before claim** | NOTHING (inbox-only) | the steer message | stop that WOULD have been prevented now proceeds |
+| **Stage 2: claimed-but-NOT-appended** | NOTHING — message removed from inbox AND never appended (**KNOWN LOSS WINDOW**: crash during assemble/pre-step before user/message append) | the steer message entirely | same as Stage 1 loss, plus the claim already consumed it |
+| **Stage 3: appended-but-not-durable** | CONDITIONAL (write-behind may have drained; barrier may not have run) | possibly the user/message record | partial continuity possible |
+| **Stage 4: durable** | user/message in persisted prefix | — | continuity restored modulo Barrier-D windows |
 
-Preservation correctness value stays **AMBIGUOUS / UNRESOLVED** (unchanged;
-no new direct evidence either way). No durability mechanism proposed.
+Claim ≠ durable message. Preservation correctness value stays
+**AMBIGUOUS / UNRESOLVED** (unchanged). No durability mechanism proposed.
 
 ## Boundary K — Before Completion Decision
 
@@ -306,24 +382,40 @@ attempts to finish; process dies before normal termination.
   degraded/incorrect derived inputs (see I) and re-steer or mis-assert —
   analysis only.
 
-## Boundary M — Background / Interruptible Operation
+## Boundary M — Background / Interruptible Operation (REVISED)
 
-Source-grounded shape: background bash returns an immediate ack result
-(ordinary `tool/result`, job id text); settled outcomes land in a process-local
-`ctx.jobs` registration mapped to completed/killed (+detail) —
-tool-bash/background.ts:16–36; read back only via `job_output`/`job_kill`
-tools, which produce their OWN ordinary call/result records when invoked.
+Verified shape (tool-jobs/tool-bash rc.6): background bash returns an
+immediate ack result (ordinary `tool/result`, job id); settlement lands in a
+PROCESS-LOCAL `ctx.jobs` registry (`settle()` records status/detail/output,
+jobs-local :416–434). Two separate durability channels exist:
 
-Consequences:
+1. **Automatic completion NOTICE** (terminal status/detail):
+   `ctx.jobs.onJobDone` listener (tool-jobs/src/index.ts:283–302) builds a
+   plugin-source user message and delivers it to the owner Agent:
+   busy ⇒ `owner.inject(message)` (waits in next-step inbox); idle+wakeup-
+   budget ⇒ `owner.followup(message)` (wakes driver). First-wins semantics
+   (`snapshot.reported` guard); disposal before claim DISCARDS the notice;
+   teardown settlements arrive pre-`reported`. Once claimed/appended/persisted
+   (same four-stage ladder as Boundary J), terminal status/detail IS durably
+   represented WITHOUT any explicit job_output call.
+2. **Full output**: normally requires an explicit `job_output` tool call
+   (its own ordinary call/result record); streaming jobs return incremental
+   reads.
 
-- Session history proves: dispatch accepted (ack); any LATER job-tool queries.
-- Eventual outcome is durable ONLY IF a job-tool interaction captured it;
-  otherwise it dies with the process (registry is process-local).
-- Historical absence of a job_output query does NOT prove failure, success, or
-  completion — UNKNOWN; resolution = job-tool query (if runtime alive) or
-  REQUIRES WORLD OBSERVATION.
-- No exactly-once or at-least-once guarantee exists or is proposed. Parent
-  death leaves the child per OS semantics — outside Session truth entirely.
+Crash stages of the notice itself reuse the Boundary-J ladder: settled →
+notice queued (inbox) → claimed → user/message appended → persisted. A crash
+before Stage 4 loses the notice even though **the real process/job world has
+a terminal outcome** — post-resume Session history cannot pretend to know it
+(REQUIRES WORLD OBSERVATION or a fresh job-tool query against the live
+registry).
+
+Graceful disposal vs hard death: graceful agent/service disposal CANCELS
+owned jobs and awaits termination (observable stopping→settled transitions);
+hard SIGKILL leaves children per OS semantics with NO notice path at all.
+Do not merge the two.
+
+Historical absence of a job_output query does NOT prove failure, success, or
+completion. No exactly-once guarantee exists or is proposed.
 
 ## Compaction / Surface-Replacement Timing Family
 
@@ -335,8 +427,15 @@ sourceEventSeqs). Crash points:
 1. **Original durable, pruning not started**: raw=surface=original. Replay
    single-application. Unambiguous.
 2. **Between the adjacent appends** (prune landed, replacement not):
-   SOURCE DOES NOT PROVE the resulting state — `foldSurface` tolerance for an
-   orphan shadow-price event was not audited. Flagged UNRESOLVED (narrow).
+   KNOWN — `compaction/prune` is a LOG-ONLY event: no surfaceOp, not a surface
+   node, so the Session Surface remains on the ORIGINAL node and the model-
+   visible projection keeps the full original content. No truth manufactured;
+   only the shadow-price bookkeeping dangles. Current Orcana replay ignores
+   compaction/prune entirely, so replay also stays on the original single
+   application. Unresolved separately: TOKEN-METER CLAIM STATE — whether the
+   metering side can double-count or lose the shadow price across this crash
+   seam (consumer semantics outside audited scope; isolated here so it no
+   longer qualifies the Surface conclusion).
 3. **Replacement appended, not yet durable**: crash loses ONLY the
    replacement; original remains authoritative-and-durable; post-restart
    surface derives the ORIGINAL again. Model-visible content reverts to full
@@ -369,17 +468,24 @@ Persistence/materialization paths (verified):
    artifact ⇒ session invisible to `list()` and unrecoverable-by-id (header
    intent was memory-only). Single semantic boundary: pre-materialization vs
    materialized.
-2. **Resume path** (prepareCore :892–931): stored balanced events seed the
-   constructor; a fresh end-seed is appended ONLY IF the stored log does not
-   already end with one. Its route to storage is the NORMAL controller drain
-   (write-behind/barrier) with SUBSEQUENT appends — SOURCE DOES NOT PROVE an
-   explicit flush of this marker during resume commit. Marked UNRESOLVED:
-   whether a resume-with-no-further-writes leaves a live-only end-seed.
+2. **Resume path** (prepareCore :892–931 → attachPrepared :1185–1207): stored
+   balanced events seed the constructor; a fresh end-seed is appended ONLY IF
+   the stored log does not already end with one. That fresh marker is
+   PERSISTED DIRECTLY at prepared-session attach: `attachPrepared` computes
+   `suffix = session.events.slice(state.cursor)` — the constructor-added
+   end-seed is inside that suffix — and `if (suffix.length > 0)` immediately
+   starts `appendCore(id, suffix)`. NO subsequent normal Session write is
+   required. The semantic crash boundary is the BACKEND DURABLE COMMIT POINT:
+   crash before it ⇒ end-seed may be absent; after it ⇒ end-seed survives.
+   NOTE: Promise resolution of appendCore is NOT that boundary — a JSONL
+   materialize/append can be durably published (link()+dir-fsync) while its
+   Promise is still unresolved; use the backend commit point, not function
+   completion.
 3. **Compaction consumption timing**: `inspectCompactionEntryState` reads
-   end-seed from `session.events` (live view). After resume it therefore sees
-   whatever the reloaded prefix contains; a live-only (undrained) marker would
-   be visible in-process but absent from a SIMULTANEOUS cold reader — exact
-   cross-reader semantics UNRESOLVED.
+   end-seed from `session.events` (live view). After attachPrepared the suffix
+   persistence covers the marker; cross-reader visibility before the backend
+   commit point remains an exact-timing question for R0-C follow-up if ever
+   operationally relevant (narrow).
 
 ## `request/header` Boundary Precision (completing R0-B risk note)
 
@@ -395,7 +501,7 @@ Two distinct positions, never merge:
   BEHIND the guaranteed barrier (KNOWN). Only post-prefix stream output is
   losable.
 
-## Unsafe-Assumption Register (consolidated)
+## Unsafe-Assumption Register (consolidated; REV.1-corrected)
 
 1. Assuming `append` ⇒ crash-durable (violates write-behind model).
 2. Assuming absent result ⇒ operation failed (synthetic isError is a recovery
@@ -406,13 +512,26 @@ Two distinct positions, never merge:
 5. Assuming rebuilt generation equals live-generation semantics (non-equivalent
    writer domains; replacement doubling).
 6. Assuming no-Orcana-consumer ⇒ irrelevant (request/header, end-seed cases).
-7. Assuming repair codes reveal WHEN the crash happened (they reveal only
-   which bytes survived).
-8. Assuming a steered next-step message survived (inbox-only until claimed).
+7. Assuming repair codes reveal WHEN or WHETHER the body ran (they reveal only
+   which bytes survived; OUTCOME_UNKNOWN includes before-body).
+8. Assuming a steered next-step message survived (four-stage ladder: lost at
+    Stages 1–2 even after a successful agent.steer call).
 9. Assuming EngineSnapshot/snapshot-like surfaces are restorable checkpoints
    (composite projections, zero writers).
-10. Assuming background job completion/absence from history (registry is
-    process-local).
+10. Assuming background terminal outcome exists ONLY via explicit job_output
+    (automatic onJobDone notice may durably carry terminal status/detail;
+     full output still requires job_output) ❌-corrected.
+11. **durable `tool/call` ⇒ body ran** ❌ (B3b hard-crash window exists).
+12. **durable `code-dispatch-start` ⇒ nested body ran** ❌ (prepare/guards/
+    pre-execute crash windows exist between start and body).
+13. **claimed next-step ⇒ Session-durable** ❌ (claimed-but-not-appended KNOWN
+    LOSS WINDOW).
+14. **appendCore Promise unresolved ⇒ artifact absent** ❌ (backend publish /
+    dir-fsync may precede Promise resolution; use the backend commit point).
+15. **a later event can survive while an earlier-seq event is lost** ❌
+    (append-only contiguous prefix; survivor sets are prefix-shaped).
+16. Preserved standing rule: absence of durable result ≠ proof side effect did
+    not occur.
 
 ## Completion-Impact Summary
 
@@ -428,15 +547,18 @@ current behavior incorrect-by-contract — R0-D owns contracts.
 
 - KNOWN: checkpoint barrier effects (A2/B3/B4, pre-step); repair codes'
   byte-level premises (B1/B2/C); synthetic closer shapes; end-seed producer &
-  creation-materialization path; header materialization; code-mode producer
-  vocabulary & fields; write-behind/flush contract.
+  creation-materialization path AND attachPrepared direct-suffix persistence;
+  header materialization; code-mode producer vocabulary & fields; write-behind/
+  flush contract; orphan-prune Surface behavior (log-only ⇒ surface stays
+  original); ordinary-path fold-before-append ordering.
 - CONDITIONALLY KNOWN: any single record's survival between append and next
-  barrier; replacement durability (compaction point 3); resume-added end-seed
-  drain.
-- UNKNOWN: interrupted-execution world effects; background eventual outcomes
-  absent job-tool queries; downtime world drift.
-- UNRESOLVED: orphan `compaction/prune` tolerance; resume-added end-seed drain
-  timing; cross-reader visibility of live-only markers.
+  barrier; replacement durability (compaction point 3); steer-message survival
+  (Stages 1–3 of the ladder); OUTCOME_UNKNOWN ground-state identity.
+- UNKNOWN: interrupted-execution world effects and ground states; background
+  eventual outcomes absent Stage-4 notices/job-tool queries; downtime world
+  drift; token-meter claim state across orphan prunes.
+- UNRESOLVED: token-meter claim-state semantics (isolated); deployed-version
+  equivalence.
 - REQUIRES WORLD OBSERVATION: all Boundary C/I/M world questions.
 
 ## Evidence Index
@@ -451,11 +573,13 @@ current behavior incorrect-by-contract — R0-D owns contracts.
 | Resume ordering (prepare→repair→commit→reread→publish→session-start) | coordinator.ts:720–768,892–957; agent-loop index.ts:556–568 @15148dbd9a | verified (R0-A carried) |
 | requestHeader fold + buildRequest consumption + resume/change append | session/src/index.ts:657–680; agent-loop agent.ts:413–467 @15148dbd9a | verified |
 | end-seed producer + lazy creation + seed persist | session/src/index.ts:539–547; coordinator.ts:645–658,1283–1293 @15148dbd9a | verified |
+| end-seed attachPrepared direct-suffix persistence; backend commit point vs Promise resolution | coordinator.ts:1185–1207 (storedCursor/slice/appendCore); jsonl materializePosix :529–562 (writeSyncedTempFile → link() publish → dir fsync → cleanup) | verified |
 | end-seed compaction consumers | compaction-basic region.ts:286–300,517–552 @15148dbd9a | verified |
 | Background ack/jobs/outcome vocabulary | shell/tool-bash/src/index.ts:71–73; tool-bash/background.ts:16–36 @15148dbd9a | verified |
 | Pruner adjacency (prune+replacement synchronous) | compaction-tool-result-pruner/src/index.ts @15148dbd9a | verified |
-| Steer/stop-path; inbox-claim durability | agent-loop agent.ts:120–132,281–284,295–301 @15148dbd9a | verified |
-| Governor fold-before-append ordering | dsh-tools index.js:3359–3388 + agent-loop appendToolResult flow | verified |
+| Steer/stop-path; four-stage steer ladder incl. claimed-but-not-appended loss window | agent-loop agent.ts:120–132, :281–284 (claim), :295–301 @15148dbd9a | verified |
+| Governor fold-before-append ordering (ordinary path); final-result bypass | tool-calls.ts:146–160 (finalize→appendToolResult; needsPost=false→finish) + dsh-tools index.js:3002,:3223–3225,:3359–3388 | verified |
+| Automatic completion notice: onJobDone → inject(busy)/followup(idle+wakeBudget); first-wins; disposal discards | rc.6 jobs/tool-jobs/src/index.ts:283–302; jobs-local settle() :416–434 | verified |
 | Orcana projection behaviors (FAIL-downgrade, frozen-gen, double-apply, pollution) | experiments /tmp/r0a-{rev3,experiment,experiment2}.mts; suites 42+11 PASS | executor-runtime-proven |
 | NO resume-path behavioral test in Orcana repo | grep dsh-governor tests | 0 hits |
 
