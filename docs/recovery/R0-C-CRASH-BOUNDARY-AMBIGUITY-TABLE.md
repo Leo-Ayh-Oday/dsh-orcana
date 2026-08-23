@@ -32,8 +32,9 @@ subtypes get unique IDs A1–A6 (duplicate A2 removed; execute-threw split from
 execute-returned-then-materialization-failed); the tools/execute
 around-dispatch wrapper short-circuit is added as subtype A5 (cordis veto
 contract) so isError=false no longer implies body success; verification
-status conclusions are conditioned on FULL precedence (isError=true yields
-FAIL only when interrupted=false and exitCode absent); background job ids are
+status conclusions are conditioned on FULL precedence (the isError branch
+is status-decisive only after interrupted=false and no exitCode is parsed);
+background job ids are
 documented as process-scoped `${kind}-${count}` counter labels that reset on
 restart and may alias an unrelated new job — not crash-stable identity.
 
@@ -419,8 +420,9 @@ alone**: `receiptStatus` (governor-core :208–217) precedence is
 `interrupted → unknown`, else `exitCode !== undefined → pass iff 0`, else
 `isError → fail`, else implicit clean pass; exitCode/interrupted are PARSED
 FROM CONTENT by `shellExitStatus` (:176–183, markers owned by dsh-shell),
-and only for SHELL_TOOLS (non-shell events get exitCode=undefined,
-interrupted=false ⇒ status decided by isError alone).
+and only for SHELL_TOOLS (non-shell events get exitCode=undefined and
+interrupted=false ⇒ precedence falls through, so the isError branch itself
+is then status-decisive).
 
 Source-supported verification counterexamples:
 
@@ -611,9 +613,10 @@ that alters shell markers can change reconstructed status WITHOUT isError
 flipping (live FAIL ↔ rebuilt PASS; PASS/FAIL ↔ UNKNOWN — see counterexamples
 in the Producer-A section); error-producing paths (block, throwing listener /
 failed validation / throwing finalizer) remain the OTHER status-divergence
-route — via final isError=true, which yields FAIL **only after interrupted is
-false and exitCode is absent** (:208–217 fall-through; exitCode=0 ⇒ PASS,
-interrupted marker ⇒ UNKNOWN even with isError=true); (4) the intermediate Orcana receipt status (folded
+route — via final isError=true, whose branch decides FAIL **only when
+interrupted=false and exitCode is absent** (:208–217 fall-through). With an
+exitCode present, FAIL comes from the EXITCODE comparison, not from isError:
+exitCode=0 ⇒ PASS and interrupted marker ⇒ UNKNOWN even with isError=true); (4) the intermediate Orcana receipt status (folded
 from pre-post-execute candidate) and the receipt rebuilt from FINAL durable
 content may therefore DISAGREE even when every record survived.
 Present validity always REQUIRES
@@ -669,8 +672,9 @@ Two DISTINCT questions, kept in two separate tables:
   listener / failed value validation / throwing finalizeContent) ⇒ isError
   flips ⇒ replay mutation=false ⇒ live generation ≠ rebuilt generation even
   for an ordinary root tool with the result fully durable — and the resulting
-  receipt-status effect still routes through FULL precedence (isError=true
-  alone decides status only when interrupted=false and exitCode absent).
+  receipt-status effect still routes through FULL precedence (the isError
+  branch is status-decisive only when interrupted=false and exitCode is
+  absent).
   Generation divergence remains tied ONLY to final isError classification
   changes; verification-status divergence is NOT limited to that route.
 
@@ -1070,8 +1074,10 @@ declares any current behavior incorrect-by-contract — R0-D owns contracts.
   transform changes marker-derived exitCode/interrupted parsing semantics;
   ordinary-result body reachability depends on the EXACT Producer-A subtype
   and wrapper behavior (A5 short-circuits never invoke the body);
-  isError=true produces receipt FAIL only when interrupted=false AND no
-  exitCode marker exists in final content (else PASS/UNKNOWN by precedence);
+  isError=true produces receipt FAIL through its own branch only when
+  interrupted=false AND no exitCode marker exists in final content;
+  isError=true + parsed exitCode=1 ⇒ FAIL via the exitCode branch,
+  + exitCode=0 ⇒ PASS, + interrupted marker ⇒ UNKNOWN;
   whole-call world effect under A5 depends on wrapper/plugin behavior — if
   the wrapper does not mutate the world, generation may advance while the
   workspace stays unchanged; if it does produce side effects, that change
