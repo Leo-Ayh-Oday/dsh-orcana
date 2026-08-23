@@ -1,4 +1,4 @@
-# R0-C — Crash Boundary & Ambiguity Analysis (Rev.7)
+# R0-C — Crash Boundary & Ambiguity Analysis (Rev.8)
 
 Answers, for each semantically distinct lifecycle boundary: what is already
 durable, what may be durable, what remains unknown, what can be reconstructed,
@@ -7,6 +7,25 @@ what requires world re-observation, and what recovery logic must never assume.
 Docs-only failure-boundary analysis over current real sources. No recovery
 implementation, no new durability machinery, no dedupe/replay/fix of any kind.
 Defects found are documented, not repaired.
+
+Rev.8 corrects the Producer Reachability table schema: the Rev.7 rows
+introduced an explicit body-return/result axis without updating the header,
+making cells structurally misaligned. The table now separates body
+invocation, normal return, result/failure shape, and world-effect semantics
+one-to-one. Receipt precedence wording is also clarified: isError is
+decisive only after interrupted and exitCode branches do not apply.
+
+Rev.8 repairs Producer-matrix schema integrity (unified 16-column header:
+Body invoked? / Body returned normally? / isError / Tool-body effect /
+Wrapper-plugin effect / Whole-call effect as independent columns; all 13
+rows validated equal-width, column shifts eliminated) and propagates A5
+world-truth semantics: tool-body effect NONE vs wrapper/plugin effect NOT
+PROVEN PURE vs whole-call effect CANNOT-INFER-NONE; source-grounded A5
+false-positive generation path documented (mutation classifier reads only
+tool name + isError; wrapper-authored success for a mutation-classified
+tool advances generation without body execution or workspace change);
+generation truth statement, Boundary G/I freshness implications, unsafe
+assumptions #34–#37, Known/Conditional facts synchronized.
 
 Rev.7 fixes execution-path exhaustiveness and job identity: Producer-A
 subtypes get unique IDs A1–A6 (duplicate A2 removed; execute-threw split from
@@ -296,15 +315,14 @@ Producer A's own fold can be non-final (see three-axis model below).
 
 ### Producer reachability table (REV.4)
 
-| # | Producer / subtype | Event | Post-execute phase invoked? | Orcana listener definitely reached? | Intermediate live fold possible? | Final durable result equivalent to folded result? | Body definitely ran? | Body definitely did NOT run? | World side-effect status | Direct Session append? | Recovery-only? | Replay projection today |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A1 | Body-success — fused-signal check passed, resolveExecution OK, `bodyInvoked = true`, tool.execute RETURNED (:3170–3176), createSuccessResult materialized OK | tool/result | YES | CONDITIONAL ON LISTENER REACH/ORDER/COMPOSITION | YES when reached — Orcana folds BEFORE await next() (:467–474); folded fact = PRE-post-execute candidate | **NOT GUARANTEED** — downstream accept-content/value replacement, block→isError conversion, throwing listener/failed value validation (:3224–3229 catch), or definition-owned finalizeContent (incl. failure conversion :3246–3251) can change the final fact AFTER the fold | **YES** | **YES** | n/a (success) | body side effects possible per tool semantics; final durable fact may diverge in content/hash, marker-parse, AND via error-producing paths isError | no (appendToolResult :155) | no | folds again |
-| A2 | Execute-threw — `bodyInvoked = true` THEN tool.execute THREW → dispatchToolBody catch :3177–3178 → toolErrorResult → ordinary post-result path (JSDoc :3168–3170) | tool/result | YES | same CONDITIONAL | YES when reached (folds error candidate) | NOT GUARANTEED (same downstream powers) | **YES** | **NO** | n/a (isError=true) | body MAY have executed partially before throwing — world effects possible/unknown per tool semantics | no | no | folds again |
-| A3 | Output-materialization-failed — `bodyInvoked = true`, tool.execute RETURNED NORMALLY, THEN createSuccessResult snapshot/schema-validation/render threw (:3393–3410) → same catch :3177–3178 → toolErrorResult → ordinary post-result path | tool/result | YES | same CONDITIONAL | YES when reached | NOT GUARANTEED (same downstream powers) | **YES** | **YES** | **NO — pipeline failed AFTER full body completion** | **durable error result can coexist with a mutation body that FULLY executed and returned normally** — final-error ≠ body-incomplete; retry ambiguity must not assume un-executed mutation | no | no | folds again |
-| A4 | PRE-BODY dispatch-produced result — BEFORE `bodyInvoked = true`: (a) fused signal aborted at entry → returns toolAbortedBeforeDispatchResult() before try (:3165–3169); (b) resolveExecution undefined / ToolNotFoundError (:3172–3173) → catch :3177–3178. Both flow as NORMAL results → post-result → post-execute | tool/result | YES | same CONDITIONAL | YES when reached | NOT GUARANTEED | **NO** | **NO — never invoked** | isError=true (both constructors :3551–3561/:3472–3482) | **NONE from this call's tool body** (registry-produced abort/error text) | no | no | folds again |
-| A5 | Around-dispatch WRAPPER short-circuit — a tools/execute waterfall listener legally does NOT call next(), vetoing the chain INCLUDING dispatchToolBody (cordis :311–312 "a listener that does not call next() vetoes the rest of the chain, including the built-in behavior"); wrapper's own ToolExecutionResult becomes the result → normalizeDispatchResult (:3429–3446): isError=true kept as authored; isError=false value must pass createSuccessResult materialization else → dispatch-stage FINAL-result (B2-family) | tool/result | YES (when normalization succeeds) | same CONDITIONAL | YES when reached | NOT GUARANTEED | **NO — dispatchToolBody never invoked; bodyInvoked stays false** | **NO — never invoked** | **isError=false OR true both possible** (wrapper-authored) | **NONE from this call's tool body**; wrapper-authored success result is INDISTINGUISHABLE from A1 by isError alone ⇒ isError=false does NOT establish body invocation | no | no | folds again |
-| A6 | Prepare-stage POST-RESULT path — pre-execute/approval progressed, then denial/cancel observed (guard denial :3107–3116; approval-cancelled :3104; late callerCancelled :3122) | tool/result (post-result kind at PREPARE stage) | YES — routed through finalizeScheduledExecution | same CONDITIONAL | YES when reached | NOT GUARANTEED | **NO** | **NO — never dispatched** | isError per denial/cancel constructor | none from this call | no | no | folds again |
-
+| # | Producer / subtype | Event/result path | Post-execute phase? | Orcana listener reached? | Intermediate Orcana fold? | Final durable equivalence? | Body invoked? | Body returned normally? | isError possibilities | Tool-body world effect | Wrapper/plugin world effect | Whole-call world effect | Direct Session append? | Recovery-only? | Replay projection |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A1 | Body-success — fused check passed, resolveExecution OK, `bodyInvoked = true`, tool.execute RETURNED (:3170–3176), createSuccessResult materialized OK | tool/result | YES | CONDITIONAL ON LISTENER REACH/ORDER/COMPOSITION | YES when reached — fold BEFORE await next() (:467–474) | **NOT GUARANTEED** — downstream replace/block/finalizeContent can change final fact after fold | **YES** | **YES** | n/a (success) | possible per tool semantics; final fact may diverge in content/hash/marker-parse/isError | delegating wrapper middleware ran; own effects NOT PROVEN PURE | possible: body effects + middleware effects | no (appendToolResult :155) | no | folds again from durable record |
+| A2 | Execute-threw — `bodyInvoked = true` THEN tool.execute THREW → catch :3177–3178 → toolErrorResult → ordinary post-result path (JSDoc :3168–3170) | tool/result | YES | same CONDITIONAL | YES when reached (folds error candidate) | NOT GUARANTEED | **YES** | **NO** | isError=true | possible/unknown — partial execution before throw | delegating wrapper middleware; NOT PROVEN PURE | possible/unknown | no | no | folds again |
+| A3 | Output-materialization-failed — `bodyInvoked = true`, tool.execute RETURNED NORMALLY, THEN createSuccessResult snapshot/schema/render threw (:3393–3410) → same catch → ordinary post-result path | tool/result | YES | same CONDITIONAL | YES when reached | NOT GUARANTEED | **YES** | **YES** | isError=true | body FULLY executed ⇒ its effects happened | delegating wrapper middleware; NOT PROVEN PURE | body effects DID occur (+middleware) — durable error ≠ un-executed mutation | no | no | folds again |
+| A4 | PRE-BODY dispatch-produced — BEFORE `bodyInvoked`: (a) fused signal aborted at entry (:3165–3169); (b) resolveExecution undefined / ToolNotFoundError (:3172–3173) → catch; both flow as normal results → post-result | tool/result | YES | same CONDITIONAL | YES when reached | NOT GUARANTEED | **NO** | **NO — never invoked** | isError=true (both constructors) | NONE from tool body (registry abort/error text) | delegating wrapper middleware; NOT PROVEN PURE | cannot infer none from body non-invocation alone | no | no | folds again |
+| A5 | Around-dispatch WRAPPER short-circuit — a tools/execute waterfall listener legally does NOT call next(), vetoing the chain INCLUDING dispatchToolBody (cordis :310–315); wrapper-authored ToolExecutionResult → normalizeDispatchResult (:3429–3446): isError=true kept as authored; isError=false value must pass createSuccessResult else dispatch-stage FINAL-result (B2-family) | tool/result (when normalization succeeds) | YES | same CONDITIONAL | YES when reached | NOT GUARANTEED | **NO — dispatchToolBody never invoked; bodyInvoked stays false** | **NO — never invoked** | isError=false OR true BOTH possible (wrapper-authored) | **NONE — proven** (next() never called ⇒ body never ran) | **MAY EXIST / NOT PROVEN PURE** — the wrapper is arbitrary middleware | **CANNOT INFER NONE FROM BODY NON-INVOCATION ALONE** | no | no | folds again |
+| A6 | Prepare-stage POST-RESULT denial/cancel — pre-execute/approval progressed then guard denial (:3107–3116) / approval-cancelled (:3104) / late callerCancelled (:3122) | tool/result (post-result kind at PREPARE stage) | YES | same CONDITIONAL | YES when reached | NOT GUARANTEED | **NO** | **NO — never dispatched** | isError per denial/cancel constructor | NONE from this call's body | pre-execute/approval middleware; NOT PROVEN PURE | cannot infer none from body non-invocation alone | no | no | folds again |
 GLOBAL BODY-REACHABILITY RULE (Rev.7): a `post-result` candidate exists ≠ the
 body started; the post-execute phase being invoked ≠ the body started;
 `isError = false` ≠ the body started (A5 wrapper results may be authored
@@ -313,12 +331,12 @@ effect (A2 partial execution; A3 fully-executed-then-materialization-failed).
 Only subtypes that verifiably crossed `bodyInvoked = true` / an actual
 `tool.execute()` call — A1, A2, A3 — may claim "body invoked". Producer A as
 a CLASS has NO single universal body-reachability value.
-| B1 | PREPARE-STAGE final-result (caller already cancelled BEFORE the relevant pre-execute phase :3091; prepare pipeline exception :3131–3136 catch; collapsed-direct-call denial / signal-abort / argument snapshot TypeError in createExecution :3049–3075) | tool/result | NO — finish() skips it | n/a | none | n/a (no fold to compare) | **NO — dispatch/body never reached** | YES | none | no (loop appends via finish path, tool-calls.ts :153) | no | first Orcana observation at rebuild |
-| B2 | DISPATCH-STAGE final-result (error thrown inside tools/execute waterfall scope — INCLUDING an around-wrapper throwing AFTER the body completed, or result-normalization failures; index.js :3191–3212 catch) | tool/result | NO | n/a | none — but the BODY MAY HAVE COMPLETED before the throw | n/a | **NOT PROVABLE — body may or may not have run** | NO | UNKNOWN (body side effects possible) | no | no | first Orcana observation at rebuild |
-| C | Skipped-call synthetic abort pair (loop cancel path) | call+result appended directly | NO | n/a | none | n/a (single writer) | NO — never prepared/dispatched | YES | none | YES — direct consecutive appends (:248–259); survival still write-behind/barrier-governed | no | pairs normally |
-| D1 | Cold-repair synthetic — TOOL_OUTCOME_UNKNOWN | synthetic tool/result | NO | n/a | none in dead process; resumed rebuild folds it FIRST (identity loss ⇒ may project FAIL) | n/a | UNKNOWN; illustrative pre-body / during-body / post-body families (NOT an exhaustive count) | no | UNKNOWN | YES — durable via commitRepair before resume | **YES** | pairs with pending call ⇒ 1 EngineEvent |
-| D2 | Cold-repair synthetic — TOOL_NOT_STARTED | synthetic tool/result | NO | n/a | none | n/a | **NO — no durable call by definition** | YES | none | YES — durable via commitRepair | **YES** | ✗ ZERO EngineEvents — orphan-skip (repair Session fact ≠ Orcana projection consumed) |
-| E | Compaction surface replacement | tool/result (surfaceOp replace) | NO | n/a | none — pruner appends directly to raw log; no live body post-execute fold for the replacement itself | n/a | n/a | n/a | n/a | YES — direct raw-log append | no | double-application risk (J) |
+| B1 | PREPARE-STAGE final-result (caller cancelled BEFORE relevant pre-execute phase :3091; prepare pipeline exception :3131–3136 catch; collapsed-direct-call denial / signal-abort / argument snapshot TypeError in createExecution :3049–3075) | tool/result | NO — finish() skips it | n/a | none | n/a (no fold to compare) | **NO — dispatch/body never reached** | NO — never dispatched | isError=true family | none | n/a (no tools/execute scope entered) | none from this call | no (finish-path append, tool-calls.ts :153) | no | first Orcana observation at rebuild |
+| B2 | DISPATCH-STAGE final-result — error thrown inside tools/execute waterfall scope INCLUDING around-wrapper throwing AFTER body completed, or result-normalization failures (:3191–3212 catch) | tool/result | NO | n/a | none — but the BODY MAY HAVE COMPLETED before the throw | n/a | **NOT PROVABLE — may or may not have run** | unknown | isError=true | UNKNOWN — body side effects possible if it ran | wrappers in scope ran before throw; NOT PROVEN PURE | UNKNOWN | no | no | first Orcana observation at rebuild |
+| C | Skipped-call synthetic abort pair (loop cancel path) | call+result appended directly | NO | n/a | none | n/a (single writer) | **NO — never prepared/dispatched** | NO | isError (abort text) | none | n/a | none | YES — direct consecutive appends (:248–259); survival write-behind/barrier-governed | no | pairs normally |
+| D1 | Cold-repair synthetic — TOOL_OUTCOME_UNKNOWN | synthetic tool/result | NO | n/a | none in dead process; resumed rebuild folds it FIRST (identity loss ⇒ may project FAIL) | n/a | UNKNOWN — illustrative pre/during/post-body families (NOT exhaustive) | unknown | isError per repair code | UNKNOWN — ground-state dependent | n/a (repair-time synthesis) | UNKNOWN | YES — durable via commitRepair before resume | **YES** | pairs with pending call ⇒ 1 EngineEvent |
+| D2 | Cold-repair synthetic — TOOL_NOT_STARTED | synthetic tool/result | NO | n/a | none | n/a | **NO — no durable call by definition** | NO | isError per repair code | none | n/a | none | YES — durable via commitRepair | **YES** | ✗ ZERO EngineEvents — orphan-skip (repair Session fact ≠ projection consumed) |
+| E | Compaction surface replacement | tool/result (surfaceOp replace) | NO | n/a | none — pruner appends directly to raw log | n/a | n/a | n/a | n/a | n/a | n/a | n/a | YES — direct raw-log append | no | double-application risk (J) |
 
 Physical durability caveat applies to ALL producers: appended ≠ necessarily
 crash-surviving (write-behind/barrier/backend-commit govern survival).
@@ -430,6 +448,49 @@ mutation = f(isError) only (:226); verification status = f(interrupted,
 exitCode-from-content, isError) (:208–217). Do not port mutation-layer
 conclusions to verification status or vice versa.
 
+### A5 generation false-positive path (Rev.8, source-grounded reachability)
+
+The mutation classifier reads ONLY the tool name and the result's isError —
+`MUTATION_TOOLS.has(tool) && !result.isError` (adapter :226, set = write /
+edit / str_replace_editor :150). It never consults `bodyInvoked` and never
+observes the workspace. The runtime contract therefore ADMITS this path:
+
+```
+text
+tool ∈ MUTATION_TOOLS (e.g. write)
+↓
+tools/execute wrapper short-circuits WITHOUT next()   (cordis :310–315)
+→ dispatchToolBody never invoked → bodyInvoked stays false
+→ tool body NEVER ran → no body mutation occurred
+↓
+wrapper authors a VALID successful result (isError=false,
+passes normalizeDispatchResult :3429–3446)
+↓
+post-result → post-execute → Orcana listener folds
+→ mutation=true → applyEvent generation += 1 (:276–277)
+```
+
+If the wrapper itself did not mutate the workspace: **workspace unchanged,
+generation advanced** — a FALSE-POSITIVE GENERATION ADVANCE relative to
+tool-body execution. Per §reachability discipline: this documents that the
+contract admits the path, NOT that any particular shipped wrapper produces
+it — whether a given wrapper is pure is composition-specific and unproven in
+current sources.
+
+TWO LAYERS MUST NOT BE MERGED: (a) engine-generation false-positive relative
+to TOOL-BODY execution — established above; (b) actual WHOLE-WORLD effect —
+even if a short-circuiting wrapper DOES produce real side effects,
+`generation += 1` still cannot be attributed to execution of the original
+tool body from the result alone; and if the wrapper has no side effects the
+case becomes "generation advanced while workspace unchanged".
+
+Generation truth statement (Rev.8): generation is a COARSE DERIVED count/
+state over OBSERVED SUCCESSFUL MUTATION-CLASSIFIED RESULTS — not a count of
+actual workspace mutations. Known divergence families: under-count (code-mode
+replay drop; unknown/lost results never counted) and over-count/distortion
+(compaction replacement double-application; error/final-fact mismatches;
+A5 successful short-circuit on a mutation-classified tool).
+
 Boundary-E crash/rebuild consequence per producer: for Producer A, divergence
 depends on AT LEAST six factors — (1) which Session records survived; (2)
 whether the Orcana listener was actually reached; (3) what intermediate
@@ -516,15 +577,25 @@ append); rebuild advances identically IF the record stays replay-visible AND
 the folded intermediate fact matched the finally-persisted fact. Known
 divergences that break equality: nested code-mode mutations (dropped — gen
 under-counts), surface replacement second application (gen OVER-counts,
-experiment J), unknown-outcome mutations (never counted — H), and Producer-A
-divergences split by mechanism: ERROR-PRODUCING downstream changes (block,
+experiment J), unknown-outcome mutations (never counted — H), Producer-A
+divergences split by mechanism — ERROR-PRODUCING downstream changes (block,
 throwing listener / failed value validation / throwing finalizeContent) flip
-final isError ⇒ replay mutation=false ⇒ gen under-count vs live; SUCCESSFUL
-content/value/finalize transformations keep isError intact ⇒ mutation
-boolean UNCHANGED ⇒ NO generation divergence from them (their divergence is
-hash/fingerprint-level only). Generation remains a COARSE DERIVED RUNTIME
+final isError ⇒ replay mutation=false ⇒ gen under-count vs live, while
+SUCCESSFUL content/value/finalize transformations keep isError intact ⇒
+mutation boolean UNCHANGED ⇒ NO generation divergence from them — and the
+A5 FALSE-POSITIVE family: a successful short-circuit result for a
+mutation-classified tool advances generation WITHOUT proof that the tool body
+executed or that the workspace actually changed (classifier reads only tool
+name + isError; bodyInvoked and workspace are not consulted). A successful
+mutation-tool result / event.mutation=true therefore proves NEITHER body
+execution NOR actual workspace mutation. Generation remains a COARSE DERIVED RUNTIME
 FACT, never workspace authority; durable-mutation ⇒ correct-generation is
-NOT a valid inference.
+NOT a valid inference; and generation MOVEMENT is not proof that a
+corresponding workspace mutation occurred (A5 false-positive family) —
+evidence-freshness semantics that rely solely on generation can therefore go
+internally stale (declare staleness/invalidation) even though the intended
+mutation tool body never ran: the failure direction is FALSE STALENESS /
+unnecessary invalidation, not false completion.
 
 ## Boundary H — Verification Result Observed
 
@@ -937,6 +1008,19 @@ Two distinct positions, never merge:
     job** ❌ (after a new same-kind job starts the reused ID aliases an
     unrelated successor; querying a reused historical ID may resolve to a
     completely different job).
+34. **bodyInvoked=false ⇒ whole call had no world effect** ❌
+    (tool-body effect is none, but the short-circuiting wrapper is arbitrary
+    middleware — wrapper/plugin effects MAY EXIST; A5).
+35. **successful mutation-tool result ⇒ mutation tool body executed** ❌
+    (classifier reads only tool name + isError; A5 short-circuit admits
+     successful wrapper-authored results with bodyInvoked=false).
+36. **event.mutation=true ⇒ actual workspace mutation occurred** ❌
+    (same mechanism — no workspace observation anywhere in classification;
+     reachability established, shipped incidence unproven).
+37. **generation advanced ⇒ workspace definitely changed** ❌
+    (generation counts observed successful mutation-classified results;
+     A5 false-positive advance can leave workspace unchanged — failure
+     direction: false staleness / unnecessary invalidation).
 
 ## Completion-Impact Summary
 
@@ -967,7 +1051,12 @@ declares any current behavior incorrect-by-contract — R0-D owns contracts.
   invoked+threw; A3 invoked+returned-then-materialization-failed; A4/A5/A6
   never invoke the body yet still reach post-execute where routed);
   tools/execute wrapper may legally short-circuit without next() (cordis veto
-  contract); execute-returned/output-materialization-failed is DISTINCT from
+  contract) and can thus produce a post-result WITHOUT invoking the built-in
+  tool body; Orcana mutation classification does not consult bodyInvoked nor
+  directly observe workspace mutation (adapter :226) — a successful wrapper-
+  authored result for a mutation-classified tool can advance generation
+  without proof that the tool body ran; execute-returned/output-
+  materialization-failed is DISTINCT from
   execute-threw; receiptStatus precedence interrupted > exitCode > isError >
   implicit clean pass; shell marker parsing rules; old ctx.jobs and its per-
   kind ID counters disappear on hard process death; job-ID allocation is
@@ -982,7 +1071,12 @@ declares any current behavior incorrect-by-contract — R0-D owns contracts.
   ordinary-result body reachability depends on the EXACT Producer-A subtype
   and wrapper behavior (A5 short-circuits never invoke the body);
   isError=true produces receipt FAIL only when interrupted=false AND no
-  exitCode marker exists in final content (else PASS/UNKNOWN by precedence).
+  exitCode marker exists in final content (else PASS/UNKNOWN by precedence);
+  whole-call world effect under A5 depends on wrapper/plugin behavior — if
+  the wrapper does not mutate the world, generation may advance while the
+  workspace stays unchanged; if it does produce side effects, that change
+  still cannot be attributed to execution of the original tool body from the
+  result alone.
 - UNKNOWN: interrupted-execution world effects and ground states; background
   old-process job terminal outcomes absent durable Stage-4 notice/evidence
   (resolvable ONLY via external world/process evidence, not the new process-
@@ -1020,6 +1114,7 @@ declares any current behavior incorrect-by-contract — R0-D owns contracts.
 | Producer-A subtype taxonomy & body reachability: A1–A3 crossed bodyInvoked=true (A1 returned; A2 execute-threw; A3 returned-then-materialization-failed :3393–3410); A4 fused-abort/resolution (:3165–3173), A5 wrapper short-circuit (cordis :311–312 veto; normalize :3429–3446), A6 prepare-stage post-result — never invoke the body | index.js dispatchToolBody :3160–3183 + createSuccessResult :3393–3412; cordis lib :310–315; normalizeDispatchResult :3429–3446 | verified |
 | ctx.jobs LocalJobRegistry is process-local in-memory Map; gone on hard process death | deepseek-harness jobs-local/src/index.ts :91–127 (store = new Map :102; "one process-wide instance" :113; disposeAll teardown :125–126) | verified |
 | Job IDs allocated `${kind}-${count}` from process-local per-kind counters; counters reset on restart; no epoch/session namespace ⇒ historical ID not crash-stable and may alias an unrelated new job | jobs-local/src/index.ts :103 (counters Map), :151–153 (allocation) | verified |
+| A5 false-positive generation path: mutation classifier = MUTATION_TOOLS.has(tool) && !isError only (no bodyInvoked, no workspace observation); wrapper-authored success for write/edit/str_replace_editor advances generation | adapter :226 + MUTATION_TOOLS :150; cordis veto :310–315; applyEvent generation advance governor-core :276–277 | verified (SOURCE-PROVEN; NO TARGETED TEST LOCATED for wrapper short-circuit incidence) |
 | Automatic completion notice: onJobDone → inject(busy)/followup(idle+wakeBudget); first-wins; disposal discards | rc.6 jobs/tool-jobs/src/index.ts:283–302; jobs-local settle() :416–434 | verified |
 | Orcana projection behaviors (FAIL-downgrade, frozen-gen, double-apply, pollution) | experiments /tmp/r0a-{rev3,experiment,experiment2}.mts; suites 42+11 PASS | executor-runtime-proven |
 | NO resume-path behavioral test in Orcana repo | grep dsh-governor tests | 0 hits |
