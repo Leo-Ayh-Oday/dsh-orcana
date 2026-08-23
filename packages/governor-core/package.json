@@ -1,8 +1,17 @@
 {
   "name": "@leooday/governor-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Framework-agnostic progress-fact engine: fingerprints, workspace generation, verification receipts",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Leo-Ayh-Oday/dsh-orcana.git",
+    "directory": "packages/governor-core"
+  },
+  "homepage": "https://github.com/Leo-Ayh-Oday/dsh-orcana#readme",
+  "bugs": {
+    "url": "https://github.com/Leo-Ayh-Oday/dsh-orcana/issues"
+  },
   "type": "module",
   "publishConfig": {
     "access": "public"

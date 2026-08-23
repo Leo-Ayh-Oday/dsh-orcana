@@ -1,8 +1,17 @@
 {
   "name": "@leooday/dsh-bundle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Orcana runtime pack profile bundle for DeepSeek Harness (dsh.bundle.patch contract)",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Leo-Ayh-Oday/dsh-orcana.git",
+    "directory": "packages/dsh-bundle"
+  },
+  "homepage": "https://github.com/Leo-Ayh-Oday/dsh-orcana#readme",
+  "bugs": {
+    "url": "https://github.com/Leo-Ayh-Oday/dsh-orcana/issues"
+  },
   "type": "module",
   "publishConfig": {
     "access": "public"

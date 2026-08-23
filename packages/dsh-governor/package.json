@@ -1,8 +1,17 @@
 {
   "name": "@leooday/dsh-governor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH adapter plugin for the Orcana runtime pack: progress governor, evidence freshness, completion guard, capability router",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Leo-Ayh-Oday/dsh-orcana.git",
+    "directory": "packages/dsh-governor"
+  },
+  "homepage": "https://github.com/Leo-Ayh-Oday/dsh-orcana#readme",
+  "bugs": {
+    "url": "https://github.com/Leo-Ayh-Oday/dsh-orcana/issues"
+  },
   "type": "module",
   "publishConfig": {
     "access": "public"

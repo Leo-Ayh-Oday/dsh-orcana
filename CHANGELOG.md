@@ -4,6 +4,20 @@ All notable changes to the Orcana runtime pack (governor line) are documented
 here. Format based on [Keep a Changelog](https://keepachangelog.com/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-08-23
+
+Metadata-only patch release of the governor line: `@leooday/governor-core`,
+`@leooday/dsh-governor`, `@leooday/dsh-bundle`. No runtime code changes.
+
+### Added
+
+- npm `repository` (with per-package `directory`), `homepage`, and `bugs`
+  metadata to all three published packages, matching what the Linux line
+  already ships. Registry manifests without a repository link cannot be
+  bound back to this repo by ecosystem npm probes (awesome-dsh-plugin /
+  dsh-market), which kept the bundle on GitHub source install and blocked
+  download-count mapping.
+
 ## [0.1.0] - 2026-08-16
 
 First stable release of the governor line: `@leooday/governor-core`,
