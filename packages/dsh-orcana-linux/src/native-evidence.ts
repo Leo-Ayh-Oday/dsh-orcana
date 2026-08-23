@@ -60,12 +60,12 @@ export const Config: z<NativeEvidenceConfig> = z.object({
     memoryBytes: z.number().min(0),
     cpuQuotaUs: z.number().min(0),
     pidsMax: z.number().min(0),
-  }).default(undefined as unknown as LegacyHardeningResourceLimits),
+  }).default(undefined as never),
   network: z.union(['inherit', 'none'] as const),
   degradationPolicy: z.object({
     resourceLimits: z.union(['required', 'best-effort'] as const),
     network: z.union(['required', 'best-effort'] as const),
-  }).default(undefined as unknown as LegacyHardeningDegradationPolicy),
+  }).default(undefined as never),
   capabilities: z.any(),
 })
 
