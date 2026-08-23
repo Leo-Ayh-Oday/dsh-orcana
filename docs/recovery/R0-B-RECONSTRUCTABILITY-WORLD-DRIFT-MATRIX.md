@@ -1,248 +1,283 @@
-# R0-B — Reconstructability & World-Drift Matrix
+# R0-B — Reconstructability & World-Drift Matrix (Rev.1)
 
 Classification of every recovery-relevant state/fact identified in R0-A
-(`docs/recovery/R0-A-RECOVERY-STATE-INVENTORY.md`, accepted at `215595e`,
-audit verdict PASS_WITH_RISK / ACCEPT_R0_A). This artifact answers:
+(`docs/recovery/R0-A-RECOVERY-STATE-INVENTORY.md`, accepted `215595e`).
+Answers: what is durable, what is derived, what is resettable, what must be
+re-observed, what remains unknown. Not a correctness contract, not R0-C
+crash-boundary analysis, not a recovery design.
 
-> What is durable, what is derived, what is resettable, what must be
-> re-observed, and what remains unknown?
+**Rev.1** revises per independent audit (`REVISE_R0_B`):
 
-It does NOT decide correctness contracts (R0-D), crash-boundary analysis
-(R0-C), gap priority (R0-E), or any recovery architecture. Where evidence is
-insufficient, items are marked AMBIGUOUS / UNRESOLVED instead of guessed.
+1. A-class durability definition corrected — a Session event is NOT,
+   unconditionally, crash-surviving; durability requires crossing the
+   applicable persistence/checkpoint boundary (rc.6
+   `session-checkpoint-policy`, read this pass — semantics below).
+2. Steer mental model corrected — `agent.steer()` inserts into the next-step
+   inbox and CAN flip DSH stop→continue; reset-safety claims that assumed
+   "steer only adds text" are withdrawn; preservation-correctness values for
+   chain/TurnState/ring downgraded to AMBIGUOUS / UNRESOLVED.
+3. Orcana config/runtime-composition classified; config-sensitive derived
+   states marked `Session-history-alone = NO`.
+4. Pure completion violations separated from effective stop/continue outcome;
+   forced-budget skip path documented.
+5. Forced-steer raw-material durability claim made conditional (inbox window).
+6. EngineSnapshot given its own row; checkpoint unknowns split into KNOWN vs
+   UNRESOLVED.
+
+Rev.0 conclusions that survive are kept (World-Drift and Projection-Loss
+matrices preserved with narrow additions only).
 
 ## Baseline
 
-- Branch: `research/durable-recovery-r0-b` (created from the accepted R0-A tip)
-- Starting HEAD: `215595ea3cc0c40ff14d61a1f3ef10ce9ad494a0` (= accepted R0-A
-  commit; working tree clean at start; `git merge-base --is-ancestor` confirms
-  it in history)
-- Source seams audited in R0-A are UNCHANGED (`git diff --stat 215595e --
-  packages/ benchmark/` empty), so R0-A line citations remain valid; spot
-  re-checks performed anyway (repair.ts symbols, byte-compare of the five key
-  files against an independent checkout — all IDENTICAL).
-- Lockfile basis unchanged: `@deepseek-ai/dsh-*` 0.1.0-rc.6.
-- Execution environment note (unchanged): Master Plan document not available
-  locally; directives' quoted principles applied as stated.
-- Fresh verification this pass: governor-core specs 4 files / 72 tests PASS;
-  dsh-governor targeted specs (adapter/p2-policy/p4-policy/p5-policy) 4 files /
-  30 tests PASS; runtime experiments G/H/I/J and A/B/D/E re-run with identical
-  results (commands in Evidence Index).
+- Branch: `research/durable-recovery-r0-b`; starting HEAD
+  `3d872ae4d1a7e853d7f19a389bc92fffba8ed2bd` (audited Rev.0); accepted R0-A
+  base `215595e` is ancestor; worktree clean.
+- Source seams unchanged since audited state (`git diff --stat 215595e --
+  packages/ benchmark/` empty).
+- Lockfile basis: `@deepseek-ai/dsh-*` 0.1.0-rc.6. NEW primary evidence this
+  pass: rc.6 `packages/session/session-checkpoint-policy/src/index.ts` (full
+  read) and rc.6 `agent-loop/src/agent.ts` send/steer/stop-path lines.
+- Fresh verification this pass: governor-core core+p2 specs 2 files /
+  42 tests PASS; dsh-governor adapter.spec 1 file / 11 tests PASS;
+  coverage check: **no test drives `session-start` resume or compares
+  stop/continue across a simulated restart** (grep count 0) — reset-safety
+  remains UNPROVEN by tests, as stated below.
 
-## A. Classification Legend
+## A. Classification Legend (Rev.1)
 
-Six classes used below. These describe WHAT IS, today, under rc.6 lockfile
-semantics; they are not durability mandates.
+- **A. authoritative native durable fact** — a fact whose authoritative owner
+  is DSH Session/native runtime AND which, **for a particular recovery point,
+  belongs to the persisted/reloaded crash-surviving durable prefix under the
+  applicable persistence/checkpoint semantics**.
 
-- **A. authoritative native durable fact** — exists verbatim in the DSH raw
-  Session event log (or its durable repairs); owner is DSH
-  Session/Persistence. Survives restart by construction.
-- **B. deterministic derived state** — fully determined by authoritative
-  history plus a deterministic algorithm; no heuristics, no world input.
-  Two independent questions apply and are kept separate everywhere below:
-  (i) is the INFORMATION in history? (ii) does current Orcana code derive it
-  correctly from what its projection receives?
-- **C. derived optional / heuristic state** — derived by a deliberately
-  lossy/heuristic mechanism (sliding windows, counters, thresholds) whose
-  purpose is behavior quality; losing it costs efficiency or steering
-  quality, not factual truth.
+  Governing equation (replaces Rev.0's unconditional "survives restart by
+  construction"):
+
+  > authoritative Session fact **+** crossed the applicable
+  > persistence/checkpoint boundary **=** authoritative durable fact
+  > available to recovery
+
+  Membership in the LIVE `session.events` array alone does NOT imply
+  reloadability after an arbitrary crash.
+- **B. deterministic derived state** — fully determined by (authoritative
+  inputs) + deterministic algorithm, where the input set must be stated
+  exactly. If current runtime/config is an input, then it is NOT
+  Session-history-alone.
+- **C. derived optional / heuristic state** — lossy/heuristic mechanisms for
+  behavior quality. Their PRESERVATION-CORRECTNESS VALUE is assessed
+  separately and honestly (several are AMBIGUOUS / UNRESOLVED — see
+  Reset-Safety).
 - **D. ephemeral turn / process state** — process-local containers or
-  round-scoped accumulators; not meaningful across restarts except as
-  re-derived from history/config.
-- **E. external world state requiring observation** — filesystem, git,
-  process, service reality; no amount of Session history can prove current
-  values.
-- **F. ambiguous / unresolved** — classification itself blocked on missing
-  evidence; recorded honestly, deferred.
+  round-scoped accumulators.
+- **E. external world state requiring observation** — no amount of Session
+  history proves current values.
+- **F. ambiguous / unresolved** — blocked on missing evidence; recorded, not
+  guessed.
 
-Standing rule applied throughout: **"fact exists durably" ≠ "Orcana currently
-reconstructs the fact correctly"**, and **"runtime-derived truth" ≠ "actual
-world truth"**.
+Standing distinctions enforced everywhere: *fact exists durably* ≠ *Orcana
+reconstructs it correctly*; *runtime-derived truth* ≠ *actual world truth*;
+*event ∈ live session.events* ≠ *event ∈ persisted/reloadable prefix*.
+
+## A0. KNOWN Checkpoint Semantics (rc.6, source-verified this pass)
+
+From `session-checkpoint-policy/src/index.ts` (rc.6 @15148dbd9a, full file):
+
+| Boundary | Verified behavior |
+| --- | --- |
+| LLM request | `llm/stream` wrapper: `await ctx.sessions.flush(session)` completes BEFORE the downstream adapter stream yields its first chunk; "the complete logged request prefix [is] durable"; fail-closed — checkpoint rejection prevents adapter dispatch |
+| Top-level tool | `tools/execute` listener (applies ONLY when `exec.agent !== undefined && exec.parent === undefined`): flush AFTER the tool/call is recorded, BEFORE the tool body runs; fail-closed — aborted-before-dispatch error result on rejection |
+| agent/pre-step | flush BEFORE each next step — persists everything committed by the preceding step |
+| Nested dispatch | `exec.parent !== undefined` → NO independent checkpoint; nested dispatches reuse the durable outer call |
+
+Direct consequences used below: **if a top-level tool body has truly begun,
+its top-level `tool/call` has already crossed its checkpoint**; a just-
+appended `tool/result` has NOT necessarily crossed any boundary yet; nested
+records' durability rides the outer call plus whichever later batch flush
+covers them.
 
 ## B. Reconstructability Matrix
 
-Legend for the two rebuild columns:
-`Info∈H` = information exists in authoritative history;
-`Rebuilt✓/~/✗` = current Orcana implementation reconstructs it correctly /
-partially / not at all.
+Columns: State/Fact · Owner/Src · Class · InLiveSession · Auth · Durability/
+checkpoint condition · InCrashSurvivingPrefix · HistoryAlone · ExtraInput ·
+RebuiltToday · WorldObs · PreserveCorrectnessValue · ResetConsequence ·
+Evidence. (`HA=NO` marks Session-history-alone = NO.)
 
-### A-class rows (authoritative native durable)
+### A-class rows
 
-| State / Fact | Owner / Source | Class | Durable | Info∈H | Rebuilt | World obs required | Live vs Replay notes | Evidence |
+| State/Fact | Owner/Src | Cls | LiveSess | Auth | Durability condition | InDurablePrefix | HistAlone | ExtraInput | RebuiltToday | WorldObs | PreserveVal | ResetConseq | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Session identity/header | DSH | A | yes | yes | crosses boundaries like any record; header reloaded by persistence | per policy | n/a | n/a | n/a (unused by engine) | no | n/a | none | dsh-session types |
+| user/task messages | DSH (user/message) | A | yes | yes | appended WHEN driver claims messages into a step (agent-loop agent.ts:283); durable after a SUBSEQUENT applicable boundary (pre-step :79–82 / next top-level tool :70–76 / next request :35) | CONDITIONAL (post-append, pre-flush window) | n/a | n/a | not folded into engine state; interjection reset reads live inbox sources | no | n/a | n/a | checkpoint-policy src; agent.ts:283 |
+| assistant/message incl. tool requests | DSH | A | yes | yes | same conditional pattern (step-lifecycle append; later boundary flushes) | CONDITIONAL | n/a | n/a | requests unconsumed by engine; provenance for TOOL_NOT_STARTED repair | no | n/a | n/a | repair.ts:44–48 |
+| tool/call — TOP-LEVEL | DSH | A | yes | yes | recorded → checkpointed BEFORE tool body (policy :70–76); **if body truly began, the call HAS crossed its checkpoint** | YES once body started; before that, per general batching | n/a | n/a | YES when paired | no | inherent (already durable-by-boundary) | n/a | policy src; audit-mandated reading |
+| tool/call — NESTED | DSH | A | yes | yes | NO independent checkpoint (parent≠undefined skips :71–72); rides outer call's durability + later batch flushes | CONDITIONAL | n/a | n/a | filtered out of replay feed anyway | no | inherent | n/a | policy :71–72 |
+| tool/result | DSH | A | yes | yes | appended post-execution; NO dedicated result checkpoint; enters durable prefix at the NEXT applicable boundary (pre-step/request/top-level-call) | CONDITIONAL — immediate crash after append can lose it | n/a | n/a | PARTIAL (hash/isError-default caveats) | no | inherent | n/a | policy (absence of result hook); types 299–310 |
+| tool/code-dispatch records | DSH bridge | A | yes | yes | nested ⇒ NO independent checkpoint; covered by later batch flushes | CONDITIONAL | n/a | n/a | ✗ dropped by replay filter | no | inherent | n/a | policy :71–72; CodeDispatchLog :239–252 |
+| Synthetic recovery events (closers) | DSH persistence | A | yes | yes | created BY the cold-repair commit itself (`commitRepair`) — durable at creation, before resume proceeds | YES once repair committed | n/a | n/a | PARTIAL (pairing survives; identity lost — G) | no | inherent | n/a | coordinator :892–957; repair.ts |
+| TOOL_OUTCOME_UNKNOWN identity | DSH repair layer | A | yes | yes | durable with its synthetic result (above) | YES once repair committed | n/a | n/a | WEAKENED — code dropped; UNKNOWN→FAIL (G) | no | inherent | n/a | repair.ts:100–121; experiment G |
+| TOOL_NOT_STARTED identity | DSH repair layer | A | yes | yes | durable with its synthetic result (above) | YES once repair committed | n/a | n/a | ✗ ZERO EngineEvents — orphan-skip (no pending call; Correction A) | no | inherent | n/a | repair.ts:118–119; translator orphan path |
+| surfaceOp/sourceEventSeqs metadata; compaction/prune events | DSH compaction protocol | A | yes | yes | appended live during compaction; conditional like any live append | CONDITIONAL | n/a | n/a | ✗ dropped (outside ReplayEvent) | no | inherent | n/a | pruner src; src :243–256 |
+
+### B-class rows
+
+| State/Fact | Owner/Src | Cls | LiveSess | Auth | Durability condition | InDurablePrefix | HistAlone | ExtraInput | RebuiltToday | WorldObs | PreserveVal | ResetConseq | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Session Surface projection | DSH foldSurface | B | derived | derived-as-projection | follows underlying records' durability | tracks raw log | HA=NO — needs full raw log + fold algorithm (DSH-owned) | foldSurface | Orcana never consumes surface (reads RAW superset) | no | n/a | n/a | surface.d.ts:80–95; src :396 |
+| Root call/result pairing | Orcana translation | B | derived | no (derived view) | n/a (derived) | derived | PARTIAL — pairs derivable from history projection alone, but WHICH pairs exist depends on replay filter/domain | translation constants | YES for replay-visible pairs; NOT_STARTED results unpairable | no | n/a | n/a | src :274–305 |
+| Verification receipts (status/gen/command/callId) | Orcana engine | B | derived | no | derived | derived | **HA=NO** | **current config**: fingerprintWindow, verifyCommandPatterns, inlineRepeatTools are CONSTRUCTOR inputs (:379–381, rebuild :398–402) | mechanically YES; value distorted: unknown→FAIL (G), replacement overwrite (D6), nested absent | CURRENT validity: YES world | AMBIGUOUS (inputs degraded) | stale receipt set until re-derived/re-observed | src :376–385, :398–405; experiments G/J |
+| Workspace generation (given stream) | Orcana engine | B | derived | no | derived | derived | **HA=NO** | same constructor config (mutation set = MUTATION_TOOLS fixed, but stream domain differs) | mechanically YES; VALUE non-equivalent live↔rebuild (live-biased: nested/pre-decision hashes; replay-biased: final-results, replacement 2nd applications, synthetic results) | ACTUAL mutation truth: YES world | AMBIGUOUS | gen=0 erases mutation memory; freshness unfounded | Correction B wording; experiments A/H/J |
+| Evidence freshness vs internal generation | Orcana pure fn | B | derived | no | derived | derived | HA=NO (needs generation+receipts, which need config) | as above | YES deterministic (p3.spec) | meaning: YES world | n/a | n/a | core isStale/render; p3.spec |
+| Completion PURE violation set | Orcana guard fn | B | derived | no | derived | derived | **HA=NO** | **completion config**: claimCheck, claimPatterns, verifyPatterns (:521–527); inputs gen/receipts/text | recomputed deterministically; unknown lands as FAIL → rule-2 spurious fire (G) | truthfulness: YES world | n/a | different restart config ⇒ different violation set for SAME history | :519–527; completionViolations :697+ |
+| Completion EFFECTIVE stop/continue outcome | Orcana guard × DSH driver | **B′ (runtime control outcome)** | derived | no | derived | derived | **HA=NO** | TurnState verdict → chain → decideSteer(config thresholds/maxForced/mode/enabled) → forcedCount → **completion.mode==='evidence-bound'** gate + **forcedCount ≥ maxForcedContinuations SKIP** (:517–518) → agent.steer → nextStep inbox → stop/continue (agent.ts:295–300) | violation EXISTENCE ≠ continuation: guard skipped entirely when mode off or budget exhausted | world truthfulness as above | see Reset-Safety | steer flips stop→continue whenever it fills nextStep | :503–527; agent.ts:295–300 |
+
+### C-class rows
+
+| State/Fact | Owner | Cls | HistAlone | ExtraInput | RebuiltToday | PreserveCorrectnessValue | ResetConseq | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| DSH session identity/header | DSH Session | A | yes | trivially | n/a (engine never needs it) | no | n/a | dsh-session types index.d.ts:40+ |
-| User task / durable messages | DSH (user/message) | A | yes | yes | not folded into engine state (observation-only design; interjection reset reads live inbox source kinds, :486–493) | no | same both paths | src/index.ts:486–493 |
-| Assistant tool requests | DSH (assistant/message tool-call blocks) | A | yes | yes | not consumed by engine (tracks observations, not requests); provenance input for TOOL_NOT_STARTED repair | no | same | repair.ts:44–48 |
-| tool/call records | DSH | A | yes | yes | YES — paired deterministically when result exists (:279–296) | no | raw-string args parse parity verified (adapter.spec.ts malformed-JSON case) | src/index.ts:279; types 283–290 |
-| tool/result (original records) | DSH | A | yes | yes | PARTIAL — hash reflects durable (post-decision) bytes; isError silently defaults false when absent | no | live folded PRE-decision content (D3) | src/index.ts:285–300; dsh-tools index.js:3359–3388 |
-| Synthetic crash-repair events | DSH persistence (commitRepair) | A | yes — closers become durable | yes (they ARE history) | PARTIAL — paired & folded, but recovery identity dropped (G; see Projection-Loss) | no | replay-only records (exist precisely because resume happened) | coordinator.ts:892–957; repair.ts |
-| TOOL_OUTCOME_UNKNOWN semantics | DSH repair layer | A | yes (durable synthetic result + error identity) | yes | WEAKENED — EngineEvent exists; code lost; shell-verification receipt degrades UNKNOWN→FAIL (experiment G) | no | replay-only | repair.ts:100–121; /tmp/r0a-rev3.mts |
-| TOOL_NOT_STARTED semantics | DSH repair layer | A | yes (durable synthetic result; NO durable tool/call by definition) | yes | ✗ NOT RECONSTRUCTED AT ALL — translator finds no pending call ⇒ orphan-skip ⇒ zero EngineEvents (Correction A; distinct from OUTCOME_UNKNOWN) | no | replay-only | repair.ts:118–119; translateSessionEvents orphan path :285–296 |
-| surfaceOp replace + sourceEventSeqs metadata; compaction/prune events | DSH compaction protocol | A | yes | yes | ✗ dropped — outside ReplayEvent; replacements indistinguishable from accidental duplicates at governor layer | no | raw-log both-records fed; double-application (D6) | pruner src; src/index.ts:243–256, 279–305 |
-| turn/end {interrupted} reason; step/end | DSH | A | yes | yes | not consumed (filtered out of replay feed; no consumer) | no | filtered | src/index.ts:258–268; types 162–166 |
-| tool/code-dispatch records (nested name/isError/content/subCallId) | DSH tools bridge | A | yes | yes — records carry enough to identify nested outcomes (CodeDispatchLog: name,isError,content) | ✗ dropped by sessionReplayEvents filter (nested mutation/verification facts lost to rebuild) | effects-themselves are world state | live observes executions directly; replay loses them (D1/D2) | CodeDispatchLog types index.d.ts:239–252; src/index.ts:258–268 |
+| Fingerprint ring (window 8) | Orcana | C | **HA=NO** | fingerprintWindow, inlineRepeatTools (+fixed threshold 2, engine default, NOT config-exposed) | rebuilt with shifts (replacement double-count D6; hash drift) | **AMBIGUOUS / UNRESOLVED** — ring feeds repeated/significance classification → zeroProgress → chain → decideSteer → steer → stop/continue | detection-quality shift; control-flow influence possible via above chain | core :229, 267–285, :376–381; experiment B/J |
+| Zero-progress chain | Orcana | C | **HA=NO** (needs round boundaries absent from replay domain + config thresholds) | zeroProgressThresholds, mode, enabled | ✗ resets to 0; first settle computed on polluted aggregate | **AMBIGUOUS / UNRESOLVED** — chain → threshold → decideSteer → agent.steer → nextStep → **stop/continue can change** | escalation timing shifts; turn continuation decisions can differ | core :367–382; :503–512; agent.ts:295–300 |
+| Inline-repeat reminder state | Orcana (TurnState field) | C | **HA=NO** | inlineRepeatTools + fixed threshold | ✗ mis-derived: history-armed reminder fires on first live observation | **AMBIGUOUS / UNRESOLVED** (reminder is model-visible input into subsequent behavior) | mis-fire already observed (B) | experiment B |
+| Forced-continuation budget | Orcana adapter WeakMap | C | **HA=NO** (raw material CONDITIONALLY durable — see below) | maxForcedContinuations, mode | ✗ deleted at resume (:403) | **AMBIGUOUS / UNRESOLVED**, though reset TENDS CONSERVATIVE: forcedCount→0 reopens steer budget → ladder/guard may call agent.steer again → next-step inserted → an immediate stop may be PREVENTED | oversight availability restored; possible extra continuations | :403, :506, :517–518, :532; agent.ts:126–128 |
+| repeatedPattern | Orcana | C | **HA=NO** | as ring/chain | polluted (may name historical pattern) | AMBIGUOUS (steer-text content feeds model behavior) | strong-steer wording quality | experiment B |
 
-### B-class rows (deterministic derived)
+### D-class rows
 
-| State / Fact | Owner / Source | Class | Durable | Info∈H | Rebuilt | World obs required | Reset consequence | Live vs Replay notes | Evidence |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Session Surface projection | DSH (foldSurface) | B | derived, not independently durable | yes (fold of full log) | Orcana never consumes the surface — it consumes the RAW log (superset incl. shadowed originals) | no | n/a | raw ⊇ surface for results; shadowed originals replayed (D5/D6) | surface.d.ts:80–95; src/index.ts:396 |
-| Root call/result identity pairing | Orcana translation | B | derived | yes (for pairs present in feed) | YES for replay-visible pairs; orphans skipped; NOT_STARTED results unpairable (Correction A) | no | n/a | orphan/duplicate asymmetries | src/index.ts:274–305 |
-| Verification receipts (command/status/generation/callId) over a GIVEN event stream | Orcana engine | B | no | yes for replay-visible root bash results | YES mechanically, with input-domain distortions: synthetic-unknown lands as FAIL (G); replaced results overwrite receipt (D6); nested verifications absent (D1) | CURRENT world freshness: yes (see World-Drift) | loss of receipt set → freshness/completion inputs wrong until re-observed | streams non-equivalent (Correction B) | core :290–303, :406; experiments G/J |
-| Workspace generation over a GIVEN event stream | Orcana engine | B | no | yes for replay-visible successful root mutations | YES mechanically; VALUE diverges live vs rebuild — writer streams are NON-EQUIVALENT, neither subsumes the other (live-biased: nested code-mode, pre-decision hashes; replay-biased: final-result failures, replacement second-applications, synthetic results) | ACTUAL mutation truth: yes (world) | reset to 0 erases all mutation memory → freshness claims unfounded until re-established | Correction B wording adopted; `live ⊃ replay` NOT claimed | experiments A/H/J; Rev.3 writer-domain split |
-| Evidence freshness relative to internal generation (isStale + STALE render) | Orcana pure functions | B | no | yes | YES — deterministic comparison/rendering (p3.spec) | meaning requires world check (internal-fresh ≠ world-fresh) | n/a | same fn both paths | core isStale/renderVerificationState; p3.spec.ts |
-| Completion eligibility / violations | Orcana guard | B | no | inputs: text=A durable; gen/receipts=B-derived | recomputed each stop — deterministic over (possibly degraded) inputs; unknown-verification enters as FAIL → rule-2 fires spuriously (G) | truthfulness ultimately needs world | n/a | text scan reads durable log (resume-safe mechanism) | dsh-governor :499–534; core :697+ |
-
-### C-class rows (derived optional / heuristic)
-
-| State / Fact | Owner | Class | Durable | Info∈H | Rebuilt | World obs | Reset consequence | C/E/N | Notes / Evidence |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Fingerprint ring (window 8) | Orcana engine | C | no | partially — window eviction intentionally discards older fingerprints; replacement doubles entries (D6) | rebuilt, contents shifted vs live-era | no | brief blind window for repeat detection | Efficiency | core :229, 267–285; experiment J |
-| Zero-progress chain | Orcana engine | C | no | derivable IF round boundaries were replayed (turn/stopping settlements are NOT in the event domain) | ✗ resets to 0; additionally first post-resume verdict computed over polluted aggregate (B-experiment) | no | ladder thresholds reached later → fewer/later steers | Efficiency (no false-truth path found — ladder gates steering only) | core :367–382, :439–442; experiment B |
-| Inline-repeat reminder state (armed/fired) | Orcana engine (TurnState field) | C | no | trailing-streak derivable from tail of history | ✗ mis-derived: reminder ARMED FROM HISTORY fires on first live observation post-resume (B) | no | n/a (mis-fire is the observed behavior) | Efficiency / behavior quality | experiment B |
-| Forced-continuation budget | Orcana adapter WeakMap | C | no | RAW MATERIAL durable (plugin-source steers logged) but nothing counts them back | ✗ deleted at resume (:403) | no | more steer headroom; NOTE budget ALSO gates completion-guard steering (:518) — reset increases guard availability | Efficiency; possibly correctness-positive direction via guard availability | src :370–372, :403, :506, :518, :532 |
-| repeatedPattern (round's last repeat) | Orcana engine | C | no | derivable per round IF boundaries existed | ✗ polluted: may name a historical pattern (Rev.2 experiment) | no | strong-steer text quality only | Efficiency | core :332–334; experiment B |
-
-### D-class rows (ephemeral turn/process state)
-
-| State / Fact | Owner | Class | Durable | Rebuilt | World obs | Reset consequence | C/E/N | Evidence |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| TurnState (observations/mutation/significant/verifyNew/verifyPass/streak/fingerprint/reminder/fired) | Orcana engine | D | no | ✗ currently rebuilt INCORRECTLY — single polluted aggregate instead of per-round states (Rev.2 runtime proof, re-confirmed) | no | clean per-round derivation WOULD be correctness-neutral (first verdict measured fresh); CURRENT pollution distorts first settle | Efficiency / behavior quality | core :232,:312–355,:439–442; experiment B |
-| engines WeakMap registry | Orcana adapter | D | no | swapped wholesale at resume (:402) | no | none | Neither | src :370–372 |
-| Router restriction (process/scope-local install) | config → DSH tools service scope | D | no | YES — re-applied at agent/created BEFORE session-start(resume) (VERIFIED rc.6 order) | no | none observed | Neither | src :441–455; agent-loop publish order @15148dbd9a |
-| Plugin listener registrations / Cordis lifecycle | Cordis | D | no | re-registered on plugin mount | no | none | Neither | src :333, :534–536 |
-
-### E-class rows (external world requiring observation)
-
-| State / Fact | Owner | Class | Durable(session) | Rebuildable | World obs required | Evidence |
+| State/Fact | Owner | Cls | RebuiltToday | PreserveVal | ResetConseq | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| Filesystem contents | world | E | no | never from history | YES | World-Drift Matrix below |
-| git HEAD / index / worktree | world | E | no | never | YES | below |
-| Running/background processes | world | E | acks maybe logged; lifecycle unresolved (Unknown-2) | never fully | YES | below |
-| External services / remote APIs | world | E | only interaction traces | never current state | YES | below |
-| Possible side effect after TOOL_OUTCOME_UNKNOWN | world (ambiguity durably preserved BY DSH, unresolvable by Orcana) | E (fact-of-ambiguity = A) | the ambiguity is durable; its RESOLUTION never is | no | YES — external verification is the only resolver | repair.ts text; experiment H |
-| Workspace changes while Orcana down / between observations | world | E | no | no | YES | below |
-| Actual current validity of past verification evidence | world | E | historical pass is durable fact; CURRENT validity is not | no | YES after any later mutation (stale-PASS resurrection, experiment A) | experiments A/E/H |
+| TurnState (observations/mutation/significant/verifyNew/verifyPass/streak/fingerprint/reminder/fired) | Orcana engine | D | ✗ INCORRECTLY — single polluted aggregate instead of per-round states (runtime proof stands) | **AMBIGUOUS / UNRESOLVED** — TurnState → zeroProgress → chain → decideSteer → steer → stop/continue | clean per-round derivation would measure the true first round; CURRENT pollution distorts it | core :232,:312–355,:439–442; experiment B |
+| engines WeakMap | adapter | D | swapped at resume | n/a | none | :370–372 |
+| Router restriction install | config → DSH tools scope | D | **HA=NO** — resume decision depends on current mount-time `tools.disclosure`/`tools.defaultProfile` AND live registry composition (`resolveToolRestriction(profile, known)`, :441–455); re-applied at agent/created before session-start(resume) | n/a | none observed | :441–455 |
+| Cordis listener registrations | Cordis | D | re-registered on mount | n/a | none | :333,:534–536 |
 
-### F-class rows (ambiguous / unresolved)
+### New rows required by audit
 
-| Item | Why unresolved | Effect on this matrix |
-| --- | --- | --- |
-| Whether preserving chain/budget/TurnState across restart has governance value | no correctness evidence either way; depends on future policy decisions out of R0-B scope | reset-safety rows marked AMBIGUOUS where value-judgment required |
-| Accidental physical duplicate frequency | no representative sample found | D7 stays mechanism-level |
-| Checkpoint flush timing (tail-loss bound) | owner package not audited | bounds "info∈H" for crash-tail moments; classifications unaffected except crash-moment edge |
-| Background eventual-result lifecycle | no emitter evidence either way in audited sources | background row stays E/F hybrid |
-| Downstream post-execute replace/block frequency | mechanism proven; wild frequency unmeasured | D3 stays conditional |
-| Deployed DSH vs lockfile rc.6 | deployment inventory outside repo | all "rc.6-verified" tags conditional on lockfile discipline |
-| Whether tool/code-dispatch content suffices for FAITHFUL nested-verification receipts | records carry name/isError/content (types :239–252) but end-to-end receipt fidelity unverified | row kept at "facts exist; reconstruction absent" — no stronger claim |
+| State/Fact | Owner/Src | Cls | Answers |
+| --- | --- | --- | --- |
+| **EngineSnapshot** `{generation,ring,receipts}` | Orcana engine (`snapshot()` :421–428) | B-shaped partial projection / serialization-test surface | Owner: ProgressFactEngine. Durable? **NO** (zero writers). Authoritative? **NO**. History-alone reconstructable? Its CONTENTS derive from config-fed folds (**HA=NO**). Requires config? yes (via constituents). World obs? no. Must preserve? **NO** — it is not a checkpoint authority. Reset consequence: none beyond constituents. Correctness significance: exists to prevent mistaking this surface for a ready-made checkpoint; `restore()` test-only | core :82–87,:421–437; dsh-governor :426,:529 |
+| **Orcana configuration / runtime composition** | plugin Config schema (:94–133) + bundle patch row | CONFIGURATION feeding all derived-state derivations | Verified knobs relevant to recovery-relevant derived state: `governor.fingerprintWindow`(8), `governor.zeroProgressThresholds`([2,3,4]), `governor.inlineRepeatTools`(['read','bash','*search*']), `evidence.verifyCommandPatterns`([test,typecheck,build,check,lint]), `evidence.freshness`('generation'), `governor.mode`/`enabled`, `completion.mode`('evidence-bound'), `completion.maxForcedContinuations`(3), `completion.claimCheck`(false), `completion.claimPatterns`, `tools.disclosure`('task-profile'), `tools.defaultProfile`('coding'). Inline-repeat THRESHOLD is an engine constant (2), NOT config-exposed. Mount-time; survives restart only as config, and every config-sensitive derivation reads the CURRENT value at rebuild time ⇒ same history + different restart composition ⇒ different derived state | schema :94–133; constructor :376–385; rebuild :398–402; guard :519–527 |
 
 ## C. World-Drift Matrix
 
-Facts that historical Session truth CANNOT prove, however complete. For
-each: what history proves / cannot prove / must be freshly observed / unsafe
-to assume / impact on completion correctness.
+Preserved from Rev.0 (audit PASS) with one narrowing note. Historical
+Session truth cannot prove present-tense world facts regardless of
+durability:
 
-| Drift subject | History CAN prove | History CANNOT prove | Must be freshly observed | Unsafe to assume | Completion-correctness impact |
+| Drift subject | History CAN prove | History CANNOT prove | Must be freshly observed | Unsafe to assume | Completion impact |
 | --- | --- | --- | --- | --- | --- |
-| Filesystem contents | that certain write/edit tools RETURNED success at some seq; result text snapshots | current file state; post-return modifications (by later commands, other actors, or the user) | current contents relevant to task claims | that a successful write still holds; that untracked changes didn't occur | HIGH — "file X contains Y" claims need fresh reads |
-| git HEAD | that commit/checkout commands succeeded historically | current HEAD (later commands/external git use) | `git rev-parse HEAD` equivalent fact | that workspace is at the historically-seen commit | HIGH for repo-state tasks |
-| git index / worktree status | nothing direct (status output snapshots at most) | current staged/untracked/dirty set | fresh `git status` equivalent | clean/dirty carried across time | MEDIUM-HIGH |
-| Running / background processes | background ACK text (by design excluded from verification identity); timeout/signal markers for foreground kills | whether a background job finished, its exit, its effects | process liveness/exit query | that an acknowledged background job succeeded | MEDIUM (task-dependent) |
-| External services / APIs | request/response traces that were captured | service-side state changes; uncaptured interactions | fresh service queries where relevant | idempotence/side-effect freedom without evidence | TASK-DEPENDENT, potentially HIGH |
-| Post-TOOL_OUTCOME_UNKNOWN side effects | THAT outcome is unknown (durable synthetic record); nothing about effect occurrence | whether the interrupted execution mutated anything | external/state inspection before relying either way | BOTH "it failed" AND "it succeeded" (repair guidance says exactly this) | HIGH — any completion claim touching the interrupted op's target |
-| Unknown-outcome MUTATION (write/edit crashed mid-flight) | durable tool/call; synthetic isError=true; Orcana sees NEITHER success NOR ambiguity (mutation=false, gen frozen — experiment H) | whether workspace changed | workspace inspection | generation==0 ⇒ workspace pristine | HIGH — stale PASS resurrection scenario (A/H) |
-| Verification evidence after later mutation | the pass receipt @old-generation (durable); internal staleness flag vs rebuilt generation | whether the evidence still holds NOW | re-run verification or inspect artifacts | old PASS = current truth when internal generation failed to advance (A/E/H paths) | HIGH — rule-1/rule-3 inputs |
-| Workspace changes while Orcana down | nothing (no observations occurred) | everything that changed downtime | full re-orientation per task needs | continuity of generation/receipts as world description | HIGH at cold resume |
-| Actual world freshness of ANY historical verification | the historical result only | present-tense validity | fresh observation | "PASS then ⇒ PASS now" | HIGH generally |
+| Filesystem contents | write/edit tools returned success at some seq; snapshots | current state; post-return modifications | current contents | successful write still holds | HIGH |
+| git HEAD | historical success of commit/checkout | current HEAD | fresh rev-parse | workspace at historically-seen commit | HIGH |
+| git index/worktree | status snapshots at most | current staged/untracked/dirty | fresh status | carried cleanliness | MED-HIGH |
+| Running/background processes | ack text; timeout/signal markers (foreground) | finished? exit? effects? | liveness/exit query | acknowledged job succeeded | MED |
+| External services/APIs | captured traces | service-side state; uncaptured calls | fresh queries | side-effect freedom without evidence | task-dependent |
+| Post-TOOL_OUTCOME_UNKNOWN side effects | THAT outcome is unknown (durable synthetic record) | whether execution mutated anything | external inspection | BOTH "failed" AND "succeeded" | HIGH |
+| Unknown-outcome mutation (write/edit crashed) | durable call; synthetic isError=true; Orcana sees NEITHER success NOR ambiguity (H) | whether workspace changed | workspace inspection | generation==0 ⇒ pristine | HIGH |
+| Verification evidence after later mutation | pass receipt @old-gen; internal staleness flag | present validity | re-run/inspect | old PASS = current truth when internal generation failed to advance (A/E/H) | HIGH |
+| Workspace changes while Orcana down | nothing | everything | full re-orientation | continuity of gen/receipts as world description | HIGH |
+| Actual world freshness of ANY historical verification | historical result only | present validity | fresh observation | PASS-then ⇒ PASS-now | HIGH |
 
-Cross-cutting statement (Rule 3/8 applied): every freshness assertion Orcana
-can make is GENERATION-relative (internal, deterministic, rebuildable) —
-world-freshness additionally requires observation whose NEED is created by
-the generation gaps documented above (bash-class mutations, nested code-mode
-mutations, unknown-outcome mutations, downtime drift).
+Narrowing note: "historical" facts themselves require the durability
+qualifiers of section B — a result whose record did not survive the crash
+window proves nothing post-resume.
 
-## D. Reset-Safety Assessment
+## D. Reset-Safety Assessment (REVISED)
 
-States currently NOT fully preserved across restart. For each: semantic
-safety, false-completion risk, efficiency-only?, autonomy concern, evidence
-status.
+Correction applied everywhere: **Orcana steering is control flow.**
+Verified chain (rc.6): `decideSteer`/guard → `agent.steer(msg)` =
+`send(msg,'next-step',true)` (agent.ts:126–128) → message inserted into
+nextStep inbox + driver woken → at stop boundary, `turnEnds &&
+nextStep.length===0` gates emission AND the final break (:295–300); a steer
+between the two checks flips STOP→CONTINUE. Therefore heuristic states that
+feed steering have CONTROL-FLOW reach, and "efficiency-only" is NOT
+proven for them.
 
-| State | Current restart behavior | Semantically safe? | Could reset create FALSE COMPLETION? | Efficiency / repetition / steering only? | Preserving it could reduce model autonomy? | Verdict |
-| --- | --- | --- | --- | --- | --- | --- |
-| TurnState | POLLUTED aggregate (not a clean reset): sticky historical flags judged in first settle; history-armed reminder fires on first live call (proven) | Current pollution: no false-completion path found (guard/ladder outputs steer messages only; nothing blocks stopping); distortion is behavioral | No such path identified | Yes — mis-timed/mis-targeted steering | The mis-fired historical reminder is model-visible noise about pre-crash calls — mild autonomy/attention cost | Behavior-quality defect CONFIRMED; preservation value AMBIGUOUS / UNRESOLVED |
-| Zero-progress chain | resets to 0 | Yes (ladder output = steering only) | No path found (chain never gates guard or stop) | Yes — escalation delayed by up to threshold rounds | More repeated rounds before strong steer — mild | Safe-but-lossy; preservation value AMBIGUOUS; would REQUIRE round-boundary reconstruction that replay lacks today |
-| Forced-continuation budget | deleted (:403) | Yes for truth; NOTE budget also suppresses COMPLETION-GUARD steering at exhaustion (:518) — reset RESTORES guard availability | No (nothing blocks stop regardless; guard only countersteers) | Mostly; guard-availability side is arguably correctness-positive | Preserving pre-crash count would silence the guard SOONER after resume — potential autonomy/oversight reduction | Reset currently leans SAFER for oversight; preservation value AMBIGUOUS / UNRESOLVED |
-| Ring / fingerprint optimization | rebuilt with shifts (D6 double-count, hash drift) | Yes | No | Repeat-detection quality only | no | Efficient-lossy; fine |
-| Turn-local accumulators (inline streak/counters) | inside TurnState pollution | as TurnState | no | yes | no | AMBIGUOUS preservation value |
-| Router / process-local installs | re-applied from config (VERIFIED) | Yes | No | none | no | No issue |
-| engines registry | swapped | Yes | No | none | no | No issue |
+| State | Current restart behavior | False-truth risk from reset | Control-flow reach via steer | Preservation correctness value | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| TurnState | polluted aggregate (not clean reset); sticky flags judged in first settle; armed reminder fires on first live call | none found | YES — zeroProgress verdict → chain → decideSteer → steer → stop/continue | **AMBIGUOUS / UNRESOLVED** | behavior distortion CONFIRMED; preservation value open |
+| Zero-progress chain | resets to 0; first verdict computed over polluted aggregate | none found | YES — threshold hit ⇒ steer ⇒ stop/continue can change | **AMBIGUOUS / UNRESOLVED** | "efficiency-only" WITHDRAWN; safe-but-lossy not proven |
+| Ring / repeated-observation classification | rebuilt with shifts | none found | INDIRECT — classification feeds significance ⇒ zeroProgress ⇒ same chain | **AMBIGUOUS / UNRESOLVED** | remains class C; efficiency-only claim withdrawn |
+| repeatedPattern | polluted | none found | YES (steer text content) | AMBIGUOUS | quality-only so far as observed |
+| Forced-continuation budget | deleted (:403) — TENDS CONSERVATIVE: budget reopens → ladder/guard may steer again → next-step inserted → immediate stop may be prevented | none found | YES — directly | **AMBIGUOUS / UNRESOLVED** (with conservative-direction noted) | reset leans safer for oversight; not proven value-free |
+| Router/process-local installs | re-applied from config | none | router restricts tools, does not steer | n/a | no issue |
+| engines registry | swapped | none | n/a | n/a | no issue |
 
-Net application of Rule 7: none of these resets was found to manufacture
-false truth; they degrade steering timeliness/quality. Therefore NONE is
-hereby promoted to a correctness-critical persistence need. Rule 8: where
-truth is the issue (generation/freshness/unknown-effects), the gap is
-classified as a WORLD-OBSERVATION requirement, not a persistence proposal.
+Accurate global boundary (replaces Rev.0's invalid proof claim):
+
+> No false-completion counterexample has yet been proven. However, the
+> previous reset-safety argument was INVALID because Orcana steering can
+> alter DSH stop/continue control flow. For several heuristic/control states,
+> preservation correctness value therefore remains AMBIGUOUS / UNRESOLVED.
+> Additionally, NO existing test exercises
+> pre-crash heuristic state → restart/reset → attempted completion →
+> stop/continue comparison, so reset-safety remains unproven by tests.
 
 ## E. Projection-Loss Assessment
 
-Four-way distinction applied to each seam fact:
+Preserved from Rev.0 (audit PASS_WITH_RISK); durability qualifiers added —
+"exists in live Session" ≠ "survived THE particular crash":
 
-| Fact | Durable? | Orcana projection outcome | Category | Evidence |
-| --- | --- | --- | --- | --- |
-| TOOL_NOT_STARTED (synthetic result, no durable call) | yes (A) | DROPPED ENTIRELY — no pending call ⇒ orphan-skip ⇒ 0 EngineEvents; request-side block also unconsumed | durable fact exists → projection drops it | repair.ts:118–119; translateSessionEvents orphan path; Correction A |
-| TOOL_OUTCOME_UNKNOWN | yes (A) | WEAKENED — EngineEvent exists (pairs via synthetic result) but structured code/name lost; shell-verification status degrades UNKNOWN→FAIL (G) | durable fact exists → projection weakens it | src :243–256, 296–300; receiptStatus; experiment G |
-| Surface replacement (+surfaceOp/sourceEventSeqs/prune event) | yes (A) | DISTORTED — metadata dropped; replacement replays as a SECOND full observation; mutation replacements double generation (I/J); indistinguishable from accidental duplicates | durable fact exists → projection distorts it | D5/D6/D7; experiments I/J |
-| Code-mode nested effects | yes (A — code-dispatch records carry name/isError/content) | DROPPED from replay (sessionReplayEvents filter); live saw them | durable fact exists → projection drops it (replay side) | D1/D2; CodeDispatchLog types :239–252 |
-| final-result pipeline failures | yes (A) | INVERSE ASYMMETRY — present in replay, ABSENT live (bypass post-execute) | durable fact exists → LIVE view lacks it | dsh-tools :301–303, 3002 |
-| Tool nesting identity (rootCallId/subCallId/parent) | yes (A) | DROPPED — EngineEvent carries callId only; no nesting dimension | durable fact exists → projection drops it | ToolExecutionInput :196–211; EngineEvent :44–79 |
-| Verification receipt identity/status (root bash, unreplaced, markered) | yes (A input) | PRESERVED — deterministic rebuild equals live fold for this domain (fixture-pinned) | durable fact exists → projection preserves it | adapter.spec.ts:105–143 |
-| Verification status for synthetic-unknown | yes (A) | WEAKENED — FAIL substituted for UNKNOWN | durable fact exists → projection weakens it | experiment G |
-| Verification receipt under surface replacement | yes (A, two records) | DISTORTED — overwritten by whichever copy replays last | durable fact exists → projection distorts it | D6 |
-| World-truth of any of the above | NEVER durable (E) | not representable from history at all | durable fact does not exist → must remain unknown / require world observation | World-Drift Matrix |
+| Fact | In live Session? | Survived the crash (durable prefix)? | Projection outcome | Category | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| TOOL_NOT_STARTED synthetic result | yes (after repair) | yes once repair committed | DROPPED ENTIRELY (orphan-skip, 0 EngineEvents) | drop | Correction A; translator orphan path |
+| TOOL_OUTCOME_UNKNOWN synthetic result | yes | yes once repair committed | WEAKENED — event folds; code/name lost; UNKNOWN→FAIL (G) | weaken | :243–256,296–300; experiment G |
+| Surface replacement (+surfaceOp/sourceEventSeqs/prune) | yes | CONDITIONAL (appended live; needs later boundary) | DISTORTED — second full application; mutation replacements double generation (I/J) | distort | D5/D6/D7 |
+| Code-dispatch nested records | yes | CONDITIONAL (nested ⇒ no independent checkpoint) | DROPPED from replay | drop | D1/D2 |
+| final-result failures | yes | CONDITIONAL | INVERSE ASYMMETRY — replay-only (bypassed live) | inverse asymmetry | dsh-tools :301–303 |
+| Nesting identity (rootCallId/subCallId/parent) | yes | tracks host record | DROPPED (callId-only EngineEvent) | drop | EngineEvent :44–79 |
+| Root bash receipt identity/status (unreplaced, markered) | yes | CONDITIONAL (result-append window) | PRESERVED for surviving records | preserve | adapter.spec.ts:105–143 |
+| Synthetic-unknown verification status | yes | yes once repair committed | WEAKENED (FAIL≠UNKNOWN) | weaken | experiment G |
+| Replaced verification receipt | yes (two records) | CONDITIONAL | DISTORTED (last-copy overwrite) | distort | D6 |
+| World-truth of any of the above | NEVER in Session | n/a | must remain unknown / require world observation | world requirement | World-Drift Matrix |
 
 ## F. Open Questions
 
-Inherited unknowns (kept open, classified):
+KNOWN checkpoint semantics (no longer "unknown"): LLM-request flush-before-
+dispatch; top-level tool call flush-before-body; pre-step flush of preceding
+batch; nested dispatch reuse of outer durability — all rc.6-verified with
+fail-closed behavior at model/tool boundaries.
 
-| Unknown | Kind | Blocks this classification? | Disposition |
-| --- | --- | --- | --- |
-| 1. checkpoint-policy flush timing relative to post-execute | DURABILITY-BOUND unknown (crash-tail size) | No — matrix rows hold for all surviving-history cases; bounds only the crash-moment edge | Defer to R0-C (crash boundary) |
-| 2. background eventual-result lifecycle | SEMANTIC unknown (does a later observable result exist?) | Partially — background row stays E/F hybrid | Later investigation; do not guess |
-| 3. downstream post-execute replacement/block frequency | DEPLOYMENT-MEASUREMENT unknown | No — D3 stays conditional either way | Measure in deployed telemetry, later |
-| 4. accidental physical duplicate frequency | DATA-Quality unknown | No — D7 mechanism classification independent of frequency | Sample real logs, later |
-| 5. deployed version vs lockfile rc.6 | ENVIRONMENT consistency unknown | No — all claims tagged rc.6-verified | Release/deployment discipline decision, later |
+UNRESOLVED exact crash-tail cases (deferred to R0-C; do not guess):
 
-New unresolved raised by this matrix (honestly retained):
+1. Post-result-append, pre-next-boundary windows (exact loss set for a crash
+   between a `tool/result` append and the next flush).
+2. Full enumeration of lifecycle boundary interactions beyond the three
+   semantic checkpoints above.
+3. Whether steered-but-unclaimed next-step messages can survive any path
+   (currently: they are inbox-only until claimed — window confirmed, full
+   timing analysis deferred).
+4. Background eventual-result lifecycle.
+5. Downstream post-execute replacement/block deployed frequency.
+6. Accidental physical duplicate frequency.
+7. Deployed DSH version vs lockfile rc.6 consistency.
+8. Does preserving chain/budget/TurnState improve governance enough to
+   matter? (no correctness evidence either way)
+9. Do code-dispatch records suffice for faithful nested-verification
+   receipts? (content present in type; fidelity unverified)
 
-| Question | Why open | Suggested owner phase |
+Execution environment note: Master Plan document not available locally
+(existing external input; not a runtime ambiguity).
+
+## Evidence Index (fresh this revision)
+
+| Claim | Command/location | Result |
 | --- | --- | --- |
-| Does preserving chain/budget/TurnState improve governance enough to matter? | no correctness evidence; policy-dependent | R0-C/D evidence gathering |
-| Do code-dispatch records suffice for faithful NESTED VERIFICATION receipts (not just mutation facts)? | content present in type; end-to-end fidelity unverified | later seam audit |
-| Should "cleanliness" of first post-resume round be defined via replayed boundaries? | requires boundary-emission semantics decision outside R0-B | R0-C/D |
+| LLM/tool/pre-step/nested checkpoint semantics; fail-closed | rc.6 session-checkpoint-policy/src/index.ts (full 83-line read @15148dbd9a) | verified verbatim |
+| steer = send('next-step',true)+wake | rc.6 agent-loop/src/agent.ts:120–132 | verified |
+| stop path double-check + continue target | rc.6 agent-loop/src/agent.ts:295–301 | verified |
+| steered message becomes durable user/message only at step claim | rc.6 agent-loop/src/agent.ts:281–284 | verified |
+| engine constructor/rebuild consume config | dsh-governor src :376–385, :398–402 | verified |
+| guard skip paths (mode; forcedCount≥max) + config options | dsh-governor src :516–527 | verified |
+| config knob inventory + defaults | dsh-governor src :94–133 | verified |
+| targeted suites | governor-core core+p2: 42 PASS; dsh-governor adapter: 11 PASS | exit 0 both |
+| resume-path test coverage | grep 'session-start' across dsh-governor tests | 0 hits ⇒ reset-safety unproven by tests |
+| G/H/I/J + A/B/D/E experiments | /tmp/r0a-rev3.mts, /tmp/r0a-experiment{,2}.mts | reproduced identically earlier this branch; seams unchanged since |
 
-No Open Question was closed by assumption.
-
-## Evidence Index (this revision's fresh verification)
-
-| Claim class | Command / location | Result |
-| --- | --- | --- |
-| governor-core unit suite | `cd /home/fuqiang/orcana-dsh/packages/governor-core && npx vitest run tests/core.spec.ts tests/p2.spec.ts tests/p3.spec.ts tests/p4.spec.ts` | 4 files / 72 tests PASS (exit 0) |
-| dsh-governor targeted suite | `cd …/packages/dsh-governor && npx vitest run tests/adapter.spec.ts tests/p2-policy.spec.ts tests/p4-policy.spec.ts tests/p5-policy.spec.ts` | 4 files / 30 tests PASS (exit 0) |
-| Seams identical to audited R0-A state | `git diff --stat 215595e -- packages/ benchmark/` (empty); `cmp` byte-compare of 5 key files vs independent checkout | IDENTICAL |
-| G/H/I/J (unknown→FAIL; frozen-gen; replacement×2; gen doubling) | `node --experimental-strip-types /tmp/r0a-rev3.mts` | reproduced identically |
-| A/B/D/E (stale-PASS resurrection; polluted settle + armed reminder; duplicate gen×2; sed-i invisibility) | `/tmp/r0a-experiment.mts`, `/tmp/r0a-experiment2.mts` | reproduced identically |
-| Repair codes/constants | harness monorepo @15148dbd9a packages/core/session/src/repair.ts:13–16,27 | confirmed in place |
-| CodeDispatchLog richness (name/isError/content/subCallId) | installed dsh-tools types index.d.ts:239–252 | confirmed |
-
-All R0-A citations reused here remain valid because seams are unchanged
-since the accepted audit commit; conflicts between R0-A text and source:
-none found this pass (two minor R0-A wording issues flagged by audit are
-intentionally left untouched per task hygiene rules and do not contaminate
-this artifact).
+All seam citations carried from R0-A remain valid (seams unchanged);
+checkpoint-policy and agent-loop citations are newly read THIS pass from
+locked rc.6 sources, not taken from any audit report.
 
 ## Scope Statement
 
-Docs-only. No production code, tests, configs, benchmark, or R0-A document
-modified. No recovery implementation, persistence, checkpoint, dedupe,
-boundary-emission, or steering design proposed anywhere above; gaps are
-named as projection/world-observation facts and left to later phases.
+Docs-only revision. No production/DSH/Orcana implementation, tests, configs,
+persistence, or other-phase artifacts modified. Checkpoint semantics were
+READ to classify correctly — no checkpoint/persistence machinery is proposed
+or added anywhere.
